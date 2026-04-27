@@ -119,7 +119,7 @@ class ProjectOutlineStreamingService:
             yield await self._build_streaming_research_status_event('research_skip', '已启用联网模式，但研究服务不可用，改为直接生成大纲...', 0.02)
             return
 
-        research_context_data = {'scenario': project.scenario, 'target_audience': confirmed_requirements.get('target_audience', '普通大众'), 'requirements': project.requirements, 'ppt_style': confirmed_requirements.get('ppt_style', 'general'), 'description': confirmed_requirements.get('description', '')}
+        research_context_data = {'scenario': project.scenario, 'target_audience': confirmed_requirements.get('target_audience', '普通大众'), 'custom_audience': confirmed_requirements.get('custom_audience', ''), 'requirements': confirmed_requirements.get('requirements', project.requirements), 'ppt_style': confirmed_requirements.get('ppt_style', 'general'), 'description': confirmed_requirements.get('description', '')}
         research_language = 'zh'
         if project.project_metadata and isinstance(project.project_metadata, dict):
             research_language = project.project_metadata.get('language', 'zh')
@@ -251,7 +251,7 @@ class ProjectOutlineStreamingService:
             language = 'zh'
             if project.project_metadata and isinstance(project.project_metadata, dict):
                 language = project.project_metadata.get('language', 'zh')
-            file_request = FileOutlineGenerationRequest(file_path=report_path, filename=Path(report_path).name, topic=confirmed_requirements.get('topic', project.topic), scenario=confirmed_requirements.get('type', project.scenario), requirements=confirmed_requirements.get('requirements', project.requirements), language=language, page_count_mode=confirmed_requirements.get('page_count_settings', {}).get('mode', 'ai_decide'), min_pages=confirmed_requirements.get('page_count_settings', {}).get('min_pages', 8), max_pages=confirmed_requirements.get('page_count_settings', {}).get('max_pages', 15), fixed_pages=confirmed_requirements.get('page_count_settings', {}).get('fixed_pages', 10), ppt_style=confirmed_requirements.get('ppt_style', 'general'), custom_style_prompt=confirmed_requirements.get('custom_style_prompt'), include_transition_pages=bool(confirmed_requirements.get('include_transition_pages', False)), target_audience=confirmed_requirements.get('target_audience', '普通大众'), custom_audience=confirmed_requirements.get('custom_audience'), file_processing_mode='markitdown', content_analysis_depth='fast')
+            file_request = FileOutlineGenerationRequest(file_path=report_path, filename=Path(report_path).name, topic=confirmed_requirements.get('topic', project.topic), scenario=confirmed_requirements.get('type', project.scenario), requirements=confirmed_requirements.get('requirements', project.requirements), description=confirmed_requirements.get('description'), language=language, page_count_mode=confirmed_requirements.get('page_count_settings', {}).get('mode', 'ai_decide'), min_pages=confirmed_requirements.get('page_count_settings', {}).get('min_pages', 8), max_pages=confirmed_requirements.get('page_count_settings', {}).get('max_pages', 15), fixed_pages=confirmed_requirements.get('page_count_settings', {}).get('fixed_pages', 10), ppt_style=confirmed_requirements.get('ppt_style', 'general'), custom_style_prompt=confirmed_requirements.get('custom_style_prompt'), include_transition_pages=bool(confirmed_requirements.get('include_transition_pages', False)), target_audience=confirmed_requirements.get('target_audience', '普通大众'), custom_audience=confirmed_requirements.get('custom_audience'), file_processing_mode='markitdown', content_analysis_depth='fast')
             structured_outline = None
             llm_call_count = 0
             last_ping_at = time.time()
@@ -300,6 +300,20 @@ class ProjectOutlineStreamingService:
             from ..file_outline_utils import extract_saved_file_outline, should_force_file_outline_regeneration
             force_file_outline_regeneration = should_force_file_outline_regeneration(project.confirmed_requirements or {})
             ignore_saved_outline = bool(force_regenerate or force_file_outline_regeneration)
+            existing_outline = project.outline if isinstance(project.outline, dict) else None
+            existing_slides = existing_outline.get('slides', []) if existing_outline else []
+            if existing_slides and not ignore_saved_outline:
+                import json
+                logger.info(
+                    'Project %s already has an outline with %s slides, streaming saved outline',
+                    project_id,
+                    len(existing_slides),
+                )
+                await self._update_outline_generation_stage(project_id, existing_outline)
+                yield f"data: {json.dumps({'status': {'step': 'cached', 'message': '已加载已有大纲', 'progress': 1.0}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'outline': existing_outline}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'done': True, 'llm_call_count': 0})}\n\n"
+                return
             if ignore_saved_outline:
                 logger.info(
                     'Project %s requested fresh outline generation, skipping saved outline cache',
@@ -384,6 +398,7 @@ class ProjectOutlineStreamingService:
                     except Exception as save_error:
                         logger.error(f'❌ Exception while saving research-enhanced outline: {str(save_error)}')
                     await self._update_outline_generation_stage(project_id, structured_outline)
+                    yield f"data: {json.dumps({'outline': structured_outline}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'done': True, 'llm_call_count': research_event.get('llm_call_count', 0)})}\n\n"
                     return
             page_count_settings = confirmed_requirements.get('page_count_settings', {})

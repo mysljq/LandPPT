@@ -171,8 +171,17 @@
                                                 <div class="speech-compact-field">
                                                     <span class="speech-compact-label">语音服务</span>
                                                     <select class="speech-form-select" id="narrationTtsProvider" style="width: 180px;" onchange="handleNarrationProviderChange()">
-                                                        <option value="edge_tts" ${narrationTtsProvider === 'comfyuiapi' ? '' : 'selected'}>Edge-TTS</option>
+                                                        <option value="edge_tts" ${narrationTtsProvider === 'edge_tts' ? 'selected' : ''}>Edge-TTS</option>
+                                                        <option value="xiaomimimo" ${narrationTtsProvider === 'xiaomimimo' ? 'selected' : ''}>Xiaomi Mimo TTS</option>
+                                                        <option value="custom_tts_api" ${narrationTtsProvider === 'custom_tts_api' ? 'selected' : ''}>Custom TTS API</option>
                                                         <option value="comfyuiapi" ${narrationTtsProvider === 'comfyuiapi' ? 'selected' : ''}>ComfyUI Qwen3-TD</option>
+                                                    </select>
+                                                </div>
+                                                <div class="speech-compact-field" id="speechMimoModeField" style="display: ${narrationTtsProvider === 'xiaomimimo' ? 'flex' : 'none'};">
+                                                    <span class="speech-compact-label">Mimo 模式</span>
+                                                    <select class="speech-form-select" id="narrationMimoMode" style="width: 180px;" onchange="handleNarrationProviderChange()">
+                                                        <option value="voicedesign" selected>文本设计音色</option>
+                                                        <option value="voiceclone">上传音频克隆</option>
                                                     </select>
                                                 </div>
                                                 <div class="speech-compact-field" id="speechRefAudioField" style="display: ${narrationTtsProvider === 'comfyuiapi' ? 'flex' : 'none'};">
@@ -184,7 +193,12 @@
                                                             ${narrationReferenceAudioPath ? '已上传参考音频' : '未上传参考音频'}
                                                         </span>
                                                     </div>
-                                                    <span class="speech-compact-help">仅 Qwen3-TD 需要，用于提供参考音色。</span>
+                                                    <span class="speech-compact-help" id="speechRefAudioHelp">仅 Qwen3-TD 需要，用于提供参考音色。</span>
+                                                </div>
+                                                <div class="speech-compact-field" id="speechMimoVoicePromptField" style="display: ${narrationTtsProvider === 'xiaomimimo' ? 'flex' : 'none'};">
+                                                    <span class="speech-compact-label">音色描述</span>
+                                                    <textarea class="speech-form-textarea" id="narrationMimoVoicePrompt" rows="3" placeholder="例如：年轻、放松、语速偏快，像 Tom 猫那种俏皮又有点夸张的卡通感；说话轻快自然、有活力，吐字清楚，不要正式播音腔。"></textarea>
+                                                    <span class="speech-compact-help">留空则使用 AI 设置里的 Xiaomi Mimo 默认音色描述。</span>
                                                 </div>
                                                 <div class="speech-compact-field">
                                                     <span class="speech-compact-label">音频准备</span>
@@ -464,8 +478,76 @@
         }
 
         function startSpeechHumanizeProgressTracking(taskId, progressToast, options = {}) {
+            const successMessage = options.successMessage || 'Speech scripts humanized.';
+            const failurePrefix = options.failurePrefix || 'Speech humanize failed';
+            const onFinally = typeof options.onFinally === 'function' ? options.onFinally : null;
+
+            const runFinally = async () => {
+                if (!onFinally) {
+                    return;
+                }
+                try {
+                    await onFinally();
+                } catch (callbackError) {
+                    console.error('Speech humanize finalize callback error:', callbackError);
+                }
+            };
+
+            const startFallback = () => startSpeechHumanizeProgressTrackingPolling(taskId, progressToast, options);
+            if (typeof startSpeechProgressSse === 'function') {
+                const sseHandle = startSpeechProgressSse(
+                    taskId,
+                    (progress) => {
+                        const percentage = Number.isFinite(progress.progress_percentage) ? progress.progress_percentage : 0;
+                        updateProgressToast(progressToast, progress.message || 'Humanizing speech scripts...', percentage);
+
+                        if (progress.status === 'completed') {
+                            updateProgressToast(progressToast, progress.message || successMessage, 100);
+                            setTimeout(async () => {
+                                closeProgressToast(progressToast);
+
+                                let notificationMessage = progress.message || successMessage;
+                                let notificationType = progress.failed_slides ? 'warning' : 'success';
+                                try {
+                                    await refreshSpeechScriptsDialogData();
+                                } catch (refreshError) {
+                                    console.error('Refresh speech scripts after humanize error:', refreshError);
+                                    notificationMessage = `Humanize completed, but refreshing results failed: ${refreshError.message || refreshError}`;
+                                    notificationType = 'warning';
+                                } finally {
+                                    await runFinally();
+                                }
+
+                                showNotification(notificationMessage, notificationType);
+                            }, 600);
+                            return true;
+                        }
+
+                        if (progress.status === 'failed') {
+                            closeProgressToast(progressToast);
+                            runFinally();
+                            showNotification(`${failurePrefix}: ${progress.message || 'unknown error'}`, 'error');
+                            return true;
+                        }
+
+                        return false;
+                    },
+                    startFallback
+                );
+
+                if (sseHandle) {
+                    return sseHandle;
+                }
+            }
+
+            return startFallback();
+        }
+
+        function startSpeechHumanizeProgressTrackingPolling(taskId, progressToast, options = {}) {
             let checkCount = 0;
+            let transientFailures = 0;
             const maxChecks = 180;
+            const maxTransientFailures = 10;
             const successMessage = options.successMessage || '演讲稿已完成一键人话';
             const failurePrefix = options.failurePrefix || '一键人话失败';
             const onFinally = typeof options.onFinally === 'function' ? options.onFinally : null;
@@ -491,13 +573,17 @@
                     const result = await response.json().catch(() => ({}));
 
                     if (!response.ok || !result.success || !result.progress) {
-                        clearInterval(interval);
-                        closeProgressToast(progressToast);
-                        await runFinally();
-                        showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        transientFailures += 1;
+                        if (transientFailures >= maxTransientFailures) {
+                            clearInterval(interval);
+                            closeProgressToast(progressToast);
+                            await runFinally();
+                            showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        }
                         return;
                     }
 
+                    transientFailures = 0;
                     const progress = result.progress;
                     const percentage = Number.isFinite(progress.progress_percentage) ? progress.progress_percentage : 0;
                     updateProgressToast(progressToast, progress.message || '正在一键人话...', percentage);
@@ -533,9 +619,10 @@
                         showNotification(`${failurePrefix}: ${progress.message || '未知错误'}`, 'error');
                     }
                 } catch (error) {
+                    transientFailures += 1;
                     console.error('Speech humanize progress tracking error:', error);
 
-                    if (checkCount >= maxChecks) {
+                    if (checkCount >= maxChecks || transientFailures >= maxTransientFailures) {
                         clearInterval(interval);
                         closeProgressToast(progressToast);
                         await runFinally();
@@ -1062,57 +1149,40 @@ function closeSpeechScriptsDialog() {
             }
         }
 
-        // 放映模式鼠标控制功能
+        // 放映模式控件自动隐藏（与导出HTML版放映一致：ui-hidden方案）
         let mouseMoveTimeout;
-        let isMouseIdle = false;
-        let slideshowControls, slideshowExitBtn, slideshowOverlay;
+        let slideshowOverlay;
 
         function handleSlideshowMouseMove() {
-            // 显示控制按钮
             showSlideshowControls();
 
             // 清除之前的定时器
             clearTimeout(mouseMoveTimeout);
 
-            // 设置新的定时器，3秒后隐藏控制按钮
+            // 设置新的定时器，2.5秒后隐藏控制按钮
             mouseMoveTimeout = setTimeout(() => {
                 hideSlideshowControls();
-            }, 3000);
+            }, 2500);
         }
 
         function showSlideshowControls() {
-            if (slideshowControls) slideshowControls.classList.add('visible');
-            if (slideshowExitBtn) slideshowExitBtn.classList.add('visible');
-            const slideshowInfo = document.getElementById('slideshowInfo');
-            if (slideshowInfo) slideshowInfo.classList.add('visible');
-            isMouseIdle = false;
-            // 显示鼠标光标
-            if (slideshowOverlay) slideshowOverlay.style.cursor = 'default';
+            if (slideshowOverlay) slideshowOverlay.classList.remove('ui-hidden');
         }
 
         function hideSlideshowControls() {
-            if (slideshowControls) slideshowControls.classList.remove('visible');
-            if (slideshowExitBtn) slideshowExitBtn.classList.remove('visible');
-            const slideshowInfo = document.getElementById('slideshowInfo');
-            if (slideshowInfo) slideshowInfo.classList.remove('visible');
-            isMouseIdle = true;
-            // 隐藏鼠标光标
-            if (slideshowOverlay) slideshowOverlay.style.cursor = 'none';
+            if (slideshowOverlay) slideshowOverlay.classList.add('ui-hidden');
         }
 
         function initializeSlideshowMouseControls() {
             slideshowOverlay = document.getElementById('slideshowOverlay');
-            slideshowControls = document.querySelector('.slideshow-controls');
-            slideshowExitBtn = document.querySelector('.slideshow-exit');
 
-            // 初始状态：隐藏控制按钮
-            hideSlideshowControls();
-
-            // 鼠标移动事件
+            // 鼠标移动/按键均可唤出控件（遮罩层保证iframe区域的移动也能捕获）
             slideshowOverlay.addEventListener('mousemove', handleSlideshowMouseMove);
+            slideshowOverlay.addEventListener('touchstart', handleSlideshowMouseMove, { passive: true });
+            document.addEventListener('keydown', handleSlideshowMouseMove);
 
-            // 鼠标离开事件
-            slideshowOverlay.addEventListener('mouseleave', hideSlideshowControls);
+            // 初始显示控件，然后按定时器自动隐藏
+            handleSlideshowMouseMove();
         }
 
         function removeSlideshowMouseControls() {
@@ -1122,15 +1192,12 @@ function closeSpeechScriptsDialog() {
             // 移除事件监听器
             if (slideshowOverlay) {
                 slideshowOverlay.removeEventListener('mousemove', handleSlideshowMouseMove);
-                slideshowOverlay.removeEventListener('mouseleave', hideSlideshowControls);
-
-                // 恢复鼠标光标
-                slideshowOverlay.style.cursor = 'default';
+                slideshowOverlay.removeEventListener('touchstart', handleSlideshowMouseMove);
+                slideshowOverlay.classList.remove('ui-hidden');
             }
+            document.removeEventListener('keydown', handleSlideshowMouseMove);
 
             // 清理引用
-            slideshowControls = null;
-            slideshowExitBtn = null;
             slideshowOverlay = null;
         }
 

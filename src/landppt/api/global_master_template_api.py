@@ -229,15 +229,27 @@ async def generate_template_with_ai(
                             "balance": balance,
                         }
         
-        # 准备参考图片数据
+        # 准备参考图片数据（支持多张）
+        reference_images_data: list = []
+        if request.reference_images:
+            for img in request.reference_images:
+                reference_images_data.append({
+                    "filename": img.filename,
+                    "data": img.data,
+                    "size": img.size,
+                    "type": img.type,
+                })
+        # Backward compat: single reference_image → list
         reference_image_data = None
         if request.reference_image:
             reference_image_data = {
                 "filename": request.reference_image.filename,
                 "data": request.reference_image.data,
                 "size": request.reference_image.size,
-                "type": request.reference_image.type
+                "type": request.reference_image.type,
             }
+            if not reference_images_data:
+                reference_images_data = [reference_image_data]
         reference_pptx_data = None
         if getattr(request, "reference_pptx", None):
             reference_pptx_data = {
@@ -255,6 +267,7 @@ async def generate_template_with_ai(
             tags=request.tags,
             generation_mode=request.generation_mode,
             reference_image=reference_image_data,
+            reference_images=reference_images_data or None,
             reference_pptx=reference_pptx_data,
         )
 

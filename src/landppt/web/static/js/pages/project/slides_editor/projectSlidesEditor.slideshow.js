@@ -92,6 +92,118 @@ let isTransitioning = false; // 防止快速切换时的重复操作
 let currentFrameIndex = 1; // 当前显示的iframe索引 (1 或 2)
 let nextFrameIndex = 2; // 下一个iframe索引 (1 或 2)
 
+// 幻灯片基准尺寸（与编辑器预览一致）
+const SLIDESHOW_BASE_WIDTH = 1280;
+const SLIDESHOW_BASE_HEIGHT = 720;
+
+// 将固定尺寸(1280x720)的幻灯片内容缩放至放映容器大小
+function applySlideshowFrameScale() {
+    const container = document.querySelector('#slideshowOverlay .iframe-container');
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const scale = Math.min(rect.width / SLIDESHOW_BASE_WIDTH, rect.height / SLIDESHOW_BASE_HEIGHT);
+    const left = (rect.width - SLIDESHOW_BASE_WIDTH * scale) / 2;
+    const top = (rect.height - SLIDESHOW_BASE_HEIGHT * scale) / 2;
+
+    [document.getElementById('slideshowFrame1'), document.getElementById('slideshowFrame2')].forEach(frame => {
+        if (!frame) return;
+        frame.style.width = `${SLIDESHOW_BASE_WIDTH}px`;
+        frame.style.height = `${SLIDESHOW_BASE_HEIGHT}px`;
+        frame.style.left = `${left}px`;
+        frame.style.top = `${top}px`;
+        frame.style.transformOrigin = 'top left';
+        frame.style.transform = `scale(${scale})`;
+    });
+}
+
+function scheduleSlideshowFrameScale() {
+    applySlideshowFrameScale();
+    requestAnimationFrame(applySlideshowFrameScale);
+}
+
+function canScrollSlideshowWheelTarget(target, deltaY) {
+    const doc = target && target.ownerDocument;
+    const win = doc && (doc.defaultView || window);
+    if (!doc || !win) return false;
+
+    let node = target;
+    while (node && node.nodeType === 1) {
+        const style = win.getComputedStyle(node);
+        const overflowY = `${style.overflowY || ''} ${style.overflow || ''}`;
+        const canScrollY = /(auto|scroll|overlay)/.test(overflowY)
+            && node.scrollHeight > node.clientHeight + 1;
+
+        if (canScrollY) {
+            const canScrollDown = deltaY > 0
+                && node.scrollTop + node.clientHeight < node.scrollHeight - 1;
+            const canScrollUp = deltaY < 0 && node.scrollTop > 1;
+            if (canScrollDown || canScrollUp) {
+                return true;
+            }
+        }
+
+        if (node === doc.body || node === doc.documentElement) {
+            break;
+        }
+        node = node.parentElement;
+    }
+    return false;
+}
+
+function shouldPreserveSlideshowWheelTarget(target, deltaY) {
+    if (!target || typeof target.closest !== 'function') return false;
+    if (target.closest('input, textarea, select, option, [contenteditable="true"], [contenteditable=""], [role="textbox"]')) {
+        return true;
+    }
+    return canScrollSlideshowWheelTarget(target, deltaY);
+}
+
+function handleSlideshowFrameWheel(e) {
+    if (!isSlideshow) return;
+    if (shouldPreserveSlideshowWheelTarget(e.target, e.deltaY)) return;
+    handleSlideshowWheel(e);
+}
+
+function installSlideshowFrameWheelBridge(iframe) {
+    if (!iframe) return;
+    try {
+        const frameWindow = iframe.contentWindow;
+        const frameDoc = iframe.contentDocument || (frameWindow && frameWindow.document);
+        if (!frameWindow || !frameDoc || frameWindow.__landpptSlideshowWheelBridgeInstalled) {
+            return;
+        }
+        frameWindow.__landpptSlideshowWheelBridgeInstalled = true;
+        frameDoc.addEventListener('wheel', handleSlideshowFrameWheel, { passive: false });
+    } catch (error) {
+        // Cross-origin frames cannot be bridged; srcdoc slideshow frames are same-origin.
+    }
+}
+
+// 遮罩层点击翻页
+function handleSlideshowShieldClick() {
+    nextSlideshow();
+}
+
+// 滚轮翻页：向下滚动下一页，向上滚动上一页（节流避免一次惯性滚动连翻多页）
+let slideshowWheelLockUntil = 0;
+
+function handleSlideshowWheel(e) {
+    if (!isSlideshow) return;
+    if (shouldPreserveSlideshowWheelTarget(e.target, e.deltaY)) return;
+    e.preventDefault();
+    const now = Date.now();
+    if (now < slideshowWheelLockUntil || Math.abs(e.deltaY) < 4) return;
+    slideshowWheelLockUntil = now + 350;
+    if (e.deltaY > 0) {
+        nextSlideshow();
+    } else {
+        previousSlideshow();
+    }
+}
+
 function startSlideshow() {
     if (!slidesData || slidesData.length === 0) {
         showNotification('没有可用的幻灯片！', 'warning');
@@ -108,6 +220,7 @@ function startSlideshow() {
     const overlay = document.getElementById('slideshowOverlay');
     const frame1 = document.getElementById('slideshowFrame1');
     const frame2 = document.getElementById('slideshowFrame2');
+    const shield = document.getElementById('slideshowShield');
 
     // 初始化iframe状态
     frame1.classList.add('visible');
@@ -115,9 +228,17 @@ function startSlideshow() {
     frame2.classList.add('hidden');
     frame2.classList.remove('visible');
 
+    // 遮罩层点击翻页
+    if (shield) {
+        shield.addEventListener('click', handleSlideshowShieldClick);
+    }
+
     // 使用requestAnimationFrame优化显示
     requestAnimationFrame(() => {
         overlay.style.display = 'flex';
+
+        // 根据窗口大小缩放幻灯片内容
+        scheduleSlideshowFrameScale();
 
         // 预加载当前和下一张幻灯片
         preloadSlideshowSlides();
@@ -133,6 +254,13 @@ function startSlideshow() {
 
     // Add keyboard event listeners
     document.addEventListener('keydown', handleSlideshowKeyboard);
+
+    // 滚轮翻页（绑定在overlay上，遮罩层保证幻灯片区域的滚动也能捕获）
+    overlay.addEventListener('wheel', handleSlideshowWheel, { passive: false });
+
+    // Re-scale on window resize / fullscreen change
+    window.addEventListener('resize', scheduleSlideshowFrameScale);
+    document.addEventListener('fullscreenchange', scheduleSlideshowFrameScale);
 
     // Add touch gesture support
     initializeSlideshowTouchGestures();
@@ -165,6 +293,11 @@ function exitSlideshow() {
     const overlay = document.getElementById('slideshowOverlay');
     const frame1 = document.getElementById('slideshowFrame1');
     const frame2 = document.getElementById('slideshowFrame2');
+    const shield = document.getElementById('slideshowShield');
+
+    if (shield) {
+        shield.removeEventListener('click', handleSlideshowShieldClick);
+    }
 
     // 使用fade out效果
     overlay.style.opacity = '0';
@@ -181,6 +314,13 @@ function exitSlideshow() {
 
     // Remove keyboard event listeners
     document.removeEventListener('keydown', handleSlideshowKeyboard);
+
+    // Remove wheel listener
+    overlay.removeEventListener('wheel', handleSlideshowWheel);
+
+    // Remove resize/fullscreen listeners
+    window.removeEventListener('resize', scheduleSlideshowFrameScale);
+    document.removeEventListener('fullscreenchange', scheduleSlideshowFrameScale);
 
     // Remove touch gesture listeners
     removeSlideshowTouchGestures();
@@ -245,6 +385,7 @@ function setSafeIframeContentNoFlash(iframe, html, callback) {
 
     // 检查内容是否相同，避免不必要的更新
     if (iframe.getAttribute('data-current-content') === html) {
+        installSlideshowFrameWheelBridge(iframe);
         if (callback) callback();
         return;
     }
@@ -257,6 +398,7 @@ function setSafeIframeContentNoFlash(iframe, html, callback) {
         // 监听加载完成
         const handleLoad = () => {
             iframe.removeEventListener('load', handleLoad);
+            installSlideshowFrameWheelBridge(iframe);
             if (callback) {
                 // 短暂延迟确保内容完全渲染
                 setTimeout(callback, 50);
@@ -268,6 +410,7 @@ function setSafeIframeContentNoFlash(iframe, html, callback) {
         // 备用超时机制
         setTimeout(() => {
             iframe.removeEventListener('load', handleLoad);
+            installSlideshowFrameWheelBridge(iframe);
             if (callback) callback();
         }, 500);
 

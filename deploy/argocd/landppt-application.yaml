@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: landppt
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/sligter/LandPPT.git
+    targetRevision: master
+    path: helm/landppt
+    helm:
+      valueFiles:
+        - values-argocd.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: landppt
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

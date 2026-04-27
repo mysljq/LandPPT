@@ -41,7 +41,6 @@ class LandPPTChatModel(BaseChatModel):
     provider: str = Field(default="openai")
     model: str = Field(default="gpt-4o-mini")
     temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=8192)
 
     api_key: Optional[str] = Field(default=None)
     base_url: Optional[str] = Field(default=None)
@@ -61,7 +60,6 @@ class LandPPTChatModel(BaseChatModel):
             "provider": self.provider,
             "model": self.model,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
             "base_url": self.base_url,
             "azure_endpoint": self.azure_endpoint,
             "api_version": self.api_version,
@@ -121,10 +119,6 @@ class LandPPTChatModel(BaseChatModel):
             "model": kwargs.get("model") or self.model,
             "temperature": kwargs.get("temperature") if kwargs.get("temperature") is not None else self.temperature,
         }
-        max_tokens_override = kwargs.get("max_tokens")
-        request_overrides["max_output_tokens"] = (
-            max_tokens_override if max_tokens_override is not None else self.max_tokens
-        )
         if kwargs.get("top_p") is not None:
             request_overrides["top_p"] = kwargs.get("top_p")
 
@@ -156,10 +150,6 @@ class LandPPTChatModel(BaseChatModel):
             "model": kwargs.get("model") or self.model,
             "temperature": kwargs.get("temperature") if kwargs.get("temperature") is not None else self.temperature,
         }
-        max_tokens_override = kwargs.get("max_tokens")
-        request_overrides["max_output_tokens"] = (
-            max_tokens_override if max_tokens_override is not None else self.max_tokens
-        )
         if kwargs.get("top_p") is not None:
             request_overrides["top_p"] = kwargs.get("top_p")
 
@@ -191,7 +181,6 @@ def get_langchain_chat_model(
     provider: str,
     model: str,
     temperature: float = 0.7,
-    max_tokens: int = 8192,
     **kwargs: Any,
 ) -> BaseChatModel:
     """
@@ -202,7 +191,6 @@ def get_langchain_chat_model(
         provider=provider,
         model=model,
         temperature=temperature,
-        max_tokens=max_tokens,
         api_key=kwargs.get("api_key"),
         base_url=kwargs.get("base_url"),
         azure_endpoint=kwargs.get("azure_endpoint"),

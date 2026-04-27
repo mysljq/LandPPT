@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>dom-to-pptx svg css variables smoke</title>
+  <style>
+    :root {
+      --bg-base: #f2f2f2;
+      --accent-primary: #2b58af;
+      --accent-subtle: rgba(43, 88, 175, 0.14);
+      --text-main: #1f2329;
+      --text-muted: #86909c;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #25262b;
+      font-family: Arial, sans-serif;
+      color: var(--text-main);
+    }
+
+    .pptx-slide {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    .chart-panel {
+      position: absolute;
+      left: 120px;
+      top: 120px;
+      width: 520px;
+      height: 320px;
+      padding: 24px;
+      background: white;
+      border: 1px solid #d1d5db;
+    }
+
+    .chart-svg {
+      width: 100%;
+      height: 250px;
+    }
+
+    .axis-label {
+      font-size: 13px;
+      fill: var(--text-muted);
+      font-family: Arial, sans-serif;
+    }
+
+    .data-label {
+      font-size: 18px;
+      font-weight: 700;
+      fill: var(--accent-primary);
+      font-family: Arial, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <section class="pptx-slide">
+    <div class="chart-panel">
+      <svg class="chart-svg" viewBox="0 0 520 250">
+        <line x1="48" y1="210" x2="492" y2="210" stroke="#e5e7eb" stroke-width="1"></line>
+        <line x1="48" y1="150" x2="492" y2="150" stroke="#f3f4f6" stroke-width="1"></line>
+        <line x1="48" y1="90" x2="492" y2="90" stroke="#f3f4f6" stroke-width="1"></line>
+        <path d="M 60 210 L 180 164 L 320 102 L 470 42 V 210 H 60 Z" fill="url(#chartGrad)" opacity="0.75"></path>
+        <path d="M 60 210 L 180 164 L 320 102 L 470 42" fill="none" stroke="var(--accent-primary)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+        <circle cx="60" cy="210" r="8" fill="var(--accent-primary)"></circle>
+        <circle cx="180" cy="164" r="8" fill="var(--accent-primary)"></circle>
+        <circle cx="320" cy="102" r="8" fill="var(--accent-primary)"></circle>
+        <circle cx="470" cy="42" r="10" fill="var(--accent-primary)"></circle>
+        <text x="470" y="28" class="data-label" text-anchor="middle">95%</text>
+        <text x="60" y="236" class="axis-label" text-anchor="middle">Baseline</text>
+        <text x="470" y="236" class="axis-label" text-anchor="middle">Validation</text>
+        <defs>
+          <linearGradient id="chartGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" style="stop-color:var(--accent-primary);stop-opacity:1"></stop>
+            <stop offset="100%" style="stop-color:white;stop-opacity:0"></stop>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+  </section>
+
+  <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+  <script>
+    async function blobToBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
+    window.runSvgCssVarsPptxSmokeTest = async function () {
+      const blob = await window.domToPptx.exportToPptx([document.body], {
+        skipDownload: true,
+        autoEmbedFonts: false,
+        svgAsVector: false
+      });
+      return {
+        slideCount: 1,
+        patchVersion: window.domToPptx.__landpptPatchVersion,
+        blobSize: blob.size,
+        pptxBase64: await blobToBase64(blob)
+      };
+    };
+  </script>
+</body>
+</html>

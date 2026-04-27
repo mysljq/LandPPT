@@ -900,6 +900,75 @@ async def get_speech_script_progress(
         }
 
 
+@router.get("/api/projects/{project_id}/speech-scripts/progress/{task_id}/stream")
+async def stream_speech_script_progress(
+    project_id: str,
+    task_id: str,
+    request: Request,
+    user: User = Depends(get_current_user_required)
+):
+    """Stream speech script generation progress as SSE."""
+    from ...services.progress_tracker import progress_tracker
+
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        async def _project_not_found():
+            payload = json.dumps({"success": False, "error": "Project not found"}, ensure_ascii=False)
+            yield f"event: progress_error\ndata: {payload}\n\n"
+
+        return StreamingResponse(
+            _project_not_found(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    async def _events():
+        last_payload: Optional[Dict[str, Any]] = None
+        last_heartbeat = time.time()
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            progress_info = await progress_tracker.get_progress_async(task_id)
+            if not progress_info:
+                payload = {"success": False, "error": "Task not found"}
+                yield f"event: progress_error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                break
+
+            if progress_info.project_id != project_id:
+                payload = {"success": False, "error": "Access denied"}
+                yield f"event: progress_error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                break
+
+            payload = {"success": True, "progress": progress_info.to_dict()}
+            if payload != last_payload:
+                event_name = "done" if progress_info.status in {"completed", "failed"} else "progress"
+                yield f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                last_payload = payload
+                last_heartbeat = time.time()
+
+                if event_name == "done":
+                    break
+            elif time.time() - last_heartbeat >= 15:
+                yield ": keepalive\n\n"
+                last_heartbeat = time.time()
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.put("/api/projects/{project_id}/speech-scripts/slide/{slide_index}")
 async def update_speech_script_content(
     project_id: str,

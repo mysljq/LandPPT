@@ -15,7 +15,10 @@ on:
       - 'docker-compose.yml'
       - 'docker-entrypoint.sh'
       - 'docker-healthcheck.sh'
+      - 'run.py'
       - 'src/**'
+      - 'template_examples/**'
+      - '.env.example'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/docker-build.yml'
@@ -47,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: read
+      contents: write
       packages: write
     
     steps:
@@ -99,6 +102,8 @@ jobs:
           tags: |
             # 最新标签（仅在 main/master 分支）
             type=raw,value=latest,enable={{is_default_branch}}
+            # Git SHA，供 Argo CD values-argocd.yaml 精确引用
+            type=raw,value=git-${{ github.sha }}
             # Git 短 SHA
             type=sha,prefix=
             # 分支名称
@@ -130,6 +135,51 @@ jobs:
             BUILDTIME=${{ github.event.repository.updated_at }}
             VERSION=${{ github.sha }}
       
+      # 源码变更后，把新镜像 tag 写回 Argo CD values 文件。
+      # Argo CD 监听 helm/landppt/values-argocd.yaml，检测到该提交后会自动同步部署。
+      - name: Update Argo CD image tag
+        if: github.event_name != 'pull_request' && (github.event.inputs.push_image != 'false')
+        env:
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/landppt
+          IMAGE_TAG: git-${{ github.sha }}
+          VALUES_FILE: helm/landppt/values-argocd.yaml
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["VALUES_FILE"])
+          repository = os.environ["IMAGE_REPOSITORY"]
+          tag = os.environ["IMAGE_TAG"]
+
+          lines = path.read_text().splitlines()
+          in_image = False
+          for index, line in enumerate(lines):
+              if line == "image:":
+                  in_image = True
+                  continue
+              if in_image and line and not line.startswith(" "):
+                  in_image = False
+              if in_image and line.startswith("  repository:"):
+                  lines[index] = f"  repository: {repository}"
+              elif in_image and line.startswith("  tag:"):
+                  lines[index] = f"  tag: {tag}"
+              elif in_image and line.startswith("  pullPolicy:"):
+                  lines[index] = "  pullPolicy: IfNotPresent"
+
+          path.write_text("\n".join(lines) + "\n")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$VALUES_FILE"
+          if git diff --cached --quiet; then
+            echo "No image tag change to commit."
+          else
+            git commit -m "chore(deploy): update image to ${IMAGE_TAG} [skip ci]"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
       # 输出镜像摘要
       - name: Image Digest
         run: |
@@ -139,6 +189,8 @@ jobs:
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Argo CD image tag:** \`git-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
   # 安全扫描（可选但推荐）
   security-scan:

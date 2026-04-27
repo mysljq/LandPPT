@@ -1,9 +1,19 @@
+import base64
+import io
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_inline_complex_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-04-25-layer-clip-v21"
+EXPECTED_PATCH_VERSION = "2026-07-09-hybrid-raster-v2"
+
+
+def _read_pptx_entry(result, entry_name):
+    pptx_bytes = base64.b64decode(result["pptxBase64"])
+    with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as archive:
+        return archive.read(entry_name).decode("utf-8")
 
 
 def test_dom_to_pptx_inline_complex_smoke():
@@ -33,3 +43,13 @@ def test_dom_to_pptx_inline_complex_smoke():
     assert result["slideCount"] == 2
     assert result["patchVersion"] == EXPECTED_PATCH_VERSION
     assert result["blobSize"] > 10_000
+
+    slide_xml = _read_pptx_entry(result, "ppt/slides/slide1.xml")
+    line_spacing_values = [
+        int(value)
+        for value in re.findall(r"<a:lnSpc><a:spcPts val=\"(\d+)\"/></a:lnSpc>", slide_xml)
+    ]
+    assert line_spacing_values
+    assert max(line_spacing_values) >= 1400
+    assert 'anchor="t"' in slide_xml
+    assert "<a:highlight>" in slide_xml

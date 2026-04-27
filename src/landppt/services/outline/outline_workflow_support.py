@@ -15,6 +15,9 @@ def build_validation_requirements(request: Any, outline_title: str) -> Dict[str,
     return {
         "topic": getattr(request, "topic", None) or outline_title or "Document Presentation",
         "target_audience": getattr(request, "target_audience", None) or "General audience",
+        "custom_audience": getattr(request, "custom_audience", None) or "",
+        "requirements": getattr(request, "requirements", None) or "",
+        "description": getattr(request, "description", None) or "",
         "focus_content": list(getattr(request, "focus_content", []) or []),
         "tech_highlights": list(getattr(request, "tech_highlights", []) or []),
         "page_count_settings": {
@@ -25,6 +28,20 @@ def build_validation_requirements(request: Any, outline_title: str) -> Dict[str,
         },
         "include_transition_pages": bool(getattr(request, "include_transition_pages", False)),
     }
+
+
+def build_project_requirements_text(request: Any) -> str:
+    parts = []
+
+    requirements = (getattr(request, "requirements", None) or "").strip()
+    if requirements:
+        parts.append(requirements)
+
+    description = (getattr(request, "description", None) or "").strip()
+    if description and description not in requirements:
+        parts.append(f"Additional user instructions:\n{description}")
+
+    return "\n\n".join(parts)
 
 
 def build_transition_page_requirement_text(request: Any) -> str:

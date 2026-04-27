@@ -177,7 +177,7 @@ async def edit_project_ppt(
                 "request": request,
                 "project": project,
                 "enable_auto_layout_repair": ai_config.enable_auto_layout_repair,
-                "narration_video_tools_enabled": getattr(app_config, "narration_video_tools_enabled", True),
+                "narration_video_tools_enabled": bool(getattr(user, "is_admin", False)) and getattr(app_config, "narration_video_tools_enabled", True),
                 "has_speech_scripts": has_speech_scripts,
                 "narration_languages": narration_languages,
             },
@@ -270,6 +270,9 @@ async def test_slides_navigation(
 async def serve_temp_file(file_path: str):
     """提供临时幻灯片文件。"""
     try:
+        if not app_config.expose_temp_static_files:
+            raise HTTPException(status_code=404, detail="Temp file access is disabled")
+
         temp_dir = Path(tempfile.gettempdir()) / "landppt"
         full_path = temp_dir / file_path
 

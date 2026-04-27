@@ -194,94 +194,85 @@ function showSlideOutline() {
     if (projectOutline && projectOutline.slides && projectOutline.slides[currentSlideIndex]) {
         const slideOutline = projectOutline.slides[currentSlideIndex];
         outlineContent = `
-            <h5 style="margin-bottom: 25px; color: #2c3e50; font-size: 1.3em;"><i class="fas fa-file-alt"></i> 第${currentSlideIndex + 1}页大纲编辑</h5>
-            <div style="background: #f8f9fa; padding: 25px; border-radius: 8px; margin: 15px 0;">
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">标题：</label>
-                    <input type="text" id="slideTitle" value="${(slideOutline.title || currentSlide.title || '').replace(/"/g, '&quot;')}"
-                           style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box;">
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">类型：</label>
-                    <select id="slideType" style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box;">
-                        <option value="title" ${(slideOutline.slide_type || slideOutline.type) === 'title' ? 'selected' : ''}>标题页</option>
-                        <option value="content" ${(slideOutline.slide_type || slideOutline.type) === 'content' ? 'selected' : ''}>内容页</option>
-                        <option value="conclusion" ${(slideOutline.slide_type || slideOutline.type) === 'conclusion' ? 'selected' : ''}>结论页</option>
-                    </select>
-                </div>
-                ${slideOutline.content_points ? `
-                    <div style="margin-bottom: 20px;">
-                        <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">要点：</label>
-                        <div id="bulletPointsContainer" style="background: white; border: 1px solid #ddd; border-radius: 6px; padding: 8px; min-height: 120px;">
-                            ${slideOutline.content_points.map((point, index) => `
-                                <div class="bullet-point-item" data-index="${index}" style="display: flex; align-items: flex-start; margin-bottom: 8px; padding: 8px; border-radius: 4px; transition: all 0.2s ease; position: relative;">
-                                    <span style="color: #666; margin-right: 8px; font-weight: bold; min-width: 20px;">•</span>
-                                    <div style="flex: 1; position: relative;">
-                                        <div class="bullet-point-text" contenteditable="true" style="outline: none; min-height: 20px; line-height: 1.4; word-wrap: break-word;">${point}</div>
-                                    </div>
-
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideTitle">标题：</label>
+                <input type="text" id="slideTitle" class="outline-field__input" value="${(slideOutline.title || currentSlide.title || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideType">类型：</label>
+                <select id="slideType" class="outline-field__select">
+                    <option value="title" ${(slideOutline.slide_type || slideOutline.type) === 'title' ? 'selected' : ''}>标题页</option>
+                    <option value="content" ${(slideOutline.slide_type || slideOutline.type) === 'content' ? 'selected' : ''}>内容页</option>
+                    <option value="conclusion" ${(slideOutline.slide_type || slideOutline.type) === 'conclusion' ? 'selected' : ''}>结论页</option>
+                </select>
+            </div>
+            ${slideOutline.content_points ? `
+                <div class="outline-field">
+                    <label class="outline-field__label">要点：</label>
+                    <div id="bulletPointsContainer" class="outline-bullets">
+                        ${slideOutline.content_points.map((point, index) => `
+                            <div class="bullet-point-item" data-index="${index}">
+                                <span style="color: #666; margin-right: 8px; font-weight: bold; min-width: 20px;">•</span>
+                                <div style="flex: 1; position: relative;">
+                                    <div class="bullet-point-text" contenteditable="true" style="outline: none; min-height: 20px; line-height: 1.4; word-wrap: break-word;">${point}</div>
                                 </div>
-                            `).join('')}
-                        </div>
-                        <div style="margin-top: 8px; text-align: right; display: flex; gap: 8px; justify-content: flex-end;">
-                            <button class="enhance-all-btn" onclick="enhanceAllBulletPoints()" title="AI增强所有要点" style="background-color: #6c757d; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
-                                <span>增强要点</span>
-                            </button>
-                            <button type="button" onclick="addNewBulletPoint()" class="btn btn-sm modal-btn-primary bullet-add-btn" style="background-color: #6c757d; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
-                                <i class="fas fa-plus"></i><span>添加要点</span>
-                            </button>
-                        </div>
-                    </div>
-                ` : `
-                    <div style="margin-bottom: 20px;">
-                        <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">要点：</label>
-                        <div id="bulletPointsContainer" style="background: white; border: 1px solid #ddd; border-radius: 6px; padding: 8px; min-height: 120px;">
-                            <div class="empty-bullet-points" style="text-align: center; color: #999; padding: 40px 20px;">
-                                <i class="fas fa-list" style="font-size: 24px; margin-bottom: 10px; opacity: 0.5;"></i>
-                                <p style="margin: 0;">暂无要点，点击下方按钮添加</p>
                             </div>
-                        </div>
-                        <div class="bullet-actions">
-                            <button type="button" class="btn btn-sm modal-btn-neutral" onclick="enhanceAllBulletPoints()" title="AI增强所有要点">
-                                <span>增强要点</span>
-                            </button>
-                            <button type="button" class="btn btn-sm modal-btn-primary bullet-add-btn" onclick="addNewBulletPoint()">
-                                <i class="fas fa-plus"></i><span>添加要点</span>
-                            </button>
+                        `).join('')}
+                    </div>
+                    <div class="outline-bullets__actions">
+                        <button class="enhance-all-btn outline-modal-btn" onclick="enhanceAllBulletPoints()" title="AI增强所有要点">
+                            <i class="fas fa-magic"></i><span>增强要点</span>
+                        </button>
+                        <button type="button" class="outline-modal-btn bullet-add-btn" onclick="addNewBulletPoint()" title="添加要点">
+                            <i class="fas fa-plus"></i><span>添加要点</span>
+                        </button>
+                    </div>
+                </div>
+            ` : `
+                <div class="outline-field">
+                    <label class="outline-field__label">要点：</label>
+                    <div id="bulletPointsContainer" class="outline-bullets">
+                        <div class="outline-bullets__empty">
+                            <i class="fas fa-list"></i>
+                            <p>暂无要点，点击下方按钮添加</p>
                         </div>
                     </div>
-                `}
-                <div style="margin-bottom: 15px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">描述：</label>
-                    <textarea id="slideDescription" rows="4" style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box; resize: vertical;">${slideOutline.description || ''}</textarea>
+                    <div class="outline-bullets__actions">
+                        <button type="button" class="enhance-all-btn outline-modal-btn" onclick="enhanceAllBulletPoints()" title="AI增强所有要点">
+                            <i class="fas fa-magic"></i><span>增强要点</span>
+                        </button>
+                        <button type="button" class="outline-modal-btn bullet-add-btn" onclick="addNewBulletPoint()" title="添加要点">
+                            <i class="fas fa-plus"></i><span>添加要点</span>
+                        </button>
+                    </div>
                 </div>
+            `}
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideDescription">描述：</label>
+                <textarea id="slideDescription" class="outline-field__textarea" rows="4">${slideOutline.description || ''}</textarea>
             </div>
         `;
     } else {
         outlineContent = `
-            <h5 style="margin-bottom: 25px; color: #2c3e50; font-size: 1.3em;"><i class="fas fa-file-alt"></i> 第${currentSlideIndex + 1}页大纲编辑</h5>
-            <div style="background: #f8f9fa; padding: 25px; border-radius: 8px; margin: 15px 0;">
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">标题：</label>
-                    <input type="text" id="slideTitle" value="${(currentSlide.title || '').replace(/"/g, '&quot;')}"
-                           style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box;">
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">类型：</label>
-                    <select id="slideType" style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box;">
-                        <option value="title">标题页</option>
-                        <option value="content" selected>内容页</option>
-                        <option value="conclusion">结论页</option>
-                    </select>
-                </div>
-                <div style="margin-bottom: 20px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">要点：</label>
-                    <textarea id="slidePoints" rows="6" placeholder="请输入要点，每行一个..." style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box; resize: vertical;"></textarea>
-                </div>
-                <div style="margin-bottom: 15px;">
-                    <label style="font-weight: bold; display: block; margin-bottom: 8px; color: #495057; font-size: 1.1em;">描述：</label>
-                    <textarea id="slideDescription" rows="4" placeholder="请输入幻灯片描述..." style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; box-sizing: border-box; resize: vertical;"></textarea>
-                </div>
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideTitle">标题：</label>
+                <input type="text" id="slideTitle" class="outline-field__input" value="${(currentSlide.title || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideType">类型：</label>
+                <select id="slideType" class="outline-field__select">
+                    <option value="title">标题页</option>
+                    <option value="content" selected>内容页</option>
+                    <option value="conclusion">结论页</option>
+                </select>
+            </div>
+            <div class="outline-field">
+                <label class="outline-field__label" for="slidePoints">要点：</label>
+                <textarea id="slidePoints" class="outline-field__textarea" rows="6" placeholder="请输入要点，每行一个..."></textarea>
+            </div>
+            <div class="outline-field">
+                <label class="outline-field__label" for="slideDescription">描述：</label>
+                <textarea id="slideDescription" class="outline-field__textarea" rows="4" placeholder="请输入幻灯片描述..."></textarea>
             </div>
         `;
     }
@@ -289,56 +280,48 @@ function showSlideOutline() {
     // 创建大纲编辑模态框
     const modal = document.createElement('div');
     modal.id = 'slideOutlineModal';
-    modal.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0,0,0,0.5);
-        z-index: 10001;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-    `;
+    modal.className = 'outline-modal';
 
-    const outlineContainer = document.createElement('div');
-    outlineContainer.style.cssText = `
-        background: var(--bg-primary);
-        border-radius: 12px;
-        padding: 30px;
-        width: 90vw;
-        max-width: 1200px;
-        max-height: 85vh;
-        overflow-y: auto;
-        position: relative;
-        border: 1px solid var(--border-color);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+    const content = document.createElement('div');
+    content.className = 'outline-modal__content';
+
+    // 头部：标题 + 关闭按钮
+    const header = document.createElement('div');
+    header.className = 'outline-modal__header';
+    header.innerHTML = `
+        <h5 class="outline-modal__title"><i class="fas fa-file-alt"></i> 第${currentSlideIndex + 1}页大纲编辑</h5>
     `;
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.className = 'modal-close-button';
+    closeBtn.className = 'outline-modal__close';
+    closeBtn.setAttribute('aria-label', '关闭');
     closeBtn.innerHTML = '<i class="fas fa-times"></i>';
-    closeBtn.style.cssText += 'position:absolute;top:18px;right:18px;z-index:1;';
 
-    // 添加按钮区域
-    const buttonArea = `
-        <div style="display: flex; justify-content: space-between; margin-top: 30px; padding-top: 20px; border-top: 2px solid #e9ecef;">
-            <button onclick="aiOptimizeSingleSlideInSlidesEditor()" class="outline-modal-btn outline-modal-btn--solid">
-                <i class="fas fa-robot"></i>
-                <span>AI优化</span>
+    header.appendChild(closeBtn);
+
+    // 内容区
+    const body = document.createElement('div');
+    body.className = 'outline-modal__body';
+    body.innerHTML = outlineContent;
+
+    // 底部按钮区
+    const footer = document.createElement('div');
+    footer.className = 'outline-modal__footer';
+    footer.innerHTML = `
+        <button onclick="aiOptimizeSingleSlideInSlidesEditor()" class="outline-modal-btn outline-modal-btn--solid">
+            <i class="fas fa-robot"></i>
+            <span>AI优化</span>
+        </button>
+        <div class="outline-modal__footer-group">
+            <button onclick="saveSlideOutline()" class="outline-modal-btn outline-modal-btn--solid">
+                <i class="fas fa-save"></i>
+                <span>保存大纲</span>
             </button>
-            <div style="display: flex; gap: 15px;">
-                <button onclick="saveSlideOutline()" class="outline-modal-btn outline-modal-btn--solid">
-                    <i class="fas fa-save"></i>
-                    <span>保存大纲</span>
-                </button>
-                <button onclick="regenerateFromOutline()" class="outline-modal-btn">
-                    <i class="fas fa-sync"></i>
-                    <span>根据大纲重新生成</span>
-                </button>
-            </div>
+            <button onclick="regenerateFromOutline()" class="outline-modal-btn">
+                <i class="fas fa-sync"></i>
+                <span>根据大纲重新生成</span>
+            </button>
         </div>
     `;
 
@@ -352,9 +335,10 @@ function showSlideOutline() {
         }
     });
 
-    outlineContainer.innerHTML = outlineContent + buttonArea;
-    outlineContainer.appendChild(closeBtn);
-    modal.appendChild(outlineContainer);
+    content.appendChild(header);
+    content.appendChild(body);
+    content.appendChild(footer);
+    modal.appendChild(content);
     document.body.appendChild(modal);
 }
 
@@ -398,6 +382,10 @@ async function saveSlideOutline() {
     // 更新幻灯片标题
     if (slidesData[currentSlideIndex]) {
         slidesData[currentSlideIndex].title = title;
+        slidesData[currentSlideIndex].slide_type = type;
+        slidesData[currentSlideIndex].content_type = type;
+        slidesData[currentSlideIndex].description = description;
+        slidesData[currentSlideIndex].content_points = points;
     }
 
     try {
@@ -418,6 +406,13 @@ async function saveSlideOutline() {
 
         const data = await response.json();
         if (data.status === 'success') {
+            if (typeof saveSingleSlideToServer === 'function' && slidesData[currentSlideIndex]?.html_content) {
+                await saveSingleSlideToServer(
+                    currentSlideIndex,
+                    slidesData[currentSlideIndex].html_content,
+                    { slideData: slidesData[currentSlideIndex], isUserEdited: true }
+                );
+            }
             showNotification('大纲已保存！', 'success');
         } else {
             throw new Error(data.message || data.error || '保存失败');
@@ -539,14 +534,34 @@ async function updateOutlineForSlideOperation(operation, slideIndex, slideData =
             }
         }
 
+        if (Array.isArray(projectOutline.slides)) {
+            projectOutline.slides.forEach((slide, index) => {
+                if (slide && typeof slide === 'object') {
+                    slide.page_number = index + 1;
+                }
+            });
+        }
+
         // 保存更新后的大纲到数据库
+        const operationPayload = {
+            type: operation,
+            slide_index: slideIndex
+        };
+        if (operation === 'move' && slideData && Number.isInteger(slideData.to_index)) {
+            operationPayload.to_index = slideData.to_index;
+        }
+        if (operation === 'insert' && slideData) {
+            operationPayload.slide_data = slideData;
+        }
+
         const response = await fetch(`/projects/${window.landpptEditorConfig.projectId}/update-outline`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                outline_content: JSON.stringify(projectOutline, null, 2)
+                outline_content: JSON.stringify(projectOutline, null, 2),
+                operation: operationPayload
             })
         });
 
@@ -566,6 +581,397 @@ async function updateOutlineForSlideOperation(operation, slideIndex, slideData =
 }
 
 // 发送AI消息 - 使用流式输出
+function getAgentEventLabel(event) {
+    const type = event && event.type;
+    const labels = {
+        agent_start: '开始分析',
+        agent_step: '选择下一步',
+        tool_call: '调用工具',
+        tool_result: '工具结果',
+        validation_result: '校验结果',
+        draft_ready: '草稿就绪',
+        needs_confirmation: '等待确认',
+        final: '草稿就绪',
+        error: '出错'
+    };
+    return labels[type] || type || 'Agent 事件';
+}
+
+function compactAgentText(value, maxLength = 420) {
+    const text = typeof value === 'string' ? value : String(value ?? '');
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, maxLength)}...`;
+}
+
+function stringifyAgentPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+    try {
+        return JSON.stringify(payload, (key, value) => {
+            if (typeof value === 'string') {
+                return compactAgentText(value, 220);
+            }
+            return value;
+        }, 2);
+    } catch (error) {
+        return compactAgentText(String(payload));
+    }
+}
+
+function getAgentEventDetail(event) {
+    if (!event) {
+        return '';
+    }
+
+    if (event.type === 'agent_start') {
+        const slideLabel = event.slideIndex ? `第${event.slideIndex}页` : '';
+        return [slideLabel, event.mode ? `模式：${event.mode}` : ''].filter(Boolean).join(' · ');
+    }
+
+    if (event.type === 'tool_call') {
+        const input = stringifyAgentPayload(event.toolInput || event.actionInput || {});
+        return [event.tool || event.action || '', input].filter(Boolean).join('\n');
+    }
+
+    if (event.type === 'tool_result') {
+        const observation = event.observation || {};
+        return observation.summary || observation.error || (event.success ? '完成' : '失败');
+    }
+
+    if (event.type === 'validation_result') {
+        if (event.valid) {
+            return 'HTML 校验通过';
+        }
+        const errors = Array.isArray(event.errors) ? event.errors.join('；') : '';
+        return errors ? `HTML 校验失败：${errors}` : 'HTML 校验失败';
+    }
+
+    if (event.type === 'agent_step') {
+        return [event.thought, event.action].filter(Boolean).join('\n');
+    }
+
+    if (event.type === 'draft_ready') {
+        return event.proposal?.summary || 'Agent 已生成可预览的编辑草稿';
+    }
+
+    if (event.type === 'needs_confirmation') {
+        return '';
+    }
+
+    if (event.type === 'error') {
+        return event.error || event.message || '未知错误';
+    }
+
+    return event.message || event.summary || '';
+}
+
+function shouldCollapseAgentEvent(event) {
+    return event && (event.type === 'tool_call' || event.type === 'tool_result');
+}
+
+function getAgentEventSummary(event) {
+    if (!event) {
+        return '';
+    }
+    if (event.type === 'tool_call') {
+        return event.tool || event.action || 'tool';
+    }
+    if (event.type === 'tool_result') {
+        const observation = event.observation || {};
+        return compactAgentText(observation.summary || observation.error || (event.success ? 'done' : 'failed'), 120);
+    }
+    return compactAgentText(getAgentEventDetail(event), 120);
+}
+
+function getAgentEventExpandedDetail(event) {
+    if (!event) {
+        return '';
+    }
+    if (event.type === 'tool_result') {
+        const payload = stringifyAgentPayload(event.observation || {});
+        return payload || getAgentEventDetail(event);
+    }
+    return getAgentEventDetail(event);
+}
+
+function addAgentTimelineEvent(messageDiv, event) {
+    if (!messageDiv || !event) return;
+
+    let timeline = messageDiv.querySelector('.ai-agent-timeline');
+    if (!timeline) {
+        timeline = document.createElement('div');
+        timeline.className = 'ai-agent-timeline';
+        const regenerateBtn = messageDiv.querySelector('.ai-answer-regenerate-btn');
+        messageDiv.insertBefore(timeline, regenerateBtn || null);
+    }
+
+    const item = document.createElement('div');
+    item.className = `ai-agent-event ai-agent-event-${event.type || 'unknown'}`;
+
+    const isCollapsible = shouldCollapseAgentEvent(event);
+    const detailText = compactAgentText(getAgentEventExpandedDetail(event), isCollapsible ? 1400 : 700);
+
+    if (isCollapsible) {
+        item.classList.add('is-collapsed');
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'ai-agent-event-toggle';
+        toggle.setAttribute('aria-expanded', 'false');
+
+        const title = document.createElement('span');
+        title.className = 'ai-agent-event-title';
+        title.textContent = getAgentEventLabel(event);
+
+        const summary = document.createElement('span');
+        summary.className = 'ai-agent-event-summary';
+        summary.textContent = getAgentEventSummary(event);
+
+        const icon = document.createElement('i');
+        icon.className = 'fas fa-chevron-right ai-agent-event-caret';
+        icon.setAttribute('aria-hidden', 'true');
+
+        toggle.appendChild(title);
+        if (summary.textContent) {
+            toggle.appendChild(summary);
+        }
+        toggle.appendChild(icon);
+        item.appendChild(toggle);
+
+        if (detailText) {
+            const detail = document.createElement('div');
+            detail.className = 'ai-agent-event-detail';
+            detail.textContent = detailText;
+            item.appendChild(detail);
+        }
+
+        toggle.addEventListener('click', () => {
+            const expanded = item.classList.toggle('is-expanded');
+            item.classList.toggle('is-collapsed', !expanded);
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
+    } else {
+        const title = document.createElement('div');
+        title.className = 'ai-agent-event-title';
+        title.textContent = getAgentEventLabel(event);
+
+        item.appendChild(title);
+        if (detailText) {
+            const detail = document.createElement('div');
+            detail.className = 'ai-agent-event-detail';
+            detail.textContent = detailText;
+            item.appendChild(detail);
+        }
+    }
+    timeline.appendChild(item);
+
+    const messagesContainer = document.getElementById('aiChatMessages');
+    if (messagesContainer) {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+}
+
+function addAgentProposalControls(messageDiv, proposal) {
+    if (!messageDiv || !proposal || !proposal.htmlContent) return;
+    if (messageDiv.querySelector('.ai-agent-proposal-controls')) return;
+
+    const controls = document.createElement('div');
+    controls.className = 'ai-agent-proposal-controls';
+    controls.style.cssText = 'display:flex;gap:10px;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb;flex-wrap:wrap;';
+
+    const previewBtn = document.createElement('button');
+    previewBtn.type = 'button';
+    previewBtn.className = 'ai-preview-changes-btn';
+    previewBtn.innerHTML = '<i class="fas fa-eye"></i> 预览';
+    previewBtn.style.cssText = 'background:#007bff;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px;';
+    previewBtn.addEventListener('click', () => showHTMLPreview(proposal.htmlContent));
+
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'ai-apply-changes-btn';
+    applyBtn.innerHTML = '<i class="fas fa-check"></i> 应用';
+    applyBtn.style.cssText = 'background:#28a745;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px;';
+    applyBtn.disabled = proposal.validation && proposal.validation.valid === false;
+    if (applyBtn.disabled) {
+        applyBtn.style.background = '#6c757d';
+        applyBtn.style.cursor = 'not-allowed';
+        applyBtn.title = 'HTML 校验未通过，不能应用';
+    }
+    applyBtn.addEventListener('click', async () => {
+        applyBtn.disabled = true;
+        applyBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 应用中...';
+        try {
+            await applyAgentProposal(proposal);
+            applyBtn.innerHTML = '<i class="fas fa-check-circle"></i> 已应用';
+            applyBtn.style.background = '#6c757d';
+            discardBtn.disabled = true;
+            discardBtn.style.cursor = 'not-allowed';
+        } catch (error) {
+            applyBtn.disabled = false;
+            applyBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 重试应用';
+            showNotification(`Agent 应用失败：${error.message || error}`, 'error');
+        }
+    });
+
+    const discardBtn = document.createElement('button');
+    discardBtn.type = 'button';
+    discardBtn.className = 'ai-preview-changes-btn';
+    discardBtn.innerHTML = '<i class="fas fa-times"></i> 放弃';
+    discardBtn.style.cssText = 'background:#6c757d;color:white;border:none;padding:8px 14px;border-radius:4px;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;gap:6px;';
+    discardBtn.addEventListener('click', () => {
+        controls.remove();
+        showNotification('已放弃 Agent 草稿', 'info');
+    });
+
+    controls.appendChild(previewBtn);
+    controls.appendChild(applyBtn);
+    controls.appendChild(discardBtn);
+
+    const regenerateBtn = messageDiv.querySelector('.ai-answer-regenerate-btn');
+    messageDiv.insertBefore(controls, regenerateBtn || null);
+}
+
+async function handleAgentStreamingResponse(response, waitingDiv) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let aiMessageDiv = null;
+    let streamingMessageId = null;
+    let finalSummary = '';
+
+    const ensureMessage = () => {
+        if (aiMessageDiv) {
+            return aiMessageDiv;
+        }
+        removeWaitingAnimation();
+        streamingMessageId = 'ai-agent-message-' + Date.now();
+        aiMessageDiv = addAIMessage('Agent 正在编辑当前幻灯片', 'assistant', streamingMessageId);
+        aiMessageDiv.dataset.complete = 'false';
+        return aiMessageDiv;
+    };
+
+    const processLine = (line) => {
+        if (!line.trim().startsWith('data: ')) return;
+        const dataStr = line.slice(6).trim();
+        if (!dataStr) return;
+
+        let event;
+        try {
+            event = JSON.parse(dataStr);
+        } catch (error) {
+            return;
+        }
+        if (!event || event.type === '_agent_done') return;
+
+        const messageDiv = ensureMessage();
+        addAgentTimelineEvent(messageDiv, event);
+
+        if ((event.type === 'draft_ready' || event.type === 'final') && event.proposal) {
+            finalSummary = event.proposal.summary || 'Agent 已生成可预览的编辑草稿';
+            setAIAssistantMessageText(messageDiv, finalSummary);
+            addAgentProposalControls(messageDiv, event.proposal);
+        } else if (event.type === 'error') {
+            finalSummary = `抱歉，Agent 编辑失败：${event.error || event.message || '未知错误'}`;
+            setAIAssistantMessageText(messageDiv, finalSummary);
+        }
+    };
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                processLine(line);
+            }
+        }
+
+        if (buffer.trim()) {
+            processLine(buffer);
+        }
+
+        if (!aiMessageDiv) {
+            removeWaitingAnimation();
+            finalSummary = 'Agent 没有返回可显示的结果';
+            aiMessageDiv = addAIMessage(finalSummary, 'assistant');
+        }
+    } catch (error) {
+        removeWaitingAnimation();
+        finalSummary = '抱歉，处理 Agent 流式响应时出现错误。';
+        if (aiMessageDiv) {
+            setAIAssistantMessageText(aiMessageDiv, finalSummary);
+        } else {
+            aiMessageDiv = addAIMessage(finalSummary, 'assistant');
+        }
+    } finally {
+        if (aiMessageDiv) {
+            aiMessageDiv.dataset.complete = 'true';
+            if (streamingMessageId && finalSummary) {
+                updateAIChatHistoryMessage(streamingMessageId, finalSummary);
+            }
+            refreshAIAssistantMessageLayout(aiMessageDiv);
+        }
+    }
+}
+
+async function collectAgentProposalFromStream(response, onEvent = null) {
+    if (!response || !response.body || typeof response.body.getReader !== 'function') {
+        throw new Error('Agent未返回可读取的流式响应');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let proposal = null;
+
+    const processLine = (line) => {
+        if (!line.trim().startsWith('data: ')) return;
+        const dataStr = line.slice(6).trim();
+        if (!dataStr) return;
+
+        const event = JSON.parse(dataStr);
+        if (!event || event.type === '_agent_done') return;
+
+        if (onEvent) onEvent(event);
+        if (event.type === 'error') {
+            throw new Error(event.error || event.message || 'Agent编辑失败');
+        }
+        if ((event.type === 'draft_ready' || event.type === 'final') && event.proposal && !proposal) {
+            proposal = event.proposal;
+        }
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            processLine(line);
+        }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+        processLine(buffer);
+    }
+
+    if (!proposal) {
+        throw new Error('Agent未返回可应用的编辑草稿');
+    }
+    return proposal;
+}
+
 // options:
 // - messageOverride: string (optional)
 // - appendUserMessage: boolean (default true)
@@ -637,7 +1043,9 @@ async function sendAIMessage(options = {}) {
         const referencedImages = getAllUploadedImages();
 
         const context = {
+            projectId: window.landpptEditorConfig.projectId,
             slideIndex: currentSlideIndex + 1,
+            mode: 'slide',
             slideTitle: currentSlide.title,
             slideContent: currentSlide.html_content,
             userRequest: message,
@@ -656,7 +1064,7 @@ async function sendAIMessage(options = {}) {
 
 
         // 发送流式AI编辑请求
-        const response = await fetch('/api/ai/slide-edit/stream', {
+        const response = await fetch('/api/ai/slide-edit-agent/stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -669,7 +1077,7 @@ async function sendAIMessage(options = {}) {
         }
 
         // 处理流式响应
-        await handleStreamingResponse(response, waitingDiv);
+        await handleAgentStreamingResponse(response, waitingDiv);
 
     } catch (error) {
         removeWaitingAnimation();

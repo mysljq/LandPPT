@@ -34,6 +34,21 @@ def test_main_router_registers_extracted_route_modules():
     assert "router.include_router(template_router)" in routes_text
 
 
+def test_slide_edit_agent_routes_are_registered():
+    routes_text = _read("src/landppt/web/routes.py")
+    agent_text = _read("src/landppt/web/route_modules/slide_edit_agent_routes.py")
+
+    assert "from .route_modules.slide_edit_agent_routes import router as slide_edit_agent_router" in routes_text
+    assert "router.include_router(slide_edit_agent_router)" in routes_text
+
+    for marker in [
+        '@router.post("/api/ai/slide-edit-agent/stream")',
+        '@router.post("/api/ai/slide-edit-agent/apply")',
+        '@router.post("/api/ai/slide-edit-agent/cancel")',
+    ]:
+        assert marker in agent_text
+
+
 def test_legacy_route_handlers_were_removed_from_main_router_file():
     routes_text = _read("src/landppt/web/routes.py")
 
@@ -441,6 +456,15 @@ def test_editor_page_modules_own_their_responsibilities():
     ]:
         assert marker not in tools_text
         assert marker in narration_text
+
+
+def test_editor_export_polling_accepts_queued_task_responses():
+    share_text = _read("src/landppt/web/static/js/pages/project/slides_editor/projectEditorShareExport.js")
+    template_text = _read("src/landppt/web/templates/pages/project/project_slides_editor.html")
+
+    assert "data.status === 'queued'" in share_text
+    assert share_text.count("data.status === 'queued'") >= 3
+    assert "projectEditorShareExport.js?v=20260707-queued-export-v1" in template_text
 
 
 def test_enhanced_ppt_service_delegates_file_outline_workflow_to_extracted_service():

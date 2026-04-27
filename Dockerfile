@@ -69,13 +69,16 @@ RUN mkdir -p /opt/playwright-browsers && \
 # Production stage
 FROM python:3.11-slim-bookworm AS production
 
+ARG LANDPPT_UID=10001
+ARG LANDPPT_GID=10001
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/src:/opt/venv/lib/python3.11/site-packages \
     PATH=/opt/venv/bin:$PATH \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
-    HOME=/root \
+    HOME=/home/landppt \
     VIRTUAL_ENV=/opt/venv \
     WORKERS=4 \
     RELOAD=false
@@ -137,9 +140,14 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache
 
-# Create non-root user (for compatibility, but run as root)
-RUN groupadd -r landppt && \
-    useradd -r -g landppt -m -d /home/landppt landppt
+# Create a stable non-root runtime identity.
+RUN groupadd --gid "${LANDPPT_GID}" landppt && \
+    useradd --uid "${LANDPPT_UID}" \
+            --gid landppt \
+            --create-home \
+            --home-dir /home/landppt \
+            --shell /usr/sbin/nologin \
+            landppt
 
 # Copy Python packages from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -161,17 +169,22 @@ WORKDIR /app
 COPY run.py ./
 COPY src/ ./src/
 COPY template_examples/ ./template_examples/
-COPY docker-healthcheck.sh docker-entrypoint.sh /usr/local/bin/
+COPY docker-healthcheck.sh docker-entrypoint.sh docker-permissions-init.sh /usr/local/bin/
 COPY .env.example ./.env
 
 # Create directories and set permissions in one layer
-RUN sed -i 's/\r$//' /usr/local/bin/docker-healthcheck.sh /usr/local/bin/docker-entrypoint.sh && \
-    chmod +x /usr/local/bin/docker-healthcheck.sh /usr/local/bin/docker-entrypoint.sh && \
+RUN sed -i 's/\r$//' /usr/local/bin/docker-healthcheck.sh /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-permissions-init.sh && \
+    chmod +x /usr/local/bin/docker-healthcheck.sh \
+             /usr/local/bin/docker-entrypoint.sh \
+             /usr/local/bin/docker-permissions-init.sh && \
     mkdir -p temp/ai_responses_cache temp/style_genes_cache temp/summeryanyfile_cache temp/templates_cache \
              research_reports lib/Linux lib/MacOS lib/Windows uploads data && \
     chown -R landppt:landppt /app /home/landppt && \
     chmod -R 755 /app /home/landppt && \
-    chmod 666 /app/.env
+    chmod 640 /app/.env
+
+# Run the entrypoint, health check, web process, worker, and CLI as non-root.
+USER landppt
 
 # Expose port
 EXPOSE 8000

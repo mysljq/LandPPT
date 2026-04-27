@@ -97,8 +97,6 @@ class AIService:
                 "temperature": request.temperature or ai_config.temperature,
                 "top_p": request.top_p or ai_config.top_p,
             }
-            if request.max_tokens is not None:
-                request_kwargs["max_output_tokens"] = request.max_tokens
             response = await self.ai_provider.chat_completion(**request_kwargs)
 
             return response.content
@@ -122,8 +120,6 @@ class AIService:
                 "temperature": request.temperature or ai_config.temperature,
                 "top_p": request.top_p or ai_config.top_p,
             }
-            if request.max_tokens is not None:
-                request_kwargs["max_output_tokens"] = request.max_tokens
             response = await self.ai_provider.text_completion(**request_kwargs)
 
             return response.content
@@ -157,8 +153,6 @@ class AIService:
                 "temperature": request.temperature or ai_config.temperature,
                 "top_p": request.top_p or ai_config.top_p,
             }
-            if request.max_tokens is not None:
-                request_kwargs["max_output_tokens"] = request.max_tokens
             response = await self.ai_provider.chat_completion(**request_kwargs)
 
             return response.content
@@ -182,8 +176,6 @@ class AIService:
                 "temperature": request.temperature or ai_config.temperature,
                 "top_p": request.top_p or ai_config.top_p,
             }
-            if request.max_tokens is not None:
-                request_kwargs["max_output_tokens"] = request.max_tokens
             response = await self.ai_provider.text_completion(**request_kwargs)
 
             return response.content

@@ -175,17 +175,7 @@ class DatabaseProjectManager:
             # 准备幻灯片数据
             slides_records = []
             for i, slide_data in enumerate(slides_data):
-                slide_record = {
-                    "project_id": project_id,
-                    "slide_index": i,
-                    "slide_id": slide_data.get("slide_id", f"slide_{i}"),
-                    "title": slide_data.get("title", f"Slide {i+1}"),
-                    "content_type": slide_data.get("content_type", "content"),
-                    "html_content": slide_data.get("html_content", ""),
-                    "slide_metadata": slide_data.get("metadata", {}),
-                    "is_user_edited": slide_data.get("is_user_edited", False)
-                }
-                slides_records.append(slide_record)
+                slides_records.append(db_service._slide_record_from_payload(project_id, i, slide_data))
 
             # 使用批量upsert
             success = await db_service.slide_repo.batch_upsert_slides(project_id, slides_records)
@@ -288,6 +278,35 @@ class DatabaseProjectManager:
                     "metadata": slide.slide_metadata
                 })
             return results
+        finally:
+            await db_service.session.close()
+
+    async def apply_slide_structure_operation(
+        self,
+        project_id: str,
+        operation: Dict[str, Any],
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Apply a slide insert/delete/move operation to persisted slide order."""
+        db_service = await self._get_db_service()
+        try:
+            return await db_service.apply_slide_structure_operation(
+                project_id,
+                operation,
+                user_id=user_id,
+            )
+        finally:
+            await db_service.session.close()
+
+    async def duplicate_project(
+        self,
+        project_id: str,
+        user_id: Optional[int] = None,
+    ) -> Optional[PPTProject]:
+        """Duplicate a project for the current user."""
+        db_service = await self._get_db_service()
+        try:
+            return await db_service.duplicate_project(project_id, user_id=user_id)
         finally:
             await db_service.session.close()
 

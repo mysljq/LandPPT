@@ -8,6 +8,7 @@ OpenAI TTS can be added later behind the same interface.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -18,7 +19,7 @@ import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from ..core.config import app_config
 from .subtitle_service import build_slide_cues_snapped
@@ -28,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VOICE_ZH = "zh-CN-XiaoxiaoNeural"
 DEFAULT_VOICE_EN = "en-US-JennyNeural"
+DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
+DEFAULT_MIMO_TTS_MODEL = "mimo-v2.5-tts-voicedesign"
+DEFAULT_MIMO_TTS_CLONE_MODEL = "mimo-v2.5-tts-voiceclone"
+DEFAULT_MIMO_TTS_VOICE_PROMPT = "年轻、放松、语速偏快，像 Tom 猫那种俏皮又有点夸张的卡通感；说话轻快自然、有活力，吐字清楚，不要正式播音腔。"
+DEFAULT_CUSTOM_TTS_API_URL = "http://localhost:9880/"
+DEFAULT_CUSTOM_TTS_API_SPEAKER = "TOM女"
+DEFAULT_CUSTOM_TTS_API_SPEED = "1"
+DEFAULT_CUSTOM_TTS_API_NOVASR = "1"
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,30 @@ def sha256_for_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _audio_mime_type_from_path(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    return {
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".flac": "audio/flac",
+        ".m4a": "audio/mp4",
+        ".ogg": "audio/ogg",
+    }.get(ext, "audio/mpeg")
+
+
+def _audio_extension_from_content_type(content_type: str) -> str:
+    value = (content_type or "").split(";", 1)[0].strip().lower()
+    if value in {"audio/wav", "audio/wave", "audio/x-wav"}:
+        return ".wav"
+    if value in {"audio/mpeg", "audio/mp3"}:
+        return ".mp3"
+    if value == "audio/ogg":
+        return ".ogg"
+    if value == "audio/flac":
+        return ".flac"
+    return ".wav"
 
 
 async def _run_subprocess(args: List[str]) -> Tuple[int, str, str]:
@@ -367,6 +400,62 @@ class NarrationService:
         except Exception:
             return None
 
+    async def _get_mimo_tts_settings_from_config(self) -> Dict[str, Any]:
+        if self.user_id is None:
+            return {}
+        try:
+            from .db_config_service import get_db_config_service
+
+            config_service = get_db_config_service()
+            api_key = await config_service.get_config_value("mimo_api_key", user_id=self.user_id)
+            base_url = await config_service.get_config_value("mimo_base_url", user_id=self.user_id)
+            model = await config_service.get_config_value("mimo_tts_model", user_id=self.user_id)
+            clone_model = await config_service.get_config_value("mimo_tts_clone_model", user_id=self.user_id)
+            voice_prompt = await config_service.get_config_value("mimo_tts_voice_prompt", user_id=self.user_id)
+
+            out: Dict[str, Any] = {}
+            api_key_s = (str(api_key) if api_key is not None else "").strip()
+            base_url_s = (str(base_url) if base_url is not None else "").strip()
+            model_s = (str(model) if model is not None else "").strip()
+            clone_model_s = (str(clone_model) if clone_model is not None else "").strip()
+            voice_prompt_s = (str(voice_prompt) if voice_prompt is not None else "").strip()
+            if api_key_s:
+                out["api_key"] = api_key_s
+            if base_url_s:
+                out["base_url"] = base_url_s
+            if model_s:
+                out["model"] = model_s
+            if clone_model_s:
+                out["clone_model"] = clone_model_s
+            if voice_prompt_s:
+                out["voice_prompt"] = voice_prompt_s
+            return out
+        except Exception:
+            return {}
+
+    async def _get_custom_tts_api_settings_from_config(self) -> Dict[str, Any]:
+        if self.user_id is None:
+            return {}
+        try:
+            from .db_config_service import get_db_config_service
+
+            config_service = get_db_config_service()
+            keys = [
+                "custom_tts_api_url",
+                "custom_tts_api_speaker",
+                "custom_tts_api_speed",
+                "custom_tts_api_novasr",
+            ]
+            out: Dict[str, Any] = {}
+            for key in keys:
+                value = await config_service.get_config_value(key, user_id=self.user_id)
+                value_s = (str(value) if value is not None else "").strip()
+                if value_s:
+                    out[key.removeprefix("custom_tts_api_")] = value_s
+            return out
+        except Exception:
+            return {}
+
     async def _get_comfyui_tts_settings_from_config(self) -> Dict[str, Any]:
         """
         Read ComfyUI TTS settings from per-user DB config (generation_params).
@@ -587,11 +676,13 @@ class NarrationService:
         rate: str = "+0%",
         reference_audio_path: Optional[str] = None,
         reference_text: str = "",
+        voice_prompt: str = "",
         force_regenerate: bool = False,
         uploads_dir: str = "uploads",
+        progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
     ) -> List[NarrationAudioResult]:
         provider = (provider or "auto").strip().lower()
-        if provider not in {"auto", "edge_tts", "comfyuiapi"}:
+        if provider not in {"auto", "edge_tts", "comfyuiapi", "xiaomimimo", "custom_tts_api"}:
             raise RuntimeError(f"Unsupported TTS provider: {provider}")
 
         language = (language or "zh").strip().lower() or "zh"
@@ -657,6 +748,7 @@ class NarrationService:
                 rate=rate,
                 force_regenerate=force_regenerate,
                 uploads_dir=uploads_dir,
+                progress_callback=progress_callback,
             )
             by_index = {r.slide_index: r for r in outputs}
             for r in generated:
@@ -674,6 +766,31 @@ class NarrationService:
                 reference_text=reference_text,
                 force_regenerate=force_regenerate,
                 uploads_dir=uploads_dir,
+            )
+
+        if provider == "xiaomimimo":
+            return await self._generate_project_slide_audios_xiaomimimo(
+                project_id=project_id,
+                slide_indices=slide_indices,
+                language=language,
+                voice=voice,
+                rate=rate,
+                reference_audio_path=reference_audio_path,
+                voice_prompt=voice_prompt,
+                force_regenerate=force_regenerate,
+                uploads_dir=uploads_dir,
+            )
+
+        if provider == "custom_tts_api":
+            return await self._generate_project_slide_audios_custom_tts_api(
+                project_id=project_id,
+                slide_indices=slide_indices,
+                language=language,
+                voice=voice,
+                rate=rate,
+                force_regenerate=force_regenerate,
+                uploads_dir=uploads_dir,
+                progress_callback=progress_callback,
             )
 
         # edge_tts provider
@@ -721,7 +838,6 @@ class NarrationService:
             for script in scripts:
                 if wanted is not None and script.slide_index not in wanted:
                     continue
-
                 text = (script.script_content or "").strip()
                 if not text:
                     continue
@@ -886,6 +1002,450 @@ class NarrationService:
                         cached=False,
                     )
                 )
+
+            return outputs
+        finally:
+            audio_repo.close()
+
+    async def _generate_project_slide_audios_custom_tts_api(
+        self,
+        *,
+        project_id: str,
+        slide_indices: Optional[List[int]],
+        language: str,
+        voice: Optional[str],
+        rate: str,
+        force_regenerate: bool,
+        uploads_dir: str,
+        progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
+    ) -> List[NarrationAudioResult]:
+        provider = "custom_tts_api"
+        cfg = await self._get_custom_tts_api_settings_from_config()
+        api_url = (cfg.get("url") or getattr(app_config, "custom_tts_api_url", None) or DEFAULT_CUSTOM_TTS_API_URL)
+        api_url = (str(api_url) if api_url is not None else "").strip() or DEFAULT_CUSTOM_TTS_API_URL
+        speaker = (str(voice) if voice is not None else "").strip() or (cfg.get("speaker") or getattr(app_config, "custom_tts_api_speaker", None) or DEFAULT_CUSTOM_TTS_API_SPEAKER)
+        speaker = (str(speaker) if speaker is not None else "").strip() or DEFAULT_CUSTOM_TTS_API_SPEAKER
+        speed = (cfg.get("speed") or getattr(app_config, "custom_tts_api_speed", None) or DEFAULT_CUSTOM_TTS_API_SPEED)
+        speed = (str(speed) if speed is not None else "").strip() or DEFAULT_CUSTOM_TTS_API_SPEED
+        novasr = (cfg.get("novasr") or getattr(app_config, "custom_tts_api_novasr", None) or DEFAULT_CUSTOM_TTS_API_NOVASR)
+        novasr = (str(novasr) if novasr is not None else "").strip() or DEFAULT_CUSTOM_TTS_API_NOVASR
+        voice_id = speaker
+        rate = (rate or "+0%").strip()
+
+        logger.info(
+            "Narration TTS settings: provider=%s project_id=%s language=%s speaker=%s speed=%s user_id=%s",
+            provider,
+            project_id,
+            language,
+            speaker,
+            speed,
+            self.user_id,
+        )
+
+        from .narration_audio_repository import NarrationAudioRepository
+
+        audio_repo = NarrationAudioRepository()
+        try:
+            scripts = await self._ensure_speech_scripts(
+                project_id=project_id,
+                language=language,
+                slide_indices=slide_indices,
+            )
+            if not scripts:
+                raise RuntimeError(
+                    f"No speech scripts found for language='{language}' and auto-generation produced none."
+                )
+
+            wanted = set(slide_indices) if slide_indices else None
+            outputs: List[NarrationAudioResult] = []
+            base_dir = os.path.join(uploads_dir, "narration", project_id, language)
+            _ensure_dir(base_dir)
+
+            import aiohttp
+
+            work_scripts = [script for script in scripts if wanted is None or script.slide_index in wanted]
+            total_count = len(work_scripts)
+            done_count = 0
+
+            async def mark_done() -> None:
+                nonlocal done_count
+                done_count += 1
+                if progress_callback is not None:
+                    await progress_callback(done_count, total_count)
+
+            timeout = aiohttp.ClientTimeout(total=600)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for script in work_scripts:
+                    text = (script.script_content or "").strip()
+                    if not text:
+                        await mark_done()
+                        continue
+
+                    cache_text = f"url={api_url};speaker={speaker};speed={speed};novasr={novasr}|{text}"
+                    content_hash = _hash_for_tts(
+                        provider=provider,
+                        language=language,
+                        voice=voice_id,
+                        rate=rate,
+                        text=cache_text,
+                    )
+                    cached_row = await audio_repo.get_cached_audio(
+                        project_id=project_id,
+                        slide_index=script.slide_index,
+                        language=language,
+                        provider=provider,
+                        voice=voice_id,
+                        rate=rate,
+                        content_hash=content_hash,
+                    )
+                    if (
+                        not force_regenerate
+                        and cached_row
+                        and cached_row.file_path
+                        and os.path.exists(cached_row.file_path)
+                        and os.path.getsize(cached_row.file_path) > 0
+                    ):
+                        outputs.append(
+                            NarrationAudioResult(
+                                slide_index=script.slide_index,
+                                language=language,
+                                voice=voice_id,
+                                rate=rate,
+                                audio_path=cached_row.file_path,
+                                duration_ms=cached_row.duration_ms,
+                                cached=True,
+                            )
+                        )
+                        await mark_done()
+                        continue
+
+                    params = {
+                        "text": text,
+                        "speaker": speaker,
+                        "speed": speed,
+                        "novasr": novasr,
+                    }
+                    async with session.get(api_url, params=params) as resp:
+                        audio_bytes = await resp.read()
+                        if resp.status >= 400:
+                            raw_text = audio_bytes.decode("utf-8", errors="ignore")
+                            raise RuntimeError(f"custom_tts_api failed: HTTP {resp.status} {raw_text[:500]}")
+                        if not audio_bytes:
+                            raise RuntimeError("custom_tts_api returned empty audio bytes")
+                        ext = _audio_extension_from_content_type(resp.headers.get("Content-Type", ""))
+
+                    filename = f"slide_{script.slide_index}_{content_hash[:12]}{ext}"
+                    out_path = os.path.join(base_dir, filename)
+                    audio_format = ext.lstrip(".") or "wav"
+
+                    if not force_regenerate and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                        duration_ms = await ffprobe_duration_ms(out_path)
+                        outputs.append(
+                            NarrationAudioResult(
+                                slide_index=script.slide_index,
+                                language=language,
+                                voice=voice_id,
+                                rate=rate,
+                                audio_path=out_path,
+                                duration_ms=duration_ms,
+                                cached=True,
+                            )
+                        )
+                        await mark_done()
+                        continue
+
+                    tmp_dir = tempfile.mkdtemp(prefix="landppt_tts_", dir=base_dir)
+                    try:
+                        tmp_path = os.path.join(tmp_dir, filename)
+                        with open(tmp_path, "wb") as f:
+                            f.write(audio_bytes)
+                        os.replace(tmp_path, out_path)
+                    finally:
+                        try:
+                            shutil.rmtree(tmp_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                    duration_ms = await ffprobe_duration_ms(out_path)
+                    cues_json = None
+                    try:
+                        if duration_ms is not None:
+                            cues_json = await build_cues_json_for_audio(
+                                text=text, audio_path=out_path, duration_ms=int(duration_ms)
+                            )
+                    except Exception:
+                        cues_json = None
+
+                    await audio_repo.upsert_audio(
+                        project_id=project_id,
+                        slide_index=script.slide_index,
+                        language=language,
+                        provider=provider,
+                        voice=voice_id,
+                        rate=rate,
+                        audio_format=audio_format,
+                        content_hash=content_hash,
+                        file_path=out_path,
+                        duration_ms=duration_ms,
+                        cues_json=cues_json,
+                    )
+                    outputs.append(
+                        NarrationAudioResult(
+                            slide_index=script.slide_index,
+                            language=language,
+                            voice=voice_id,
+                            rate=rate,
+                            audio_path=out_path,
+                            duration_ms=duration_ms,
+                            cached=False,
+                        )
+                    )
+                    await mark_done()
+
+            return outputs
+        finally:
+            audio_repo.close()
+
+    async def _generate_project_slide_audios_xiaomimimo(
+        self,
+        *,
+        project_id: str,
+        slide_indices: Optional[List[int]],
+        language: str,
+        voice: Optional[str],
+        rate: str,
+        reference_audio_path: Optional[str],
+        voice_prompt: str,
+        force_regenerate: bool,
+        uploads_dir: str,
+    ) -> List[NarrationAudioResult]:
+        provider = "xiaomimimo"
+        cfg = await self._get_mimo_tts_settings_from_config()
+        api_key = (cfg.get("api_key") or getattr(app_config, "mimo_api_key", None) or os.environ.get("MIMO_API_KEY") or "").strip()
+        if not api_key:
+            raise RuntimeError("xiaomimimo provider requires MIMO_API_KEY or mimo_api_key config")
+
+        base_url = (cfg.get("base_url") or getattr(app_config, "mimo_base_url", None) or DEFAULT_MIMO_BASE_URL)
+        base_url = (str(base_url) if base_url is not None else "").strip().rstrip("/") or DEFAULT_MIMO_BASE_URL
+        design_model = (cfg.get("model") or getattr(app_config, "mimo_tts_model", None) or DEFAULT_MIMO_TTS_MODEL)
+        design_model = (str(design_model) if design_model is not None else "").strip() or DEFAULT_MIMO_TTS_MODEL
+        clone_model = (cfg.get("clone_model") or getattr(app_config, "mimo_tts_clone_model", None) or DEFAULT_MIMO_TTS_CLONE_MODEL)
+        clone_model = (str(clone_model) if clone_model is not None else "").strip() or DEFAULT_MIMO_TTS_CLONE_MODEL
+        ref_path = (reference_audio_path or "").strip()
+        clone_enabled = bool(ref_path)
+        if clone_enabled and not os.path.exists(ref_path):
+            raise RuntimeError(f"reference_audio_path not found: {ref_path}")
+        model = clone_model if clone_enabled else design_model
+        ref_hash = sha256_for_file(ref_path) if clone_enabled else ""
+        ref_mime = _audio_mime_type_from_path(ref_path) if clone_enabled else ""
+        ref_voice_data_uri = ""
+        if clone_enabled:
+            with open(ref_path, "rb") as ref_file:
+                ref_voice_data_uri = f"data:{ref_mime};base64,{base64.b64encode(ref_file.read()).decode('utf-8')}"
+        effective_voice_prompt = (voice_prompt or "").strip() or (cfg.get("voice_prompt") or "").strip() or DEFAULT_MIMO_TTS_VOICE_PROMPT
+        voice_id = (str(voice) if voice is not None else "").strip() or (f"{model}:{ref_hash[:12]}" if clone_enabled else model)
+        rate = (rate or "+0%").strip()
+
+        logger.info(
+            "Narration TTS settings: provider=%s project_id=%s language=%s voice=%s rate=%s model=%s mode=%s user_id=%s",
+            provider,
+            project_id,
+            language,
+            voice_id,
+            rate,
+            model,
+            "voiceclone" if clone_enabled else "voicedesign",
+            self.user_id,
+        )
+
+        from .narration_audio_repository import NarrationAudioRepository
+
+        audio_repo = NarrationAudioRepository()
+        try:
+            scripts = await self._ensure_speech_scripts(
+                project_id=project_id,
+                language=language,
+                slide_indices=slide_indices,
+            )
+            if not scripts:
+                raise RuntimeError(
+                    f"No speech scripts found for language='{language}' and auto-generation produced none."
+                )
+
+            wanted = set(slide_indices) if slide_indices else None
+            outputs: List[NarrationAudioResult] = []
+            base_dir = os.path.join(uploads_dir, "narration", project_id, language)
+            _ensure_dir(base_dir)
+
+            import aiohttp
+
+            timeout = aiohttp.ClientTimeout(total=600)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for script in scripts:
+                    if wanted is not None and script.slide_index not in wanted:
+                        continue
+
+                    text = (script.script_content or "").strip()
+                    if not text:
+                        continue
+
+                    if clone_enabled:
+                        cache_text = f"model={model};ref={ref_hash}|{text}"
+                    else:
+                        cache_text = f"model={model};voice_prompt={effective_voice_prompt}|{text}"
+                    content_hash = _hash_for_tts(
+                        provider=provider,
+                        language=language,
+                        voice=voice_id,
+                        rate=rate,
+                        text=cache_text,
+                    )
+                    filename = f"slide_{script.slide_index}_{content_hash[:12]}.wav"
+                    out_path = os.path.join(base_dir, filename)
+
+                    cached_row = await audio_repo.get_cached_audio(
+                        project_id=project_id,
+                        slide_index=script.slide_index,
+                        language=language,
+                        provider=provider,
+                        voice=voice_id,
+                        rate=rate,
+                        content_hash=content_hash,
+                    )
+                    if (
+                        not force_regenerate
+                        and cached_row
+                        and cached_row.file_path
+                        and os.path.exists(cached_row.file_path)
+                        and os.path.getsize(cached_row.file_path) > 0
+                    ):
+                        outputs.append(
+                            NarrationAudioResult(
+                                slide_index=script.slide_index,
+                                language=language,
+                                voice=voice_id,
+                                rate=rate,
+                                audio_path=cached_row.file_path,
+                                duration_ms=cached_row.duration_ms,
+                                cached=True,
+                            )
+                        )
+                        continue
+
+                    if not force_regenerate and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                        duration_ms = await ffprobe_duration_ms(out_path)
+                        cues_json = None
+                        try:
+                            if duration_ms is not None:
+                                cues_json = await build_cues_json_for_audio(
+                                    text=text, audio_path=out_path, duration_ms=int(duration_ms)
+                                )
+                        except Exception:
+                            cues_json = None
+                        await audio_repo.upsert_audio(
+                            project_id=project_id,
+                            slide_index=script.slide_index,
+                            language=language,
+                            provider=provider,
+                            voice=voice_id,
+                            rate=rate,
+                            audio_format="wav",
+                            content_hash=content_hash,
+                            file_path=out_path,
+                            duration_ms=duration_ms,
+                            cues_json=cues_json,
+                        )
+                        outputs.append(
+                            NarrationAudioResult(
+                                slide_index=script.slide_index,
+                                language=language,
+                                voice=voice_id,
+                                rate=rate,
+                                audio_path=out_path,
+                                duration_ms=duration_ms,
+                                cached=True,
+                            )
+                        )
+                        continue
+
+                    url = f"{base_url}/chat/completions"
+                    payload = {
+                        "model": model,
+                        "messages": [
+                            {"role": "user", "content": "" if clone_enabled else effective_voice_prompt},
+                            {"role": "assistant", "content": text},
+                        ],
+                        "audio": {"format": "wav", **({"voice": ref_voice_data_uri} if clone_enabled else {})},
+                    }
+                    headers = {"api-key": api_key, "Content-Type": "application/json"}
+
+                    tmp_dir = tempfile.mkdtemp(prefix="landppt_tts_", dir=base_dir)
+                    try:
+                        tmp_path = os.path.join(tmp_dir, filename)
+                        async with session.post(url, json=payload, headers=headers) as resp:
+                            raw_text = await resp.text()
+                            if resp.status >= 400:
+                                raise RuntimeError(f"xiaomimimo TTS failed: HTTP {resp.status} {raw_text[:500]}")
+                            try:
+                                data = json.loads(raw_text)
+                            except Exception as exc:
+                                raise RuntimeError("xiaomimimo TTS returned invalid JSON") from exc
+
+                        audio_data = None
+                        try:
+                            audio_data = data["choices"][0]["message"]["audio"]["data"]
+                        except Exception:
+                            audio_data = None
+                        if not audio_data:
+                            raise RuntimeError("xiaomimimo TTS returned empty audio data")
+
+                        audio_bytes = base64.b64decode(str(audio_data))
+                        if not audio_bytes:
+                            raise RuntimeError("xiaomimimo TTS returned empty audio bytes")
+                        with open(tmp_path, "wb") as f:
+                            f.write(audio_bytes)
+                        os.replace(tmp_path, out_path)
+                    finally:
+                        try:
+                            shutil.rmtree(tmp_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                    duration_ms = await ffprobe_duration_ms(out_path)
+                    cues_json = None
+                    try:
+                        if duration_ms is not None:
+                            cues_json = await build_cues_json_for_audio(
+                                text=text, audio_path=out_path, duration_ms=int(duration_ms)
+                            )
+                    except Exception:
+                        cues_json = None
+
+                    await audio_repo.upsert_audio(
+                        project_id=project_id,
+                        slide_index=script.slide_index,
+                        language=language,
+                        provider=provider,
+                        voice=voice_id,
+                        rate=rate,
+                        audio_format="wav",
+                        content_hash=content_hash,
+                        file_path=out_path,
+                        duration_ms=duration_ms,
+                        cues_json=cues_json,
+                    )
+
+                    outputs.append(
+                        NarrationAudioResult(
+                            slide_index=script.slide_index,
+                            language=language,
+                            voice=voice_id,
+                            rate=rate,
+                            audio_path=out_path,
+                            duration_ms=duration_ms,
+                            cached=False,
+                        )
+                    )
 
             return outputs
         finally:

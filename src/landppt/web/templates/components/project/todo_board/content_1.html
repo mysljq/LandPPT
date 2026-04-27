@@ -167,17 +167,27 @@
             </div>
         </div>
 
-        <!-- 章节过渡页 -->
-        <div class="req-checkbox-card req-field">
-            <label class="req-checkbox-label">
-                <input type="checkbox" id="include_transition_pages" name="include_transition_pages" value="true">
-                <span>
-                    <span class="req-checkbox-title">增加章节过渡页</span>
-                    <small class="req-checkbox-desc">
-                        开启后，大纲会在主要章节之间插入过渡页面，用于章节分隔和演示节奏控制
-                    </small>
-                </span>
-            </label>
+        <!-- 附加选项：过渡页 / 页码 -->
+        <div class="req-field">
+            <label class="req-label">附加选项<span class="req-label-desc">细节增强</span></label>
+            <div class="req-switch-row">
+                <label class="req-switch" title="开启后，大纲会在主要章节之间插入过渡页面，用于章节分隔和演示节奏控制">
+                    <input type="checkbox" id="include_transition_pages" name="include_transition_pages" value="true">
+                    <span class="req-switch-track"><span class="req-switch-thumb"></span></span>
+                    <span class="req-switch-text">
+                        <span class="req-switch-title">章节过渡页</span>
+                        <span class="req-switch-hint">章节分隔与节奏控制</span>
+                    </span>
+                </label>
+                <label class="req-switch" title="默认开启；取消勾选后，生成提示词将不再要求 Footer 或页码设计">
+                    <input type="checkbox" id="include_page_numbers" name="include_page_numbers" value="true" checked>
+                    <span class="req-switch-track"><span class="req-switch-thumb"></span></span>
+                    <span class="req-switch-text">
+                        <span class="req-switch-title">页码 / Footer</span>
+                        <span class="req-switch-hint">底部页码与版权区</span>
+                    </span>
+                </label>
+            </div>
         </div>
 
         <div class="req-divider"></div>

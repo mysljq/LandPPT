@@ -16,23 +16,10 @@
                 // 创建模态框遮罩
                 const modal = document.createElement('div');
                 modal.className = 'ai-optimize-modal';
-                modal.style.cssText = `
-                    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                    background: rgba(255, 255, 255, 0.98);
-                    z-index: 10002; display: flex; align-items: center; justify-content: center;
-                    padding: 20px; animation: fadeIn 0.3s ease;
-                `;
 
                 // 创建弹窗内容
                 const content = document.createElement('div');
-                content.style.cssText = `
-                    background: var(--surface);
-                    border-radius: 20px; padding: 0; max-width: 600px; width: 100%;
-                    border: 1px solid var(--glass-border);
-                    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
-                    animation: slideIn 0.3s ease; max-height: 90vh; overflow: hidden;
-                    display: flex; flex-direction: column;
-                `;
+                content.className = 'ai-optimize-modal__card';
 
                 // 建议示例
                 const suggestions = config.suggestions || [
@@ -44,203 +31,6 @@
                 ];
 
                 content.innerHTML = `
-                    <style>
-                        @keyframes fadeIn {
-                            from { opacity: 0; }
-                            to { opacity: 1; }
-                        }
-                        @keyframes slideIn {
-                            from { transform: translateY(-50px); opacity: 0; }
-                            to { transform: translateY(0); opacity: 1; }
-                        }
-                        .ai-optimize-modal__header {
-                            background: var(--surface-contrast);
-                            color: var(--surface);
-                            padding: 24px 32px;
-                        }
-                        .ai-optimize-modal__header-content {
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            gap: 16px;
-                        }
-                        .ai-optimize-modal__title {
-                            margin: 0 0 6px 0;
-                            font-size: 1.3rem;
-                            font-weight: 700;
-                            letter-spacing: -0.01em;
-                            display: flex;
-                            align-items: center;
-                            gap: 12px;
-                        }
-                        .ai-optimize-modal__subtitle {
-                            margin: 0;
-                            font-size: 0.95rem;
-                            color: rgba(255, 255, 255, 0.72);
-                        }
-                        .ai-optimize-modal__close {
-                            border: none;
-                            background: var(--surface);
-                            color: var(--surface-contrast);
-                            width: 36px;
-                            height: 36px;
-                            border-radius: 50%;
-                            font-size: 1.2rem;
-                            cursor: pointer;
-                            transition: background 0.2s ease, transform 0.2s ease;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                        }
-                        .ai-optimize-modal__close:hover {
-                            background: var(--surface-subtle);
-                            transform: scale(1.05);
-                        }
-                        .ai-optimize-modal__body {
-                            padding: 30px 32px;
-                            flex: 1;
-                            overflow-y: auto;
-                            background: var(--surface);
-                            display: flex;
-                            flex-direction: column;
-                            gap: 20px;
-                        }
-                        .ai-optimize-modal__body .current-info {
-                            background: var(--surface-subtle);
-                            border-left: 3px solid var(--surface-contrast);
-                            padding: 16px 18px;
-                            border-radius: 12px;
-                            color: var(--text-secondary);
-                            font-size: 0.95rem;
-                            line-height: 1.7;
-                        }
-                        .ai-optimize-modal__body .current-info strong {
-                            color: var(--surface-contrast);
-                            font-weight: 600;
-                            display: inline-flex;
-                            align-items: center;
-                            gap: 8px;
-                        }
-                        .input-group {
-                            display: flex;
-                            flex-direction: column;
-                            gap: 10px;
-                        }
-                        .input-label {
-                            display: block;
-                            color: var(--text-primary);
-                            font-weight: 600;
-                            font-size: 0.95rem;
-                            letter-spacing: 0.01em;
-                        }
-                        .input-textarea {
-                            width: 100%;
-                            min-height: 120px;
-                            padding: 16px 18px;
-                            border: 1px solid var(--glass-border);
-                            border-radius: 12px;
-                            font-size: 0.95rem;
-                            resize: vertical;
-                            font-family: inherit;
-                            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-                            color: var(--text-primary);
-                            background: var(--surface);
-                        }
-                        .input-textarea::placeholder {
-                            color: var(--text-muted);
-                            opacity: 0.9;
-                        }
-                        .input-textarea:focus {
-                            outline: none;
-                            border-color: var(--surface-contrast);
-                            box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.08);
-                        }
-                        .suggestions {
-                            display: flex;
-                            flex-direction: column;
-                            gap: 12px;
-                        }
-                        .suggestion-label {
-                            display: block;
-                            color: var(--text-secondary);
-                            font-size: 0.85rem;
-                            font-weight: 500;
-                            letter-spacing: 0.02em;
-                        }
-                        .suggestion-list {
-                            display: flex;
-                            flex-wrap: wrap;
-                            gap: 8px;
-                        }
-                        .suggestion-tag {
-                            display: inline-flex;
-                            align-items: center;
-                            justify-content: center;
-                            padding: 6px 14px;
-                            background: var(--surface-subtle);
-                            border: 1px solid var(--glass-border);
-                            border-radius: 999px;
-                            font-size: 0.8rem;
-                            color: var(--text-primary);
-                            cursor: pointer;
-                            transition: all 0.2s ease;
-                        }
-                        .suggestion-tag:hover {
-                            transform: translateY(-2px);
-                            background: var(--surface-contrast);
-                            border-color: var(--surface-contrast);
-                            color: var(--surface);
-                            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
-                        }
-                        .ai-optimize-modal__footer {
-                            padding: 20px 32px;
-                            background: var(--surface);
-                            border-top: 1px solid var(--glass-border);
-                            display: flex;
-                            align-items: center;
-                            justify-content: space-between;
-                            gap: 16px;
-                        }
-                        .footer-hint {
-                            color: var(--text-secondary);
-                            font-size: 0.85rem;
-                            display: inline-flex;
-                            align-items: center;
-                            gap: 8px;
-                        }
-                        .footer-actions {
-                            display: flex;
-                            gap: 12px;
-                        }
-                        .footer-actions .btn {
-                            min-width: 110px;
-                            justify-content: center;
-                        }
-                        .modal-cancel {
-                            background: var(--surface-subtle);
-                            border-color: var(--border-color);
-                            color: var(--text-primary);
-                        }
-                        .modal-cancel:hover {
-                            background: var(--surface);
-                        }
-                        @media (max-width: 520px) {
-                            .ai-optimize-modal__header,
-                            .ai-optimize-modal__body,
-                            .ai-optimize-modal__footer {
-                                padding-left: 20px;
-                                padding-right: 20px;
-                            }
-                            .footer-actions {
-                                width: 100%;
-                                flex-direction: column;
-                            }
-                            .footer-actions .btn {
-                                width: 100%;
-                            }
-                        }
-                    </style>
-
                     <div class="ai-optimize-modal__header">
                         <div class="ai-optimize-modal__header-content">
                             <div>
@@ -290,11 +80,11 @@
                             <i class="fas fa-robot"></i> AI将根据您的需求智能优化内容
                         </div>
                         <div class="footer-actions">
-                            <button type="button" class="btn btn-sm modal-cancel" onclick="this.closest('.ai-optimize-modal').remove()">
-                                取消
+                            <button type="button" class="outline-modal-btn" onclick="this.closest('.ai-optimize-modal').remove()">
+                                <i class="fas fa-times"></i><span>取消</span>
                             </button>
-                            <button type="button" id="confirmOptimizeBtn" class="btn btn-sm btn-primary">
-                                开始优化
+                            <button type="button" id="confirmOptimizeBtn" class="outline-modal-btn outline-modal-btn--solid">
+                                <i class="fas fa-magic"></i><span>开始优化</span>
                             </button>
                         </div>
                     </div>
@@ -323,25 +113,14 @@
                     const input = document.getElementById('aiOptimizeInput');
                     const value = input?.value.trim();
                     if (!value) {
-                        // 输入框抖动动画
-                        input.style.animation = 'shake 0.5s';
-                        setTimeout(() => { input.style.animation = ''; }, 500);
+                        // 输入框抖动动画（通过 class 触发，动画定义在 quickEdit.css）
+                        input.classList.add('shake');
+                        setTimeout(() => { input.classList.remove('shake'); }, 500);
                         return;
                     }
                     modal.remove();
                     resolve(value);
                 };
-
-                // 添加shake动画
-                const style = document.createElement('style');
-                style.textContent = `
-                    @keyframes shake {
-                        0%, 100% { transform: translateX(0); }
-                        25% { transform: translateX(-10px); }
-                        75% { transform: translateX(10px); }
-                    }
-                `;
-                document.head.appendChild(style);
             });
         }
 

@@ -416,6 +416,159 @@ function showHTMLPreview(htmlContent) {
 }
 
 // 应用AI更改
+function syncAppliedSlideHtml(slideIndex, htmlContent, slideData = {}) {
+    if (!Number.isInteger(slideIndex) || slideIndex < 0 || slideIndex >= slidesData.length) {
+        throw new Error(`无效的幻灯片索引: ${slideIndex}`);
+    }
+
+    slidesData[slideIndex] = {
+        ...slidesData[slideIndex],
+        ...(slideData || {}),
+        html_content: htmlContent,
+        is_user_edited: true
+    };
+
+    if (typeof setInitialSlideState === 'function') {
+        setInitialSlideState(slideIndex, htmlContent);
+    }
+
+    const slideFrame = document.getElementById('slideFrame');
+    if (slideFrame && slideIndex === currentSlideIndex) {
+        setSafeIframeContent(slideFrame, htmlContent);
+        setTimeout(() => {
+            if (typeof forceReinitializeIframeJS === 'function') {
+                forceReinitializeIframeJS(slideFrame);
+            }
+        }, 300);
+    }
+
+    const thumbnailIframe = document.querySelectorAll('.slide-thumbnail .slide-preview iframe')[slideIndex];
+    if (thumbnailIframe) {
+        setSafeIframeContent(thumbnailIframe, htmlContent);
+    }
+
+    const codeEditor = document.getElementById('codeEditor');
+    if (codeEditor && slideIndex === currentSlideIndex) {
+        if (codeMirrorEditor && isCodeMirrorInitialized) {
+            codeMirrorEditor.setValue(htmlContent);
+        } else {
+            codeEditor.value = htmlContent;
+        }
+    }
+}
+
+function syncQuickElementAgentResult(slideIndex, htmlContent, elementId, elementPath = null) {
+    const slideFrame = document.getElementById('slideFrame');
+    const canSelectElement = slideFrame && slideIndex === currentSlideIndex && elementId;
+    const isCurrentIframeContent = canSelectElement
+        && typeof prepareHtmlForPreview === 'function'
+        && slideFrame.getAttribute('data-current-content') === prepareHtmlForPreview(htmlContent);
+    const shouldWaitForIframeLoad = canSelectElement && !isCurrentIframeContent;
+    let selectedElement = null;
+    let iframeLoadHandler = null;
+
+    const selectAppliedElement = () => {
+        const iframeDoc = slideFrame && (slideFrame.contentDocument || slideFrame.contentWindow?.document);
+        if (!iframeDoc || !elementId) return null;
+
+        let selected = iframeDoc.querySelector(`[data-quick-ai-id="${elementId}"]`);
+        if (!selected && elementPath && typeof findQuickAiElementByDomPath === 'function') {
+            selected = findQuickAiElementByDomPath(iframeDoc, elementPath);
+            if (selected) {
+                selected.setAttribute('data-quick-ai-id', elementId);
+            }
+        }
+
+        if (selected && typeof selectQuickEditElement === 'function') {
+            selectQuickEditElement(selected, { allowWhileAiSending: true });
+        }
+        return selected;
+    };
+
+    const runSelection = () => {
+        selectedElement = selectAppliedElement();
+        if (selectedElement && iframeLoadHandler) {
+            slideFrame.removeEventListener('load', iframeLoadHandler);
+            iframeLoadHandler = null;
+        }
+        return selectedElement;
+    };
+
+    if (shouldWaitForIframeLoad) {
+        iframeLoadHandler = () => {
+            iframeLoadHandler = null;
+            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(runSelection);
+            } else {
+                setTimeout(runSelection, 0);
+            }
+        };
+        slideFrame.addEventListener('load', iframeLoadHandler, { once: true });
+    }
+
+    syncAppliedSlideHtml(slideIndex, htmlContent, slidesData[slideIndex] || {});
+
+    if (!canSelectElement) return null;
+
+    const retrySelection = () => {
+        if (!selectedElement) {
+            runSelection();
+        }
+    };
+    if (isCurrentIframeContent) {
+        retrySelection();
+    } else {
+        setTimeout(retrySelection, 800);
+        setTimeout(() => {
+            retrySelection();
+            if (iframeLoadHandler) {
+                slideFrame.removeEventListener('load', iframeLoadHandler);
+                iframeLoadHandler = null;
+            }
+        }, 1500);
+    }
+    return selectedElement;
+}
+
+async function applyAgentProposal(proposal) {
+    if (!proposal || !proposal.htmlContent) {
+        throw new Error('Agent 未返回可应用的方案');
+    }
+
+    const slideIndexOneBased = parseInt(
+        proposal.slideIndex || (proposal.changedSlideIndices && proposal.changedSlideIndices[0]) || (currentSlideIndex + 1),
+        10
+    );
+    const slideIndexZeroBased = slideIndexOneBased - 1;
+
+    const response = await fetch('/api/ai/slide-edit-agent/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            proposalId: proposal.proposalId,
+            projectId: window.landpptEditorConfig.projectId,
+            slideIndex: slideIndexOneBased,
+            expectedBaseHash: proposal.baseHash,
+            htmlContent: proposal.htmlContent,
+            slideData: proposal.slideData || {}
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.success) {
+        const detail = data.detail || data.error || `HTTP ${response.status}`;
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+
+    syncAppliedSlideHtml(
+        slideIndexZeroBased,
+        data.htmlContent || proposal.htmlContent,
+        data.slideData || proposal.slideData || {}
+    );
+    showNotification(`Agent 更改已应用并保存：第${slideIndexOneBased}页`, 'success');
+    return data;
+}
+
 async function applyAIChanges(newHtmlContent) {
     try {
         // 防御：若slides_data存在缺页导致错位，先按page_number/大纲归一化，避免错页写入
@@ -436,39 +589,8 @@ async function applyAIChanges(newHtmlContent) {
             throw new Error(`无效的幻灯片索引: ${targetSlideIndex}，总页数: ${slidesData.length}`);
         }
 
-        // 更新当前幻灯片数据
-        slidesData[targetSlideIndex].html_content = newHtmlContent;
-        if (typeof setInitialSlideState === 'function') {
-            setInitialSlideState(targetSlideIndex, newHtmlContent);
-        }
-
-        // 标记当前幻灯片为用户编辑状态
-        slidesData[targetSlideIndex].is_user_edited = true;
-
-        // 更新预览
-        const slideFrame = document.getElementById('slideFrame');
-        if (slideFrame) {
-            setSafeIframeContent(slideFrame, newHtmlContent);
-            setTimeout(() => {
-                forceReinitializeIframeJS(slideFrame);
-            }, 300);
-        }
-
-        // 更新缩略图
-        const thumbnailIframe = document.querySelectorAll('.slide-thumbnail .slide-preview iframe')[targetSlideIndex];
-        if (thumbnailIframe) {
-            setSafeIframeContent(thumbnailIframe, newHtmlContent);
-        }
-
-        // 更新代码编辑器
-        const codeEditor = document.getElementById('codeEditor');
-        if (codeEditor) {
-            if (codeMirrorEditor && isCodeMirrorInitialized) {
-                codeMirrorEditor.setValue(newHtmlContent);
-            } else {
-                codeEditor.value = newHtmlContent;
-            }
-        }
+        // 同步本地预览、缩略图和代码编辑器
+        syncAppliedSlideHtml(targetSlideIndex, newHtmlContent);
 
         // 保存到服务器 - 使用单个幻灯片保存API，确保使用正确的索引
         const saveSuccess = await saveSingleSlideToServer(targetSlideIndex, newHtmlContent);

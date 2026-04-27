@@ -78,6 +78,27 @@ def test_init_default_admin_bootstraps_when_explicitly_configured(monkeypatch):
         db.close()
 
 
+def test_init_default_admin_uses_default_local_credentials(monkeypatch):
+    from landppt.auth.auth_service import init_default_admin
+    from landppt.core.config import app_config
+    from landppt.database.models import User
+
+    db = _create_db()
+    try:
+        monkeypatch.setattr(app_config, "bootstrap_admin_enabled", True)
+        monkeypatch.setattr(app_config, "bootstrap_admin_username", "admin")
+        monkeypatch.setattr(app_config, "bootstrap_admin_password", "admin123")
+
+        init_default_admin(db)
+
+        created = db.query(User).one()
+        assert created.username == "admin"
+        assert created.is_admin is True
+        assert created.check_password("admin123") is True
+    finally:
+        db.close()
+
+
 def test_init_default_admin_skips_when_users_exist(monkeypatch):
     from landppt.auth.auth_service import init_default_admin
     from landppt.core.config import app_config
@@ -96,3 +117,26 @@ def test_init_default_admin_skips_when_users_exist(monkeypatch):
         assert [user.username for user in users] == ["existing"]
     finally:
         db.close()
+
+
+def test_init_db_can_skip_admin_bootstrap(monkeypatch):
+    import asyncio
+    import importlib
+    import sys
+
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    sys.modules.pop("landppt.database.database", None)
+    database_module = importlib.import_module("landppt.database.database")
+
+    calls = []
+
+    def fake_session_local():
+        calls.append("session_created")
+        raise AssertionError("SessionLocal should not be called when bootstrap_admin=False")
+
+    monkeypatch.setattr(database_module, "SessionLocal", fake_session_local)
+
+    asyncio.run(database_module.init_db(bootstrap_admin=False))
+    asyncio.run(database_module.close_db())
+
+    assert calls == []

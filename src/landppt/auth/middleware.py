@@ -66,6 +66,7 @@ class AuthMiddleware:
         self.public_paths = {
             "/",
             "/health",
+            "/metrics",
             "/auth/login",
             "/auth/logout",
             "/auth/github/login",

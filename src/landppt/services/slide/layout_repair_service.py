@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import logging
 import os
 import tempfile
@@ -9,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Dict
 from ...ai import AIMessage, MessageRole, get_ai_provider
 from ...ai.base import ImageContent, TextContent
 from ...core.config import ai_config
+from ..prompt_asset_service import upload_image_bytes_for_prompt
+from ..prompts.prompt_utils import strip_page_number_footer_guidance
 from ..pyppeteer_pdf_converter import get_pdf_converter
 
 
@@ -286,7 +287,17 @@ class LayoutRepairService:
                             exc_info=True
                         )
 
-                    screenshot_b64 = base64.b64encode(screenshot_path.read_bytes()).decode("utf-8")
+                    screenshot_url = await upload_image_bytes_for_prompt(
+                        screenshot_path.read_bytes(),
+                        "image/png",
+                        user_id=self.user_id,
+                    )
+                    if not screenshot_url:
+                        logger.warning(
+                            "Auto layout repair skipped: screenshot hosting failed for slide %s",
+                            page_number,
+                        )
+                        return html_content
 
                 inspection_prompt = self._build_layout_inspection_prompt(slide_data, page_number, total_pages)
 
@@ -299,7 +310,7 @@ class LayoutRepairService:
                         role=MessageRole.USER,
                         content=[
                             TextContent(text=inspection_prompt),
-                            ImageContent(image_url={"url": f"data:image/png;base64,{screenshot_b64}"})
+                            ImageContent(image_url={"url": screenshot_url})
                         ]
                     )
                 ]
@@ -349,7 +360,14 @@ class LayoutRepairService:
                     )
                     return html_content
 
-                repair_prompt = self._build_layout_repair_prompt(html_content, inspection_report)
+                repair_prompt = self._build_layout_repair_prompt(
+                    html_content,
+                    inspection_report,
+                    include_page_numbers=not (
+                        isinstance(slide_data, dict)
+                        and slide_data.get("_include_page_numbers") is False
+                    ),
+                )
                 repair_response = None
                 for attempt in range(3):
                     try:
@@ -412,7 +430,7 @@ class LayoutRepairService:
             bullet_points = slide_data.get("bullet_points") or slide_data.get("content_points") or []
             bullet_text = "\n".join(f"- {point}" for point in bullet_points)
 
-            return (
+            prompt = (
                 f"幻灯片编号：第{page_number}页\n"
                 f"标题：{title}\n"
                 f"正文摘要：{body}\n"
@@ -431,10 +449,18 @@ class LayoutRepairService:
                 "- recommendations: 对应的修复建议(页码仅在越界、贴边、换行、漂移或安全区被侵占时，允许建议调整其定位、安全边距、最大宽度以及与正文的关系；当现有布局不适配内容量时，应明确指出更适合的紧凑布局方向)\n"
                 "- severity: high/medium/low\n"
             )
+            if isinstance(slide_data, dict) and slide_data.get("_include_page_numbers") is False:
+                return strip_page_number_footer_guidance(prompt)
+            return prompt
 
-    def _build_layout_repair_prompt(self, original_html: str, inspection_report: str) -> str:
+    def _build_layout_repair_prompt(
+        self,
+        original_html: str,
+        inspection_report: str,
+        include_page_numbers: bool = True,
+    ) -> str:
             """Prompt LLM to repair HTML based on inspection findings."""
-            return (
+            prompt = (
                 "你是资深前端工程师，请严格按照视觉检测报告中的每条建议对下方幻灯片 HTML 进行修改，"
                 "确保 1280x720 画布内无遮挡、错位或溢出，并保持主题配色与结构一致。\n\n"
                 "【视觉检测报告】\n"
@@ -456,3 +482,6 @@ class LayoutRepairService:
                 "- 处理溢出时遵循统一顺序：先减装饰层和特效，再收紧 gap/padding/空白，再压缩辅助信息与媒体占比，再减少分栏数、卡片数或切换到更紧凑的空间组织方式，最后才小幅缩字。\n"
                 "- 如果当前空间组织方式与内容量明显不匹配，允许切换为更紧凑的同风格结构；不要为了保住原布局而让内容被裁切。\n"
             )
+            if not include_page_numbers:
+                return strip_page_number_footer_guidance(prompt)
+            return prompt

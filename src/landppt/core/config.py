@@ -18,7 +18,9 @@ env_paths = [
 for env_path in env_paths:
     try:
         if os.path.exists(env_path):
-            load_dotenv(env_path, override=True)
+            # Do not let image-baked .env defaults override orchestrator-provided
+            # environment variables in Docker/Kubernetes deployments.
+            load_dotenv(env_path, override=False)
             break
     except (PermissionError, FileNotFoundError):
         continue
@@ -556,9 +558,9 @@ class AppConfig(BaseSettings):
     secret_key: str = Field(default="your-secret-key-here", env="SECRET_KEY")
     access_token_expire_minutes: int = Field(default=20160, env="ACCESS_TOKEN_EXPIRE_MINUTES")  # 2 weeks
     enable_api_docs: bool = Field(default=True, env="LANDPPT_ENABLE_API_DOCS")
-    bootstrap_admin_enabled: bool = Field(default=False, env="LANDPPT_BOOTSTRAP_ADMIN_ENABLED")
-    bootstrap_admin_username: Optional[str] = Field(default=None, env="LANDPPT_BOOTSTRAP_ADMIN_USERNAME")
-    bootstrap_admin_password: Optional[str] = Field(default=None, env="LANDPPT_BOOTSTRAP_ADMIN_PASSWORD")
+    bootstrap_admin_enabled: bool = Field(default=True, env="LANDPPT_BOOTSTRAP_ADMIN_ENABLED")
+    bootstrap_admin_username: Optional[str] = Field(default="admin", env="LANDPPT_BOOTSTRAP_ADMIN_USERNAME")
+    bootstrap_admin_password: Optional[str] = Field(default="admin123", env="LANDPPT_BOOTSTRAP_ADMIN_PASSWORD")
 
     # Machine-to-machine API authentication (for n8n / automation)
     # Single key mode: LANDPPT_API_KEY + LANDPPT_API_KEY_USER
@@ -571,16 +573,51 @@ class AppConfig(BaseSettings):
     # File Upload Configuration
     max_file_size: int = Field(default=10 * 1024 * 1024, env="MAX_FILE_SIZE")  # 10MB
     upload_dir: str = Field(default="uploads", env="UPLOAD_DIR")
+    expose_temp_static_files: bool = Field(default=True, env="LANDPPT_EXPOSE_TEMP_STATIC_FILES")
+
+    # Artifact storage. Use STORAGE_BACKEND=s3 with MinIO/S3-compatible settings in production.
+    storage_backend: str = Field(default="local", env="STORAGE_BACKEND")  # local, s3
+    local_storage_root: str = Field(default="data/artifacts", env="LOCAL_STORAGE_ROOT")
+    local_storage_public_base_url: Optional[str] = Field(default=None, env="LOCAL_STORAGE_PUBLIC_BASE_URL")
+    s3_endpoint_url: Optional[str] = Field(default=None, env="S3_ENDPOINT_URL")
+    s3_region: str = Field(default="us-east-1", env="S3_REGION")
+    s3_bucket: str = Field(default="landppt", env="S3_BUCKET")
+    s3_access_key_id: Optional[str] = Field(default=None, env="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: Optional[str] = Field(default=None, env="S3_SECRET_ACCESS_KEY")
+    s3_force_path_style: bool = Field(default=True, env="S3_FORCE_PATH_STYLE")
+    s3_public_base_url: Optional[str] = Field(default=None, env="S3_PUBLIC_BASE_URL")
+    s3_presigned_url_expires_seconds: int = Field(default=3600, env="S3_PRESIGNED_URL_EXPIRES_SECONDS")
 
     # ComfyUI (optional, for TTS via ComfyUI API)
     comfyui_base_url: str = Field(default="http://127.0.0.1:8188", env="COMFYUI_BASE_URL")
     comfyui_tts_workflow_path: str = Field(default="tests/Qwen3-TD-TTS.json", env="COMFYUI_TTS_WORKFLOW_PATH")
     comfyui_tts_timeout_seconds: int = Field(default=600, env="COMFYUI_TTS_TIMEOUT_SECONDS")
-    
+
+    # Xiaomi Mimo (optional, for TTS voice design and cloning)
+    mimo_api_key: Optional[str] = Field(default=None, env="MIMO_API_KEY")
+    mimo_base_url: str = Field(default="https://api.xiaomimimo.com/v1", env="MIMO_BASE_URL")
+    mimo_tts_model: str = Field(default="mimo-v2.5-tts-voicedesign", env="MIMO_TTS_MODEL")
+    mimo_tts_clone_model: str = Field(default="mimo-v2.5-tts-voiceclone", env="MIMO_TTS_CLONE_MODEL")
+    mimo_tts_voice_prompt: str = Field(
+        default="年轻、放松、语速偏快，像 Tom 猫那种俏皮又有点夸张的卡通感；说话轻快自然、有活力，吐字清楚，不要正式播音腔。",
+        env="MIMO_TTS_VOICE_PROMPT",
+    )
+
+    # Custom TTS API (GET endpoint with text/speaker/speed/novasr query params)
+    custom_tts_api_url: str = Field(default="http://localhost:9880/", env="CUSTOM_TTS_API_URL")
+    custom_tts_api_speaker: str = Field(default="TOM女", env="CUSTOM_TTS_API_SPEAKER")
+    custom_tts_api_speed: str = Field(default="1", env="CUSTOM_TTS_API_SPEED")
+    custom_tts_api_novasr: str = Field(default="1", env="CUSTOM_TTS_API_NOVASR")
+
     # Cache Configuration
     cache_ttl: int = Field(default=3600, env="CACHE_TTL")  # 1 hour
     cache_backend: str = Field(default="memory", env="CACHE_BACKEND")  # memory, valkey
     valkey_url: str = Field(default="valkey://localhost:6379", env="VALKEY_URL")
+
+    # Background task execution. Use queue mode with a separate worker process in Kubernetes.
+    task_execution_mode: str = Field(default="inline", env="TASK_EXECUTION_MODE")  # inline, queue
+    task_queue_name: str = Field(default="default", env="TASK_QUEUE_NAME")
+    task_worker_poll_timeout_seconds: int = Field(default=5, env="TASK_WORKER_POLL_TIMEOUT_SECONDS")
     
     # Credits System Configuration
     enable_credits_system: bool = Field(default=False, env="ENABLE_CREDITS_SYSTEM")
@@ -603,6 +640,7 @@ class AppConfig(BaseSettings):
     
     # User Registration Configuration
     enable_user_registration: bool = Field(default=True, env="ENABLE_USER_REGISTRATION")
+    invite_code_required_for_registration: bool = Field(default=False, env="INVITE_CODE_REQUIRED_FOR_REGISTRATION")
     verification_code_expire_minutes: int = Field(default=10, env="VERIFICATION_CODE_EXPIRE_MINUTES")
     registration_ip_rate_limit_per_hour: int = Field(default=100, env="REGISTRATION_IP_RATE_LIMIT_PER_HOUR")
 
@@ -654,6 +692,7 @@ class AppConfig(BaseSettings):
         "linuxdo_oauth_enabled",
         "smtp_use_ssl",
         "enable_user_registration",
+        "invite_code_required_for_registration",
         mode="before",
     )
     @classmethod

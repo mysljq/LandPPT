@@ -23,6 +23,7 @@ import aiohttp
 from ..services.image.image_service import get_image_service
 from ..services.image.config.image_config import get_image_config, ImageServiceConfig
 from ..services.db_config_service import get_db_config_service
+from ..services.storage import get_artifact_service
 from ..auth.middleware import get_current_user_required
 from ..auth.request_context import current_user_id, USER_SCOPE_ALL
 from ..database.models import User
@@ -33,10 +34,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _get_image_cache_artifact(image_id: str, user_id: Optional[int] = None):
+    return await get_artifact_service().get_task_artifact(
+        image_id,
+        artifact_type="image_cache",
+        user_id=user_id,
+    )
+
+
+async def _stream_artifact_response(artifact, *, attachment: bool = False):
+    disposition = "attachment" if attachment else "inline"
+    return StreamingResponse(
+        get_artifact_service().open_stream(artifact),
+        media_type=artifact.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'{disposition}; filename="{artifact.filename}"'},
+    )
+
+
+async def _read_artifact_bytes(artifact) -> bytes:
+    chunks = []
+    async for chunk in get_artifact_service().open_stream(artifact):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class ImageGenerationRequest(BaseModel):
     prompt: str
     provider: Optional[str] = None
     size: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    quality: Optional[str] = None
+    style: Optional[str] = None
+
+
+class ImageTestGenerateRequest(BaseModel):
+    provider: Optional[str] = None
+    prompt: Optional[str] = None
+    size: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
     quality: Optional[str] = None
     style: Optional[str] = None
 
@@ -46,6 +83,83 @@ class ImageSuggestionRequest(BaseModel):
     slide_content: str
     scenario: str
     topic: str
+
+
+def _parse_image_dimensions(
+    size: Optional[str],
+    width: Optional[int],
+    height: Optional[int],
+    *,
+    default_width: int = 1024,
+    default_height: int = 1024,
+) -> tuple[int, int]:
+    """Resolve image dimensions from width/height or a WIDTHxHEIGHT string."""
+    try:
+        if width and height and int(width) > 0 and int(height) > 0:
+            return int(width), int(height)
+    except (TypeError, ValueError):
+        pass
+
+    if size:
+        normalized = str(size).lower().replace("×", "x").strip()
+        try:
+            parsed_width, parsed_height = [int(part.strip()) for part in normalized.split("x", 1)]
+            if parsed_width > 0 and parsed_height > 0:
+                return parsed_width, parsed_height
+        except (TypeError, ValueError):
+            pass
+
+    return default_width, default_height
+
+
+def _parse_generation_provider(provider_name: Optional[str], *, strict: bool = False):
+    from ..services.image.models import ImageProvider
+
+    if provider_name:
+        try:
+            return ImageProvider(provider_name)
+        except ValueError:
+            if strict:
+                raise HTTPException(status_code=400, detail=f"Unsupported image generation provider: {provider_name}")
+            logger.warning("Unsupported image generation provider requested: %s", provider_name)
+    return ImageProvider.DALLE
+
+
+def _get_result_image_url(result) -> Optional[str]:
+    if not getattr(result, "image_info", None):
+        return None
+
+    from ..services.url_service import build_image_url
+
+    metadata = getattr(result.image_info, "metadata", None)
+    return build_image_url(
+        result.image_info.image_id,
+        width=getattr(metadata, "width", None),
+        height=getattr(metadata, "height", None),
+    )
+
+
+def _image_generation_response(result, provider, width: int, height: int) -> Dict[str, Any]:
+    image_info = getattr(result, "image_info", None)
+    if result.success:
+        return {
+            "success": True,
+            "image_path": _get_result_image_url(result),
+            "image_id": image_info.image_id if image_info else None,
+            "provider": provider.value if hasattr(provider, "value") else str(provider),
+            "width": width,
+            "height": height,
+            "message": result.message,
+        }
+
+    return {
+        "success": False,
+        "message": result.message,
+        "error_code": result.error_code,
+        "provider": provider.value if hasattr(provider, "value") else str(provider),
+        "width": width,
+        "height": height,
+    }
 
 
 @router.get("/api/image/status")
@@ -296,6 +410,80 @@ async def test_image_service(
         raise HTTPException(status_code=500, detail=f"Image service test failed: {str(e)}")
 
 
+@router.post("/api/image/test-generate")
+async def test_generate_image(
+    request: ImageTestGenerateRequest,
+    user: User = Depends(get_current_user_required),
+):
+    """生成一张测试图片，用于验证当前用户的图片生成配置。"""
+    try:
+        db_config_service = get_db_config_service()
+        image_settings = await db_config_service.get_config_by_category('image_service', user_id=user.id)
+
+        if not image_settings.get('enable_image_service'):
+            raise HTTPException(status_code=400, detail="图片服务未启用")
+        if not image_settings.get('enable_ai_generation'):
+            raise HTTPException(status_code=400, detail="AI图片生成未启用")
+
+        provider_name = request.provider or image_settings.get('default_ai_image_provider') or 'dalle'
+        provider = _parse_generation_provider(provider_name, strict=True)
+
+        config_manager = ImageServiceConfig()
+        await config_manager.load_config_from_db_async(user.id)
+        config = config_manager.get_config() or {}
+        provider_config = config.get(provider.value, {}) or {}
+
+        api_key = provider_config.get('api_key')
+        if api_key is not None and not str(api_key).strip():
+            raise HTTPException(status_code=400, detail=f"{provider.value} API key not configured")
+
+        default_width, default_height = _parse_image_dimensions(
+            provider_config.get('default_size'),
+            provider_config.get('default_width'),
+            provider_config.get('default_height'),
+        )
+        width, height = _parse_image_dimensions(
+            request.size,
+            request.width,
+            request.height,
+            default_width=default_width,
+            default_height=default_height,
+        )
+
+        prompt = (
+            request.prompt
+            or "A clean modern presentation test image, abstract business technology background, high quality"
+        )
+
+        from ..services.image.models import ImageGenerationRequest as ServiceImageGenerationRequest
+
+        service_request = ServiceImageGenerationRequest(
+            prompt=prompt,
+            provider=provider,
+            width=width,
+            height=height,
+            quality=request.quality or provider_config.get('default_quality') or "standard",
+            style=request.style or provider_config.get('default_style'),
+        )
+
+        image_service = get_image_service()
+        await image_service.reload_providers_for_user(user.id)
+        result = await image_service.generate_image(service_request)
+
+        response = _image_generation_response(result, provider, width, height)
+        response["prompt"] = prompt
+        if not result.success:
+            return response
+        response["message"] = result.message or "测试图片生成成功"
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Test image generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Test image generation failed: {str(e)}")
+
+
 @router.post("/api/image/cache/clear")
 async def clear_image_cache(
     user: User = Depends(get_current_user_required)
@@ -373,24 +561,10 @@ async def generate_image(
         # Ensure per-user provider keys (DB) are loaded before generating.
         await image_service.reload_providers_for_user(user.id)
 
-        # 创建图片生成请求对象
-        from ..services.image.models import ImageGenerationRequest as ServiceImageGenerationRequest, ImageProvider
+        from ..services.image.models import ImageGenerationRequest as ServiceImageGenerationRequest
 
-        # 解析尺寸
-        width, height = 1024, 1024
-        if request.size:
-            try:
-                width, height = map(int, request.size.split('x'))
-            except ValueError:
-                width, height = 1024, 1024
-
-        # 解析提供者
-        provider = ImageProvider.DALLE
-        if request.provider:
-            try:
-                provider = ImageProvider(request.provider)
-            except ValueError:
-                provider = ImageProvider.DALLE
+        width, height = _parse_image_dimensions(request.size, request.width, request.height)
+        provider = _parse_generation_provider(request.provider)
 
         service_request = ServiceImageGenerationRequest(
             prompt=request.prompt,
@@ -404,31 +578,7 @@ async def generate_image(
         # 生成图片
         result = await image_service.generate_image(service_request)
 
-        if result.success:
-            # 返回通过本地图床服务可访问的图片URL（绝对地址）
-            if result.image_info:
-                from ..services.url_service import build_image_url
-                metadata = getattr(result.image_info, "metadata", None)
-                image_url = build_image_url(
-                    result.image_info.image_id,
-                    width=getattr(metadata, "width", None),
-                    height=getattr(metadata, "height", None),
-                )
-            else:
-                image_url = None
-
-            return {
-                "success": True,
-                "image_path": image_url,
-                "image_id": result.image_info.image_id if result.image_info else None,
-                "message": result.message
-            }
-        else:
-            return {
-                "success": False,
-                "message": result.message,
-                "error_code": result.error_code
-            }
+        return _image_generation_response(result, provider, width, height)
 
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
@@ -634,6 +784,10 @@ async def view_image(
 ):
     """查看图片"""
     try:
+        artifact = await _get_image_cache_artifact(image_id)
+        if artifact:
+            return await _stream_artifact_response(artifact)
+
         image_service = get_image_service()
         image_info = await image_service.get_image(image_id)
 
@@ -674,7 +828,11 @@ async def get_image_thumbnail(
                 media_type="image/jpeg"
             )
 
-        # 如果没有缩略图，返回原图
+        # 如果没有缩略图，返回原图 artifact/S3 对象
+        artifact = await _get_image_cache_artifact(image_id)
+        if artifact:
+            return await _stream_artifact_response(artifact)
+
         image_info = await image_service.get_image(image_id)
         if image_info and image_info.local_path and Path(image_info.local_path).exists():
             return FileResponse(
@@ -700,6 +858,10 @@ async def download_image(
     try:
         image_service = get_image_service()
         image_info = await image_service.get_image(image_id)
+
+        artifact = await _get_image_cache_artifact(image_id, user_id=user.id)
+        if artifact:
+            return await _stream_artifact_response(artifact, attachment=True)
 
         if not image_info or not image_info.local_path:
             raise HTTPException(status_code=404, detail="Image not found")
@@ -803,30 +965,50 @@ async def batch_download_images(
         image_service = get_image_service()
 
         # 获取所有图片信息
-        image_infos = []
-        for image_id in request.image_ids:
-            try:
-                image_info = await image_service.get_image(image_id)
-                if image_info and image_info.local_path:
-                    image_path = Path(image_info.local_path)
-                    if image_path.exists():
-                        image_infos.append({
-                            'path': str(image_path),
-                            'filename': image_info.filename
-                        })
-            except Exception as e:
-                logger.warning(f"Failed to get image {image_id}: {e}")
-                continue
+        zip_buffer = io.BytesIO()
+        added_count = 0
+        used_names = set()
+        artifact_service = get_artifact_service()
 
-        # 在线程池中创建ZIP文件
-        zip_data = await run_blocking_io(_create_zip_sync, image_infos)
+        def safe_zip_name(name: str, fallback: str) -> str:
+            candidate = os.path.basename(name or fallback) or fallback
+            stem, ext = os.path.splitext(candidate)
+            unique = candidate
+            index = 2
+            while unique in used_names:
+                unique = f"{stem}-{index}{ext}"
+                index += 1
+            used_names.add(unique)
+            return unique
 
-        # 生成文件名
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for image_id in request.image_ids:
+                try:
+                    artifact = await artifact_service.get_task_artifact(image_id, artifact_type="image_cache", user_id=user.id)
+                    if artifact:
+                        zip_file.writestr(safe_zip_name(artifact.filename, image_id), await _read_artifact_bytes(artifact))
+                        added_count += 1
+                        continue
+
+                    image_info = await image_service.get_image(image_id)
+                    if image_info and image_info.local_path:
+                        image_path = Path(image_info.local_path)
+                        if image_path.exists():
+                            zip_file.write(str(image_path), safe_zip_name(image_info.filename, image_path.name))
+                            added_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to get image {image_id}: {e}")
+                    continue
+
+        if added_count == 0:
+            raise HTTPException(status_code=404, detail="No downloadable images found")
+
+        zip_buffer.seek(0)
         timestamp = int(time.time())
         filename = f"images_{timestamp}.zip"
 
         return StreamingResponse(
-            io.BytesIO(zip_data),
+            io.BytesIO(zip_buffer.read()),
             media_type="application/zip",
             headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
         )

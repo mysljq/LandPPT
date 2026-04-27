@@ -5,12 +5,18 @@
 
     let pendingOutlineData = null;
     const MAX_OUTLINE_RENDER_RETRIES = 5;
+    const OUTLINE_STREAM_RECOVERY_POLL_INTERVAL_MS = 10000;
+    const OUTLINE_STREAM_RECOVERY_TIMEOUT_MS = 30 * 60 * 1000;
 
     const projectMetadata = {{ (project.project_metadata if project and project.project_metadata else { }) | tojson }};
     const initialProjectOutline = {{ (project.outline if project and project.outline else none) | tojson }};
     const initialProjectSlides = {{ (project.slides_data if project and project.slides_data else []) | tojson }};
     const hasInitialSlidesHtml = {{ 'true' if project and project.slides_html else 'false' }};
     const hasConfirmedRequirements = {{ 'true' if project and project.confirmed_requirements else 'false' }};
+    {% set outline_stage = todo_board.stages | selectattr('id', 'equalto', 'outline_generation') | first %}
+    const initialOutlineStageStatus = {{ (outline_stage.status if outline_stage else '') | tojson }};
+    let outlineResumeAutoStartScheduled = false;
+    let outlineHasGeneratedInSession = false;
     const hasProjectLanguage = (
         projectMetadata &&
         typeof projectMetadata === 'object' &&
@@ -25,7 +31,6 @@
             outlineStreamPretextRendererFactoryPromise = import('/static/js/pages/project/todo_board/outlineStreamPretextRenderer.js?v=20260404-pretext')
                 .then(module => module.createOutlineStreamPretextRenderer)
                 .catch(error => {
-                    console.warn('[OUTLINE] Failed to load pretext renderer, falling back to plain text preview.', error);
                     return null;
                 });
         }
@@ -150,10 +155,6 @@
         toggleOutlineViewDuringRegeneration(false);
 
         outlineGenerationStarted = false;
-
-        if (reason) {
-            console.log('[OUTLINE] Animations stopped:', reason);
-        }
     }
 
     function toggleOutlineViewDuringRegeneration(isRegenerating) {
@@ -383,14 +384,11 @@
 
     // Initialize outline display for completed stages
     function initializeOutlineDisplay() {
-        console.log('[INIT] 初始化大纲显示');
 
         // === 新系统：检查outline-section ===
         const outlineSection = document.getElementById('outline-section');
-        console.log('[INIT] outline-section存在:', !!outlineSection);
 
         if (outlineSection && outlineSection.style.display !== 'none') {
-            console.log('[INIT] outline-section可见，检查大纲状态');
 
             // 检查outline-placeholder的状态
             const placeholderDiv = document.getElementById('outline-placeholder');
@@ -400,17 +398,10 @@
                 // 检查是否有实际的大纲内容（不是加载动画）
                 const hasContent = outlineContentDisplay.querySelector('pre');
 
-                console.log('[INIT] 状态检查:', {
-                    hasContent: !!hasContent,
-                    placeholderDisplay: placeholderDiv.style.display
-                });
 
                 if (hasContent) {
-                    console.log('[INIT] 大纲已生成完成，停止所有动画');
                     // 确保停止所有动画
                     stopOutlineGenerationAnimations('outline already exists');
-                } else {
-                    console.log('[INIT] 大纲尚未生成，保持等待状态');
                 }
             }
         }
@@ -421,7 +412,6 @@
             const statusIcon = outlineStage.querySelector('.stage-status-icon');
             const statusText = statusIcon ? statusIcon.textContent.trim() : '';
 
-            console.log('[INIT] 旧系统 - 大纲生成状态:', statusText);
 
             if (statusText === '✓') {
                 const outputDiv = document.getElementById('outline-output-outline_generation');
@@ -592,6 +582,94 @@
         }
     }
 
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function isOutlineStreamNetworkDisconnect(error) {
+        const message = String(error && error.message ? error.message : error || '').toLowerCase();
+        return (
+            error instanceof TypeError ||
+            message.includes('network error') ||
+            message.includes('failed to fetch') ||
+            message.includes('load failed') ||
+            message.includes('body stream')
+        );
+    }
+
+    function extractProjectOutline(projectPayload) {
+        const outline = projectPayload && projectPayload.outline;
+        if (outline && Array.isArray(outline.slides) && outline.slides.length > 0) {
+            return outline;
+        }
+        return null;
+    }
+
+    async function fetchPersistedProjectOutline() {
+        const response = await fetch(`/api/projects/${currentProjectId}`, {
+            cache: 'no-store',
+            credentials: 'same-origin'
+        });
+        if (!response.ok) {
+            return null;
+        }
+        const projectPayload = await response.json();
+        return extractProjectOutline(projectPayload);
+    }
+
+    async function waitForPersistedProjectOutlineAfterDisconnect({ onPoll = null } = {}) {
+        const startedAt = Date.now();
+        let attempt = 0;
+
+        while (Date.now() - startedAt < OUTLINE_STREAM_RECOVERY_TIMEOUT_MS) {
+            attempt += 1;
+            if (typeof onPoll === 'function') {
+                onPoll(attempt);
+            }
+
+            try {
+                const outline = await fetchPersistedProjectOutline();
+                if (outline) {
+                    return outline;
+                }
+            } catch (error) {
+                // Keep polling; the stream may have dropped while the background generation is still running.
+            }
+
+            await sleep(OUTLINE_STREAM_RECOVERY_POLL_INTERVAL_MS);
+        }
+
+        return null;
+    }
+
+    function applyCompletedOutlineToTodoBoard(parsedOutline, contentDiv, placeholderDiv) {
+        if (!parsedOutline || !Array.isArray(parsedOutline.slides) || parsedOutline.slides.length === 0) {
+            return false;
+        }
+
+        const formattedContent = JSON.stringify(parsedOutline, null, 2);
+        const preElement = document.createElement('pre');
+        preElement.style.cssText = 'margin: 0; font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;';
+        preElement.textContent = formattedContent;
+        contentDiv.innerHTML = '';
+        contentDiv.appendChild(preElement);
+
+        if (placeholderDiv) {
+            placeholderDiv.style.display = 'none';
+        }
+
+        renderOutlinePreview(parsedOutline);
+        renderOutlineViewNewWithData(parsedOutline);
+
+        const actionsDiv = document.getElementById('outline-actions');
+        if (actionsDiv) {
+            actionsDiv.style.display = 'block';
+        }
+
+        showStartPPTButton();
+        return true;
+    }
+
     function shouldRenderInitialOutlineSection() {
         return Boolean(
             hasConfirmedRequirements ||
@@ -607,6 +685,10 @@
         );
     }
 
+    function hasAnyOutlineSlides() {
+        return hasInitialOutlineSlides() || outlineHasGeneratedInSession;
+    }
+
     function hasInitialPPTOutput() {
         return Boolean(
             (Array.isArray(initialProjectSlides) && initialProjectSlides.length > 0) ||
@@ -615,11 +697,35 @@
     }
 
     function shouldExposePPTStartButton(pptStageStatus = null) {
-        if (!hasInitialOutlineSlides() || hasInitialPPTOutput()) {
+        if (!hasAnyOutlineSlides() || hasInitialPPTOutput()) {
             return false;
         }
 
         return !pptStageStatus || ['pending', 'failed'].includes(pptStageStatus);
+    }
+
+    function shouldResumeOutlineGenerationOnLoad() {
+        if (!hasConfirmedRequirements || hasAnyOutlineSlides() || hasInitialPPTOutput()) {
+            return false;
+        }
+
+        return ['pending', 'running', ''].includes(initialOutlineStageStatus);
+    }
+
+    function scheduleOutlineResumeAutoStart(delayMs = 500) {
+        if (outlineResumeAutoStartScheduled || outlineGenerationStarted || hasAnyOutlineSlides()) {
+            return;
+        }
+
+        outlineResumeAutoStartScheduled = true;
+        window.setTimeout(() => {
+            outlineResumeAutoStartScheduled = false;
+            if (outlineGenerationStarted || hasAnyOutlineSlides()) {
+                return;
+            }
+
+            startOutlineGenerationNew();
+        }, delayMs);
     }
 
     function hydrateOutlineSectionFromProjectState() {
@@ -694,6 +800,10 @@
                 }
 
                 const formData = new FormData(requirementsForm);
+                const includePageNumbersInput = document.getElementById('include_page_numbers');
+                if (includePageNumbersInput) {
+                    formData.set('include_page_numbers', includePageNumbersInput.checked ? 'true' : 'false');
+                }
                 if (selectedSource === 'url' && urlInput) {
                     formData.set('content_urls', urlInput.value);
                 }
@@ -763,7 +873,16 @@
     function checkAutoStartOutline() {
         // 防止重复调用
         if (outlineGenerationStarted) {
-            console.log('Outline generation already started, skipping auto-start check...');
+            return;
+        }
+
+        if (hasAnyOutlineSlides()) {
+            hydrateOutlineSectionFromProjectState();
+            return;
+        }
+
+        if (shouldResumeOutlineGenerationOnLoad()) {
+            scheduleOutlineResumeAutoStart();
             return;
         }
 
@@ -966,7 +1085,6 @@
             // 显示大纲视图的AI动画
             const outlineGeneratingDiv = document.getElementById('outline-generating-new');
             if (outlineGeneratingDiv) {
-                console.log('[SHOW_OUTLINE] 显示大纲视图加载动画');
                 outlineGeneratingDiv.style.cssText = 'position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: white; display: block !important; z-index: 9999; overflow-y: auto;';
                 setOutlineLoadingState(true);
 
@@ -979,7 +1097,6 @@
                 // 启动大纲视图动画
                 setTimeout(() => {
                     startBrainAnimation('outline-view');
-                    console.log('[SHOW_OUTLINE] 大纲视图动画已启动');
                 }, 100);
             }
 
@@ -987,7 +1104,6 @@
             startFunnelAnimation('dynamic');
         }, 100);
 
-        console.log('[SHOW_OUTLINE] outline-section已创建，动画已初始化');
     }
 
 
@@ -1126,11 +1242,9 @@
     // Moved startOutlineGenerationNew function to the global scope
 
     async function startOutlineGenerationNew(options = {}) {
-        console.log('Starting new outline generation (streaming)');
 
         // 防止重复调用
         if (outlineGenerationStarted) {
-            console.log('Outline generation already started, skipping...');
             return;
         }
 
@@ -1148,10 +1262,14 @@
         lastOutlineErrorRetryHandler = 'regenerateOutlineNew';
         const forceRegenerate = options && options.forceRegenerate === true;
 
+        if (!forceRegenerate && hasAnyOutlineSlides()) {
+            hydrateOutlineSectionFromProjectState();
+            return;
+        }
+
         // 标记为已开始
         outlineGenerationStarted = true;
 
-        console.log('[MANUAL] 准备生成动画，当前视图:', currentViewNew);
 
         if (currentViewNew === 'outline') {
             toggleOutlineViewDuringRegeneration(true);
@@ -1161,7 +1279,6 @@
         const outlineContentNewDiv = document.getElementById('outline-content-new');
         if (outlineContentNewDiv) {
             outlineContentNewDiv.innerHTML = '';
-            console.log('[MANUAL] 已清空大纲内容区域');
         }
 
         // 隐藏大纲视图的所有状态元素
@@ -1183,12 +1300,10 @@
         // 显示大纲视图中的AI动画
         const outlineGeneratingDiv = document.getElementById('outline-generating-new');
         if (outlineGeneratingDiv) {
-            console.log('[MANUAL] 显示大纲视图动画');
             outlineGeneratingDiv.style.cssText = 'position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: white; display: block !important; z-index: 9999; overflow-y: auto;';
             setOutlineLoadingState(true);
             setTimeout(() => {
                 startBrainAnimation('outline-view');
-                console.log('[MANUAL] 大纲视图AI动画已启动');
             }, 100);
         }
 
@@ -1201,7 +1316,6 @@
                 });
             }
 
-            console.log('Setting up placeholder div for outline generation');
             placeholderDiv.innerHTML = `
             ${getOutlineLoadingMarkup({
                 brainId: 'loading-brain-stream',
@@ -1213,11 +1327,9 @@
             placeholderDiv.className = 'loading-container';
             placeholderDiv.style.display = 'block';
             setOutlineLoadingState(true);
-            console.log('Placeholder div set up, starting brain animation');
 
             // 启动动画
             startBrainAnimation('stream');
-            console.log('Brain animation started');
 
         } else {
             console.error('Placeholder div not found!');
@@ -1609,9 +1721,13 @@
                             break;
                         }
                     } catch (parseError) {
-                        console.warn('[MANUAL] Failed to parse outline stream data:', parseError);
+                        // Ignore malformed partial stream chunks; the next chunk may complete the JSON.
                     }
                 }
+            }
+
+            if (!receivedDone) {
+                throw new TypeError('outline stream ended before completion');
             }
 
             const result = {
@@ -1645,9 +1761,6 @@
                     if (jsonMatch) {
                         try { parsedOutline = JSON.parse(jsonMatch[0]); } catch (e2) { /* ignore */ }
                     }
-                    if (!parsedOutline) {
-                        console.warn('[MANUAL] Outline JSON parse failed even after cleanup', e);
-                    }
                 }
             }
 
@@ -1663,8 +1776,6 @@
             if (parsedOutline && parsedOutline.slides) {
                 renderOutlinePreview(parsedOutline);
                 renderOutlineViewNewWithData(parsedOutline);
-            } else {
-                console.warn('[MANUAL] Outline content is empty or invalid, skipping preview render');
             }
 
             destroyOutlineStreamPreviewRenderers();
@@ -1681,7 +1792,29 @@
             // Show start PPT generation button
             showStartPPTButton();
         } catch (error) {
-            console.error('Error streaming outline generation:', error);
+            const isNetworkDisconnect = isOutlineStreamNetworkDisconnect(error);
+
+            if (isNetworkDisconnect) {
+                setOutlineStreamStatusPreview('recovery', '流式连接已中断，正在等待后台生成结果...');
+                const recoveredOutline = await waitForPersistedProjectOutlineAfterDisconnect({
+                    onPoll: () => {
+                        setOutlineStreamStatusPreview('recovery', '流式连接已中断，后台仍可能在生成，正在检查结果...');
+                    }
+                });
+
+                if (recoveredOutline) {
+                    stopBookAnimation('stream');
+                    stopFunnelAnimation('stream');
+                    stopOutlineGenerationAnimations('outline generation recovered after stream disconnect');
+                    applyCompletedOutlineToTodoBoard(recoveredOutline, contentDiv, placeholderDiv);
+                    outlineGenerationStarted = false;
+                    if (cursorDiv) cursorDiv.style.display = 'none';
+                    destroyOutlineStreamPreviewRenderers();
+                    return;
+                }
+            } else {
+                console.error('Error streaming outline generation:', error);
+            }
 
             // 停止加载动画
             stopFunnelAnimation('stream');
@@ -1692,7 +1825,10 @@
                 placeholderDiv.style.display = 'none';
             }
 
-            showOutlineGenerationError(error.message || '连接失败', 'regenerateOutlineNew');
+            const errorMessage = isNetworkDisconnect
+                ? '流式连接中断，暂未获取到后台生成结果，请稍后刷新页面查看或重试'
+                : (error.message || '连接失败');
+            showOutlineGenerationError(errorMessage, 'regenerateOutlineNew');
             if (cursorDiv) cursorDiv.style.display = 'none';
             destroyOutlineStreamPreviewRenderers();
         }
@@ -1715,7 +1851,6 @@
 
     // 重试文件大纲生成函数
     function retryFileOutlineGeneration() {
-        console.log('Retrying file outline generation');
 
         // 重置状态
         outlineGenerationStarted = false;
@@ -1735,12 +1870,10 @@
         // 重置placeholder div状态
         const placeholderDiv = document.getElementById('outline-placeholder');
         if (placeholderDiv) {
-            console.log('Resetting placeholder div for file retry');
             placeholderDiv.style.display = 'none';
             placeholderDiv.className = '';
             placeholderDiv.innerHTML = '';
         } else {
-            console.log('Placeholder div not found, creating new one for file retry');
             // 如果找不到，创建一个新的
             const newPlaceholderDiv = document.createElement('div');
             newPlaceholderDiv.id = 'outline-placeholder';
@@ -1760,11 +1893,9 @@
 
     // File outline generation function for file uploads (non-streaming)
     async function startFileOutlineGeneration() {
-        console.log('Starting file outline generation (non-streaming)');
 
         // 防止重复调用
         if (outlineGenerationStarted) {
-            console.log('Outline generation already started, skipping...');
             return;
         }
 
@@ -1784,7 +1915,6 @@
         // 标记为已开始
         outlineGenerationStarted = true;
 
-        console.log('[FILE] 准备生成动画，当前视图:', currentViewNew);
 
         // === 准备两个视图的动画，但保持当前视图状态不变 ===
         const outlineViewNew = document.getElementById('outline-view-new');
@@ -1792,14 +1922,8 @@
 
         // 记录并确保视图状态正确（不强制切换）
         // 两个视图是相邻的，不是叠加的，所以只能显示一个
-        console.log('[FILE] 视图状态检查:', {
-            outlineViewDisplay: outlineViewNew?.style.display,
-            jsonViewDisplay: jsonView?.style.display,
-            currentViewNew: currentViewNew
-        });
 
         // === 准备大纲视图的动画 ===
-        console.log('[FILE] 开始设置大纲视图动画');
 
         if (currentViewNew === 'outline') {
             toggleOutlineViewDuringRegeneration(true);
@@ -1809,7 +1933,6 @@
         const outlineContentNewDiv = document.getElementById('outline-content-new');
         if (outlineContentNewDiv) {
             outlineContentNewDiv.innerHTML = '';
-            console.log('[FILE] 已清空大纲内容区域');
         }
 
         // 隐藏大纲视图的所有状态元素
@@ -1831,33 +1954,17 @@
         // 显示大纲视图中的AI动画（使用强制样式）
         const outlineGeneratingDiv = document.getElementById('outline-generating-new');
         if (outlineGeneratingDiv) {
-            console.log('[FILE] 找到动画容器，准备显示');
-            console.log('[FILE] 动画容器当前状态:', {
-                display: outlineGeneratingDiv.style.display,
-                parent: outlineGeneratingDiv.parentElement?.id
-            });
 
             // 强制设置样式，确保动画可见
             outlineGeneratingDiv.style.cssText = 'position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: white; display: block !important; z-index: 9999; overflow-y: auto;';
             setOutlineLoadingState(true);
 
-            console.log('[FILE] 动画容器样式已设置:', {
-                display: outlineGeneratingDiv.style.display,
-                zIndex: outlineGeneratingDiv.style.zIndex,
-                position: outlineGeneratingDiv.style.position
-            });
 
             // 启动大纲视图的AI动画
             setTimeout(() => {
-                console.log('[FILE] 启动大纲视图AI动画');
                 startBrainAnimation('outline-view');
 
                 // 再次确认显示状态
-                console.log('[FILE] 动画启动后状态:', {
-                    display: window.getComputedStyle(outlineGeneratingDiv).display,
-                    visibility: window.getComputedStyle(outlineGeneratingDiv).visibility,
-                    zIndex: window.getComputedStyle(outlineGeneratingDiv).zIndex
-                });
             }, 100);
         } else {
             console.error('[FILE] 未找到大纲视图动画容器 outline-generating-new');
@@ -1929,7 +2036,6 @@
                     parsedOutline = JSON.parse(result.outline_content);
                     formattedContent = JSON.stringify(parsedOutline, null, 2);
                 } catch (e) {
-                    console.warn('[FILE] Outline JSON parse failed, using raw content', e);
                     formattedContent = result.outline_content;
                 }
 
@@ -1943,8 +2049,6 @@
             if (parsedOutline && parsedOutline.slides) {
                 renderOutlinePreview(parsedOutline);
                 renderOutlineViewNewWithData(parsedOutline);
-            } else {
-                console.warn('[FILE] Outline content is empty or invalid, skipping preview render');
             }
 
             showStartPPTButton();
@@ -2103,7 +2207,6 @@
 
     // 重新生成大纲函数
     async function regenerateOutlineNew() {
-        console.log('Starting outline regeneration');
 
         // 使用自定义弹窗让用户输入额外需求
         const customRequirements = await showCustomRequirementsModal();
@@ -2192,12 +2295,11 @@
         try {
             await updateStageStatusSilent('outline_generation', 'running', 0);
         } catch (error) {
-            console.warn('Failed to update stage status:', error);
+            // Best-effort status update; regeneration can continue without it.
         }
 
         // 调用专门的重新生成大纲接口，带上自定义需求
         try {
-            console.log('Calling regenerate outline API with custom requirements:', customRequirements);
             const response = await fetch(`/projects/${currentProjectId}/regenerate-outline`, {
                 method: 'POST',
                 headers: {
@@ -2255,7 +2357,6 @@
             // 停止大纲视图的AI动画并隐藏
             const outlineGeneratingDiv = document.getElementById('outline-generating-new');
             if (outlineGeneratingDiv) {
-                console.log('[SUCCESS] 停止大纲视图动画');
                 stopBrainAnimation('outline-view');
                 // 使用cssText强制覆盖之前的!important样式
                 outlineGeneratingDiv.style.cssText = 'display: none !important;';
@@ -2274,7 +2375,6 @@
                     parsedOutline = JSON.parse(result.outline_content);
                     preElement.textContent = JSON.stringify(parsedOutline, null, 2);
                 } catch (parseError) {
-                    console.warn('[REGENERATE] Outline JSON parse failed, using raw content', parseError);
                     preElement.textContent = result.outline_content;
                 }
 
@@ -2311,7 +2411,6 @@
             // 停止大纲视图的AI动画并隐藏
             const outlineGeneratingDiv = document.getElementById('outline-generating-new');
             if (outlineGeneratingDiv) {
-                console.log('[SUCCESS] 停止大纲视图动画');
                 stopBrainAnimation('outline-view');
                 // 使用cssText强制覆盖之前的!important样式
                 outlineGeneratingDiv.style.cssText = 'display: none !important;';
@@ -2352,7 +2451,7 @@
                 const parsed = JSON.parse(jsonContent);
                 jsonContent = JSON.stringify(parsed, null, 2);
             } catch (e) {
-                console.warn('Content is not valid JSON, using as-is:', e);
+                // Keep the raw content when it is not valid JSON.
             }
 
             editor.value = jsonContent;
@@ -2566,14 +2665,12 @@
 
     // 重试流式大纲生成函数
     function retryStreamingOutlineGeneration() {
-        console.log('Retrying streaming outline generation');
 
         // 重置状态
         const stageId = 'outline_generation';
         const contentDiv = document.getElementById(`outline-content-${stageId}`);
         if (contentDiv) {
             contentDiv.innerHTML = '';
-            console.log('Cleared streaming outline content for retry');
         } else {
             console.error('Streaming outline content div not found!');
         }
@@ -2584,7 +2681,6 @@
 
     // Start outline generation with streaming
     async function startOutlineGeneration() {
-        console.log('Starting outline generation with streaming');
 
         const stageId = 'outline_generation';
         const outputDiv = document.getElementById(`outline-output-${stageId}`);
@@ -2677,9 +2773,7 @@
                                     contentDiv.innerHTML = '';
                                     contentDiv.appendChild(preElement);
 
-                                    console.log('Successfully formatted JSON outline with', parsed.slides ? parsed.slides.length : 0, 'slides');
                                 } catch (e) {
-                                    console.warn('Failed to parse JSON content for formatting:', e);
                                     // 保持原始内容，但仍然用pre包装
                                     const preElement = document.createElement('pre');
                                     preElement.style.cssText = 'margin: 0; font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;';
@@ -2736,13 +2830,11 @@
 
     // Start execution for a complete stage
     async function startStageExecution(stageId) {
-        console.log(`Starting stage execution for: ${stageId}`);
 
         // Special handling for outline generation
         if (stageId === 'outline_generation') {
             // 检查是否已经开始了新的大纲生成
             if (outlineGenerationStarted) {
-                console.log('Outline generation already started via new method, skipping stage execution...');
                 return;
             }
             return startOutlineGeneration();
@@ -2762,7 +2854,6 @@
         // Check if stage is already running or completed
         const stageStatusIcon = taskItem.querySelector('.stage-status-icon');
         if (stageStatusIcon && (stageStatusIcon.textContent === '✓' || stageStatusIcon.innerHTML.includes('spin'))) {
-            console.log(`Stage ${stageId} is already running or completed`);
             return;
         }
 
@@ -2787,7 +2878,6 @@
             const existingEditorBtn = document.getElementById(`editor-btn-${stageId}`);
             if (existingEditorBtn) {
                 existingEditorBtn.style.display = 'inline-block';
-                console.log('Editor button shown for PPT creation stage');
             } else {
                 // Create new editor button if not exists
                 const editorBtn = document.createElement('button');
@@ -2801,7 +2891,6 @@
                     streamBtn.parentNode.insertBefore(editorBtn, streamBtn.nextSibling);
                 }
 
-                console.log('Editor button created for PPT creation stage');
             }
         }
 
@@ -2862,9 +2951,7 @@
                                         outputContent.innerHTML = '';
                                         outputContent.appendChild(preElement);
 
-                                        console.log('Successfully formatted JSON outline with', parsed.slides ? parsed.slides.length : 0, 'slides');
                                     } catch (e) {
-                                        console.warn('Failed to parse JSON content for formatting:', e);
                                         // 保持原始内容，但仍然用pre包装
                                         const preElement = document.createElement('pre');
                                         preElement.style.cssText = 'margin: 0; font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;';
@@ -2879,7 +2966,6 @@
                                     const existingEditorBtn = taskItem.querySelector('.editor-btn');
                                     if (existingEditorBtn) {
                                         existingEditorBtn.innerHTML = '<i class="fas fa-edit"></i> 查看PPT';
-                                        console.log('Updated editor button text to "查看PPT"');
                                     }
                                 }
 
@@ -2921,7 +3007,6 @@
 
     // Continue from a specific stage - reset all subsequent stages and start from the selected stage
     async function continueFromStage(stageId) {
-        console.log(`Continue from stage: ${stageId}`);
 
         // Show confirmation dialog
         const confirmMessage = `确定要从"${getStageDisplayName(stageId)}"步骤重新开始吗？\n\n这将重置该步骤及之后的所有步骤，并重新执行工作流程。`;
@@ -3018,7 +3103,6 @@
             });
 
             if (!response.ok) {
-                console.warn('Failed to update stage status silently');
             }
         } catch (error) {
             console.error('Error updating stage silently:', error);
@@ -3075,7 +3159,6 @@
                                 const outlineStage = document.querySelector('[data-stage-id="outline_generation"]');
                                 const outlineStatus = outlineStage?.querySelector('.stage-status-icon')?.textContent;
                                 if (outlineStatus === '⏳') {
-                                    console.log('Requirements just completed, starting outline generation');
                                     setTimeout(() => {
                                         startStageExecution('outline_generation');
                                     }, 2000); // Wait 2 seconds for UI to update
@@ -3131,9 +3214,7 @@
 
     // Open editor function
     function openEditor() {
-        console.log(`Opening editor for project: ${currentProjectId}`);
         const editorUrl = `/projects/${currentProjectId}/edit`;
-        console.log(`Editor URL: ${editorUrl}`);
         window.open(editorUrl, '_blank');
     }
 
@@ -3154,10 +3235,14 @@
         const requirementsCompleted = requirementsStage?.querySelector('.stage-status-icon')?.textContent === '✓';
         const outlineStatus = outlineStage?.querySelector('.stage-status-icon')?.textContent;
 
+        if (hasAnyOutlineSlides()) {
+            hydrateOutlineSectionFromProjectState();
+            return;
+        }
+
         // Auto-start outline generation if requirements just confirmed or if requirements completed and outline pending
         if ((fromRequirements || requirementsCompleted) && outlineStatus === '⏳') {
             // Requirements confirmed, automatically start outline generation (second step)
-            console.log('Requirements confirmed, starting outline generation automatically');
             // 只有在不是来自需求确认页面时才调用，避免重复调用
             if (!fromRequirements) {
                 setTimeout(() => {
@@ -3168,13 +3253,11 @@
             // 新项目保持等待用户手动确认需求。
             // 不再自动调用 start-workflow，避免页面初次加载时的延迟请求在后续
             // 需求已确认/大纲已生成后误触发后台串行工作流，导致模板选择阶段被抢跑。
-            console.log('Waiting for manual requirements confirmation before starting workflow');
         }
     });
 
     // Sequential stage execution - simplified to not interfere with backend workflow
     async function startSequentialStageExecution() {
-        console.log('Workflow started automatically');
         // The backend workflow will handle the actual execution
         // Frontend just monitors progress through real-time updates
     }
@@ -3272,9 +3355,7 @@
                                                     outputContent.innerHTML = '';
                                                     outputContent.appendChild(preElement);
 
-                                                    console.log('Successfully formatted JSON content with', parsed.slides ? parsed.slides.length : 0, 'slides');
                                                 } catch (e) {
-                                                    console.warn('Failed to parse JSON content for formatting:', e);
                                                     // 保持原始内容，但仍然用pre包装
                                                     const preElement = document.createElement('pre');
                                                     preElement.style.cssText = 'margin: 0; font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;';
@@ -3385,7 +3466,6 @@
     function renderOutlineView() {
         const outlineContent = getOutlineContent();
         if (!outlineContent) {
-            console.log('No outline content available');
             return;
         }
 
@@ -3395,7 +3475,6 @@
                 renderOutlinePreview(parsedOutline);
             }
         } catch (e) {
-            console.log('Failed to parse outline content for view rendering');
         }
     }
 
@@ -3758,7 +3837,6 @@
         link.click();
         document.body.removeChild(link);
 
-        console.log('大纲JSON文件已导出');
     }
 
 
@@ -3824,7 +3902,6 @@
                 throw new Error('保存到服务器失败');
             }
 
-            console.log('大纲已保存到服务器');
         } catch (error) {
             console.error('保存到服务器失败:', error);
             throw error;
@@ -3893,7 +3970,6 @@
                             }
                         }
                     } catch (e) {
-                        console.log('现有内容不是有效的JSON格式');
                     }
                 }
             }
@@ -3919,7 +3995,6 @@
     let currentEditInput = null; // Track current editing input to prevent duplicates
 
     function switchOutlineViewNew(view) {
-        console.log('Switching to view:', view);
 
         const jsonViewBtn = document.getElementById('json-view-btn-new');
         const outlineViewBtn = document.getElementById('outline-view-btn-new');
@@ -3995,7 +4070,6 @@
         // 检查是否正在生成大纲
         const outlineGeneratingDiv = document.getElementById('outline-generating-new');
         if (outlineGenerationStarted || (outlineGeneratingDiv && outlineGeneratingDiv.style.display === 'block')) {
-            console.log('[RENDER] 大纲正在生成中，跳过渲染');
             // 隐藏所有状态元素，动画已经在显示
             if (loadingDiv) loadingDiv.style.display = 'none';
             if (errorDiv) errorDiv.style.display = 'none';
@@ -4049,7 +4123,6 @@
                 const jsonStart = outlineContent.indexOf('{');
                 if (jsonStart > 0) {
                     outlineContent = outlineContent.substring(jsonStart);
-                    console.log('从位置', jsonStart, '开始提取JSON内容');
                 }
             }
 
@@ -4058,7 +4131,6 @@
                 const jsonEnd = outlineContent.lastIndexOf('}');
                 if (jsonEnd > 0) {
                     outlineContent = outlineContent.substring(0, jsonEnd + 1);
-                    console.log('截取到位置', jsonEnd + 1, '的JSON内容');
                 }
             }
 
@@ -4093,7 +4165,6 @@
 
         if (!outlineContainer) {
             if (retryCount < MAX_OUTLINE_RENDER_RETRIES) {
-                console.warn('[OUTLINE] Outline container not ready, retrying render (' + (retryCount + 1) + '/' + MAX_OUTLINE_RENDER_RETRIES + ')');
                 setTimeout(() => renderOutlineViewNewWithData(parsedOutline, retryCount + 1), 200);
             } else {
                 console.error('[OUTLINE] Outline container not found after retries');
@@ -4109,6 +4180,7 @@
                 return;
             }
 
+            outlineHasGeneratedInSession = true;
             renderOutlineContentNew(parsedOutline, outlineContainer);
 
             if (loadingDiv) loadingDiv.style.display = 'none';
@@ -4898,7 +4970,6 @@
         });
 
         if (hasVisibleLoading) {
-            console.log('[GET_OUTLINE] 检测到可见加载动画，返回null');
             return null;
         }
 
@@ -4911,7 +4982,6 @@
                 content.includes('AI正在生成') || content.includes('正在解析') ||
                 content.includes('正在从文件生成') || content.includes('小贴士') ||
                 content.length < 50) { // 太短的内容可能是占位符
-                console.log('[GET_OUTLINE] 占位或内容过短，返回null');
                 return null;
             }
 
@@ -4936,7 +5006,6 @@
             content.includes('AI正在生成') || content.includes('正在解析') ||
             content.includes('正在从文件生成') || content.includes('小贴士') ||
             content.length < 50) { // 太短的内容可能是占位符
-            console.log('[GET_OUTLINE] 占位或内容过短，返回null');
             return null;
         }
 
@@ -4947,33 +5016,22 @@
     function debugOutlineContent() {
         const outlineContent = getOutlineContentNew();
 
-        console.log('=== 大纲内容调试信息 ===');
-        console.log('原始内容长度：', outlineContent ? outlineContent.length : 0);
-        console.log('原始内容（前500字符）：', outlineContent ? outlineContent.substring(0, 500) : 'null');
-        console.log('原始内容（后100字符）：', outlineContent ? outlineContent.substring(Math.max(0, outlineContent.length - 100)) : 'null');
 
         // 检查常见的JSON格式问题
         if (outlineContent) {
-            console.log('首字符：', outlineContent.charAt(0), '(ASCII:', outlineContent.charCodeAt(0), ')');
-            console.log('末字符：', outlineContent.charAt(outlineContent.length - 1), '(ASCII:', outlineContent.charCodeAt(outlineContent.length - 1), ')');
 
             // 检查是否包含HTML实体
             if (outlineContent.includes('&nbsp;')) {
-                console.log('⚠️ 发现HTML实体 &nbsp;');
             }
             if (outlineContent.includes('<br>')) {
-                console.log('⚠️ 发现HTML标签 <br>');
             }
 
             // 尝试清理内容
             let cleanedContent = outlineContent.replace(/&nbsp;/g, ' ').replace(/<br>/g, '\n').trim();
-            console.log('清理后内容（前200字符）：', cleanedContent.substring(0, 200));
 
             try {
                 JSON.parse(cleanedContent);
-                console.log('✓ 清理后的内容可以正确解析为JSON');
             } catch (e) {
-                console.log('✕ 清理后仍然无法解析：', e.message);
             }
         }
 

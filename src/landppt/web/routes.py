@@ -11,6 +11,7 @@ from .route_modules.narration_routes import router as narration_router
 from .route_modules.outline_routes import router as outline_router
 from .route_modules.project_routes import router as project_router
 from .route_modules.share_routes import router as share_router
+from .route_modules.slide_edit_agent_routes import router as slide_edit_agent_router
 from .route_modules.slide_routes import router as slide_router
 from .route_modules.speech_script_routes import router as speech_script_router
 from .route_modules.template_routes import router as template_router
@@ -25,4 +26,5 @@ router.include_router(template_router)
 router.include_router(export_router)
 router.include_router(slide_router)
 router.include_router(ai_edit_router)
+router.include_router(slide_edit_agent_router)
 router.include_router(speech_script_router)

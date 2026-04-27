@@ -23,19 +23,47 @@ function getNarrationLanguage() {
             return narrationTtsProvider || 'edge_tts';
         }
 
+        function getNarrationMimoVoicePrompt() {
+            const el = document.getElementById('narrationMimoVoicePrompt');
+            return el && el.value ? el.value.trim() : '';
+        }
+
+        function getNarrationMimoMode() {
+            const el = document.getElementById('narrationMimoMode');
+            return el && el.value === 'voiceclone' ? 'voiceclone' : 'voicedesign';
+        }
+
+        function narrationNeedsReferenceAudio(provider) {
+            return provider === 'comfyuiapi' || (provider === 'xiaomimimo' && getNarrationMimoMode() === 'voiceclone');
+        }
+
         function handleNarrationProviderChange() {
             const provider = getNarrationProvider();
             const field = document.getElementById('speechRefAudioField');
             const container = document.getElementById('narrationRefAudioContainer');
+            const mimoModeField = document.getElementById('speechMimoModeField');
+            const mimoField = document.getElementById('speechMimoVoicePromptField');
+            const refHelp = document.getElementById('speechRefAudioHelp');
             const compactTools = document.getElementById('speechCompactTools');
-            const enabled = provider === 'comfyuiapi';
+            const refEnabled = narrationNeedsReferenceAudio(provider);
+            const mimoEnabled = provider === 'xiaomimimo';
+            const mimoCloneEnabled = mimoEnabled && getNarrationMimoMode() === 'voiceclone';
             if (field) {
-                field.style.display = enabled ? 'flex' : 'none';
+                field.style.display = refEnabled ? 'flex' : 'none';
             }
             if (container) {
-                container.style.display = enabled ? 'flex' : 'none';
+                container.style.display = refEnabled ? 'flex' : 'none';
             }
-            if (compactTools && enabled) {
+            if (mimoModeField) {
+                mimoModeField.style.display = mimoEnabled ? 'flex' : 'none';
+            }
+            if (mimoField) {
+                mimoField.style.display = mimoEnabled && !mimoCloneEnabled ? 'flex' : 'none';
+            }
+            if (refHelp) {
+                refHelp.textContent = mimoCloneEnabled ? 'Xiaomi Mimo 克隆模式会从上传音频提取音色。' : '仅 Qwen3-TD 需要，用于提供参考音色。';
+            }
+            if (compactTools && (refEnabled || mimoEnabled)) {
                 compactTools.open = true;
             }
         }
@@ -83,12 +111,12 @@ function getNarrationLanguage() {
                 const provider = getNarrationProvider();
                 progressToast = showProgressToast(`正在生成${lang === 'en' ? '英文' : '中文'}讲解音频...`, 0);
 
-                if (provider === 'comfyuiapi' && !narrationReferenceAudioPath) {
+                if (narrationNeedsReferenceAudio(provider) && !narrationReferenceAudioPath) {
                     const inputEl = document.getElementById('narrationRefAudioFile');
                     const file = inputEl && inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
                     if (!file) {
                         closeProgressToast(progressToast);
-                        showNotification('请先选择参考音频（ComfyUI 语音克隆需要）', 'warning');
+                        showNotification(`请先选择参考音频（${provider === 'xiaomimimo' ? 'Xiaomi Mimo 克隆模式' : 'ComfyUI 语音克隆'}需要）`, 'warning');
                         return;
                     }
                     await uploadNarrationReferenceAudio(file);
@@ -104,8 +132,9 @@ function getNarrationLanguage() {
                         slide_indices: null,
                         voice: null,
                         rate: '+0%',
-                        reference_audio_path: narrationReferenceAudioPath,
+                        reference_audio_path: narrationNeedsReferenceAudio(provider) ? narrationReferenceAudioPath : null,
                         reference_text: '',
+                        voice_prompt: provider === 'xiaomimimo' && getNarrationMimoMode() !== 'voiceclone' ? getNarrationMimoVoicePrompt() : '',
                         force_regenerate: false
                     })
                 });
@@ -329,12 +358,12 @@ function getNarrationLanguage() {
                 const provider = getNarrationProvider();
                 progressToast = showProgressToast(`正在导出${lang === 'en' ? '英文' : '中文'}讲解音频...`, 0);
 
-                if (provider === 'comfyuiapi' && !narrationReferenceAudioPath) {
+                if (narrationNeedsReferenceAudio(provider) && !narrationReferenceAudioPath) {
                     const inputEl = document.getElementById('narrationRefAudioFile');
                     const file = inputEl && inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
                     if (!file) {
                         closeProgressToast(progressToast);
-                        showNotification('请先选择参考音频（ComfyUI 语音克隆需要）', 'warning');
+                        showNotification(`请先选择参考音频（${provider === 'xiaomimimo' ? 'Xiaomi Mimo 克隆模式' : 'ComfyUI 语音克隆'}需要）`, 'warning');
                         return;
                     }
                     await uploadNarrationReferenceAudio(file);
@@ -349,8 +378,9 @@ function getNarrationLanguage() {
                         language: lang,
                         voice: null,
                         rate: '+0%',
-                        reference_audio_path: narrationReferenceAudioPath,
+                        reference_audio_path: narrationNeedsReferenceAudio(provider) ? narrationReferenceAudioPath : null,
                         reference_text: '',
+                        voice_prompt: provider === 'xiaomimimo' && getNarrationMimoMode() !== 'voiceclone' ? getNarrationMimoVoicePrompt() : '',
                         force_regenerate: false
                     })
                 });

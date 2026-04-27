@@ -784,7 +784,6 @@ async def test_provider_connection(
                 payload = {
                     "model": model,
                     "input": "Hi",
-                    "max_output_tokens": 500,
                     "temperature": 0,
                 }
                 if enable_reasoning:
@@ -793,7 +792,6 @@ async def test_provider_connection(
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": "Hi"}],
-                    "max_tokens": 500
                 }
                 if provider == "openai" and enable_reasoning:
                     payload["reasoning_effort"] = reasoning_effort
@@ -934,7 +932,6 @@ async def test_openai_provider_proxy(
         base_url = data.get('base_url', 'https://api.openai.com/v1')
         api_key = data.get('api_key', '')
         model = data.get('model', 'gpt-4o')
-        max_tokens = 500
         use_responses_api = str(data.get("use_responses_api", "")).strip().lower() in {"1", "true", "yes", "on"}
         enable_reasoning = str(data.get("enable_reasoning", "")).strip().lower() in {"1", "true", "yes", "on"}
         reasoning_effort = str(data.get("reasoning_effort") or "medium").strip().lower()
@@ -969,7 +966,6 @@ async def test_openai_provider_proxy(
                     "model": model,
                     "input": "Say 'Hello, I am working!' in exactly 5 words.",
                     "temperature": 0,
-                    "max_output_tokens": max_tokens,
                 }
                 if enable_reasoning:
                     payload["reasoning"] = {"effort": reasoning_effort}
@@ -982,8 +978,7 @@ async def test_openai_provider_proxy(
                             "content": "Say 'Hello, I am working!' in exactly 5 words."
                         }
                     ],
-                    "temperature": 0,
-                    "max_tokens": max_tokens
+                    "temperature": 0
                 }
                 if enable_reasoning:
                     payload["reasoning_effort"] = reasoning_effort
@@ -1099,7 +1094,6 @@ async def test_anthropic_provider_proxy(
                         "content": "Say 'Hello, I am working!' in exactly 5 words."
                     }
                 ],
-                "max_tokens": 1024,
                 "temperature": 0
             }
 

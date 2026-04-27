@@ -1,6 +1,8 @@
 from landppt.services.provider_test_utils import (
     build_anthropic_messages_url,
+    build_anthropic_test_payload,
     build_google_generate_content_url,
+    build_google_test_payload,
     extract_anthropic_test_result,
     extract_google_test_result,
     extract_openai_compatible_test_result,
@@ -20,6 +22,18 @@ def test_build_google_generate_content_url_normalizes_version_suffix_and_keeps_p
     )
 
     assert url == "https://mirror.example.com/prefix/v1beta/models/gemini-2.5-flash:generateContent"
+
+
+def test_google_test_payload_does_not_set_output_token_limit():
+    payload = build_google_test_payload("Hi")
+
+    assert "maxOutputTokens" not in payload["generationConfig"]
+
+
+def test_anthropic_test_payload_does_not_set_output_token_limit():
+    payload = build_anthropic_test_payload("Hi")
+
+    assert "max_tokens" not in payload
 
 
 def test_extract_google_test_result_reads_text_and_usage():

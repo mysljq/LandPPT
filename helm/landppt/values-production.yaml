@@ -1,0 +1,129 @@
+# Production-oriented override values for LandPPT.
+# Usage:
+#   helm upgrade --install landppt ./helm/landppt \
+#     -n landppt --create-namespace \
+#     -f helm/landppt/values-production.yaml \
+#     --set app.existingSecret=landppt-keys \
+#     --set postgresql.auth.password='change-me'
+#
+# For heavy/critical production environments, prefer external managed PostgreSQL,
+# Valkey/Redis and S3, then set postgresql.enabled=false, valkey.enabled=false,
+# minio.enabled=false and provide the external URLs/secrets.
+
+web:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+worker:
+  enabled: true
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+app:
+  # Web 进程数；通常按单 Pod CPU 数设置。生产 overlay 的 web limit 为 4 核时建议 4。
+  workers: 4
+  env:
+    LANDPPT_ENABLE_API_DOCS: "false"
+    LANDPPT_ALLOW_HEADER_SESSION_AUTH: "false"
+    ENABLE_CREDITS_SYSTEM: "true"
+    INVITE_CODE_REQUIRED_FOR_REGISTRATION: "false"
+    LANDPPT_BOOTSTRAP_ADMIN_ENABLED: "false"
+    LANDPPT_AUTO_MIGRATE_ON_STARTUP: "false"
+    UVICORN_TIMEOUT_WORKER_HEALTHCHECK: "180"
+    # 生产多副本下限制单进程连接池，避免 HPA 放大后耗尽 PostgreSQL 连接。
+    DB_POOL_SIZE: "5"
+    DB_MAX_OVERFLOW: "10"
+    DB_ASYNC_POOL_SIZE: "5"
+    DB_ASYNC_MAX_OVERFLOW: "10"
+    DB_POOL_RECYCLE: "1800"
+
+resources:
+  requests:
+    cpu: 2000m
+    memory: 4Gi
+  limits:
+    cpu: "4"
+    memory: 8Gi
+
+# Chromium 渲染会占用 /dev/shm；同时会计入容器内存限制。
+shmSize: 4Gi
+
+postgresql:
+  persistence:
+    size: 200Gi
+  resources:
+    requests:
+      cpu: 2000m
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  configuration:
+    max_connections: "800"
+    shared_buffers: "2GB"
+    effective_cache_size: "6GB"
+    maintenance_work_mem: "512MB"
+    work_mem: "16MB"
+    checkpoint_completion_target: "0.9"
+    wal_compression: "on"
+    max_wal_size: "4GB"
+    min_wal_size: "1GB"
+    random_page_cost: "1.1"
+    effective_io_concurrency: "200"
+
+valkey:
+  persistence:
+    size: 20Gi
+  appendonly: true
+  maxmemory: 3072mb
+  maxmemoryPolicy: allkeys-lru
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+minio:
+  persistence:
+    size: 500Gi
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+migration:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi

@@ -565,21 +565,20 @@ def test_template_generation_prompts_require_stable_page_number_anchor():
         confirmed={},
     )
 
-    assert "页码结构必须兼容“页码 absolute 脱离文档流 + 内容层预留安全区”的固定画布骨架" in prompt
-    assert "类名仅用于说明结构关系，使用 inline style 做等价实现同样有效" in prompt
-    assert "母版/设计系统骨架" in prompt
-    assert "不要把整页 body 做成只能容纳一种构图的大面板" in prompt
-    assert prompt.count("**创意要求**") == 1
+    assert "只输出一个 1280×720 的通用页面模板" in prompt
+    assert "标题锚点区、主舞台区和编号锚点区" in prompt
+    assert "不要输出 cover/toc/transition/content/title/ending 等多页面类型变体" in prompt
+    assert prompt.count("**创意愿景——单页母版**") == 1
     assert prompt.count("**技术要求**") == 1
 
     template_prompt = GlobalMasterTemplateService._get_template_annotation_prompt_text()
-    assert "页码结构必须兼容“页码 absolute 脱离文档流 + 内容层预留安全区”的固定画布骨架" in template_prompt
+    assert "只生成一个 1280×720 的通用页面模板" in template_prompt
     assert "使用 inline style 做等价实现同样有效" in template_prompt
-    assert "画布根容器负责 `position:relative` 与 1280x720 裁切" in template_prompt
+    assert "画布根容器负责 `position:relative` 与 1280×720 裁切" in template_prompt
 
     creative_prompt = GlobalMasterTemplateService._get_template_generation_creative_prompt_text()
-    assert "稳定框架 + 灵活主舞台" in creative_prompt
-    assert "避免所有页面共享同一块主体外框和背景实现" in creative_prompt
+    assert "**创意愿景——单页母版**" in creative_prompt
+    assert "不要分别生成页面类型变体" in creative_prompt
 
 
 def test_slide_generation_service_delegates_owner_attributes():
@@ -647,19 +646,19 @@ def _test_template_generation_prompts_require_stable_page_number_anchor_current(
         confirmed={},
     )
 
-    assert "请显式区分标题锚点区、主舞台区、编号锚点区三类职责层" in prompt
-    assert "编号锚点可以 `absolute` 脱流，也可以嵌入稳定容器" in prompt
-    assert "主舞台不能被固定大外框锁死" in prompt
-    assert "固定 1280x720" in prompt
+    assert "只输出一个 1280×720 的通用页面模板" in prompt
+    assert "标题锚点区、主舞台区和编号锚点区" in prompt
+    assert "编号锚点可省略或极简，但不能挤占正文" in prompt
+    assert "不要输出 cover/toc/transition/content/title/ending 等多页面类型变体" in prompt
 
     template_prompt = GlobalMasterTemplateService._get_template_annotation_prompt_text()
-    assert "母版必须建立三个职责层：标题锚点区、主舞台区、编号锚点区" in template_prompt
+    assert "只生成一个 1280×720 的通用页面模板" in template_prompt
+    assert "标题锚点区、主舞台区、编号锚点区三类职责层" in template_prompt
     assert "类名仅用于说明结构关系，使用 inline style 做等价实现同样有效" in template_prompt
-    assert "根容器固定 `1280x720` 且 `overflow:hidden`" in template_prompt
 
     creative_prompt = GlobalMasterTemplateService._get_template_generation_creative_prompt_text()
-    assert "有辨识度的标题表达 + 灵活主舞台" in creative_prompt
-    assert "不是千篇一律的左对齐加横线" in creative_prompt
+    assert "**创意愿景——单页母版**" in creative_prompt
+    assert "不要分别生成页面类型变体" in creative_prompt
 
 
 test_template_generation_prompts_require_stable_page_number_anchor = (

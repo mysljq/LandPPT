@@ -48,6 +48,39 @@ class ProjectOutlineResearchService:
     def __getattr__(self, name: str):
         return getattr(self._service, name)
 
+    @staticmethod
+    def _build_user_context_markdown(topic: str, context: Optional[Dict[str, Any]]) -> str:
+        context = context or {}
+        lines = ["## User Requirements\n"]
+
+        if topic:
+            lines.append(f"- Topic: {topic}")
+        for label, key in (
+            ("Scenario", "scenario"),
+            ("Target audience", "target_audience"),
+            ("Custom audience", "custom_audience"),
+            ("PPT style", "ppt_style"),
+            ("Custom style", "custom_style_prompt"),
+            ("Source summary", "source_summary"),
+        ):
+            raw_value = context.get(key)
+            value = raw_value.strip() if isinstance(raw_value, str) else raw_value
+            if value:
+                lines.append(f"- {label}: {value}")
+
+        requirements = (context.get("requirements") or "").strip()
+        if requirements:
+            lines.append("\n### Specific Requirements\n")
+            lines.append(requirements)
+
+        description = (context.get("description") or "").strip()
+        if description and description not in requirements:
+            lines.append("\n### Additional Instructions\n")
+            lines.append(description)
+
+        lines.append("\n---\n\n")
+        return "\n".join(lines)
+
     async def _generate_outline_from_research_runtime(self, request: PPTGenerationRequest, page_count_settings: Dict[str, Any]=None) -> Optional[PPTOutline]:
         if not getattr(self, 'enhanced_research_service', None) and not getattr(self, 'research_service', None):
             try:
@@ -68,6 +101,7 @@ class ProjectOutlineResearchService:
         research_input_context = {
             'scenario': request.scenario,
             'target_audience': getattr(request, 'target_audience', '普通大众'),
+            'custom_audience': getattr(request, 'custom_audience', ''),
             'requirements': request.requirements,
             'ppt_style': getattr(request, 'ppt_style', 'general'),
             'description': getattr(request, 'description', ''),
@@ -135,7 +169,7 @@ class ProjectOutlineResearchService:
             logger.info('Using %s research report file for outline generation: %s', provider, report_path)
             try:
                 from ...api.models import FileOutlineGenerationRequest
-                file_request = FileOutlineGenerationRequest(file_path=report_path, filename=Path(report_path).name, topic=request.topic, scenario=request.scenario, requirements=request.requirements, target_audience=getattr(request, 'target_audience', '普通大众'), ppt_style=getattr(request, 'ppt_style', 'general'), custom_style_prompt=getattr(request, 'custom_style_prompt', ''), include_transition_pages=bool(getattr(request, 'include_transition_pages', False)), page_count_mode=page_count_settings.get('mode', 'ai_decide') if page_count_settings else 'ai_decide', min_pages=page_count_settings.get('min_pages') if page_count_settings else None, max_pages=page_count_settings.get('max_pages') if page_count_settings else None, fixed_pages=page_count_settings.get('fixed_pages') if page_count_settings else None, language=request.language)
+                file_request = FileOutlineGenerationRequest(file_path=report_path, filename=Path(report_path).name, topic=request.topic, scenario=request.scenario, requirements=request.requirements, target_audience=getattr(request, 'target_audience', '普通大众'), custom_audience=getattr(request, 'custom_audience', ''), description=getattr(request, 'description', ''), ppt_style=getattr(request, 'ppt_style', 'general'), custom_style_prompt=getattr(request, 'custom_style_prompt', ''), include_transition_pages=bool(getattr(request, 'include_transition_pages', False)), page_count_mode=page_count_settings.get('mode', 'ai_decide') if page_count_settings else 'ai_decide', min_pages=page_count_settings.get('min_pages') if page_count_settings else None, max_pages=page_count_settings.get('max_pages') if page_count_settings else None, fixed_pages=page_count_settings.get('fixed_pages') if page_count_settings else None, language=request.language)
                 file_outline_result = await self.generate_outline_from_file(file_request)
                 if file_outline_result.success and file_outline_result.outline:
                     outline_data = file_outline_result.outline
@@ -325,6 +359,7 @@ class ProjectOutlineResearchService:
             merged_content_parts.append(f'# {topic}\n')
             merged_content_parts.append(f"*整合文档 - 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}*\n")
             merged_content_parts.append('---\n\n')
+            merged_content_parts.append(self._build_user_context_markdown(topic, context))
             if research_markdown and os.path.exists(research_markdown):
                 merged_content_parts.append('## 📡 联网搜索结果\n\n')
                 with open(research_markdown, 'r', encoding='utf-8') as f:

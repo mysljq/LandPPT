@@ -112,6 +112,10 @@
                     归档项目
                 </button>
 
+                <button onclick="duplicateProject()" class="btn btn-primary action-button">
+                    复制项目
+                </button>
+
                 <button onclick="deleteProject()" class="btn btn-danger action-button">
                     删除项目
                 </button>
@@ -200,145 +204,177 @@
 
     <!-- PPT Outline Preview -->
     {% if project.outline and project.outline is not none and project.outline.get('slides') %}
-    <div style="margin-top: 40px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h3 class="section-heading" style="margin: 0;">PPT 大纲</h3>
-            <div style="display: flex; gap: 10px;">
-                <button onclick="toggleOutlineView()" class="btn btn-info" style="font-size: 0.9em;">
-                    切换视图
+    <section class="outline-panel">
+        <div class="outline-panel__header">
+            <div>
+                <h3 class="section-heading outline-panel__title">
+                    <i class="fas fa-sitemap" aria-hidden="true"></i>
+                    PPT 大纲
+                </h3>
+                <p class="outline-panel__subtitle">拖拽幻灯片调整顺序，或使用每页右上角的操作图标。</p>
+            </div>
+            <div class="outline-toolbar" aria-label="大纲操作">
+                <button id="outlineViewToggleBtn" type="button" onclick="toggleOutlineView()" class="outline-tool-btn"
+                    aria-label="切换为详细视图" data-tooltip="详细视图">
+                    <i class="fas fa-list" aria-hidden="true"></i>
                 </button>
-                <button onclick="editOutline()" class="btn btn-primary" style="font-size: 0.9em;">
-                    编辑大纲
+                <button type="button" onclick="editOutline()" class="outline-tool-btn" aria-label="编辑大纲"
+                    data-tooltip="编辑大纲">
+                    <i class="fas fa-edit" aria-hidden="true"></i>
                 </button>
-                <button onclick="exportOutlineJSON()" class="btn btn-success" style="font-size: 0.9em;">
-                    导出JSON
+                <button type="button" onclick="exportOutlineJSON()" class="outline-tool-btn" aria-label="导出 JSON"
+                    data-tooltip="导出 JSON">
+                    <i class="fas fa-download" aria-hidden="true"></i>
                 </button>
             </div>
         </div>
 
-        <div style="background: white; border-radius: 15px; padding: 30px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h4 style="color: var(--text-primary); margin-bottom: 10px;">{{ project.outline.get('title',
+        <div class="outline-surface">
+            <div class="outline-summary">
+                <h4 class="outline-summary__title">{{ project.outline.get('title',
                     project.topic or '未命名大纲') }}</h4>
-                <p style="color: var(--text-secondary);">
-                    总共 {{ project.outline.get('slides', [])|length }} 页幻灯片 |
-                    场景: {{ project.outline.get('metadata', {}).get('scenario', project.scenario) }} |
-                    语言: {{ project.outline.get('metadata', {}).get('language', 'zh') }}
-                </p>
+                <div class="outline-summary__meta">
+                    <span><i class="fas fa-layer-group" aria-hidden="true"></i>{{ project.outline.get('slides',
+                        [])|length }} 页幻灯片</span>
+                    <span><i class="fas fa-briefcase" aria-hidden="true"></i>{{ project.outline.get('metadata',
+                        {}).get('scenario', project.scenario) }}</span>
+                    <span><i class="fas fa-language" aria-hidden="true"></i>{{ project.outline.get('metadata',
+                        {}).get('language', 'zh') }}</span>
+                </div>
             </div>
 
             <!-- 简洁视图 -->
-            <div id="compactView" style="display: block;">
-                <div style="background: var(--surface-muted); border-radius: 10px; padding: 20px;">
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
-                        {% for slide in project.outline.get('slides', []) %}
-                        <div style="padding: 15px; background: white; border-radius: 8px; border-left: 4px solid #1f2933; transition: all 0.3s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1); position: relative;"
-                            onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 8px rgba(0,0,0,0.15)'"
-                            onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 4px rgba(0,0,0,0.1)'">
+            <div id="compactView" class="outline-view outline-view--compact">
+                <div class="outline-card-grid">
+                    {% for slide in project.outline.get('slides', []) %}
+                    <article data-outline-slide-index="{{ loop.index0 }}" draggable="true" class="outline-slide-card">
+                        <div class="outline-slide-card__actions" aria-label="第 {{ loop.index }} 页操作">
+                            <button type="button" onclick="editSingleSlide({{ loop.index0 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="编辑此页"
+                                data-tooltip="编辑">
+                                <i class="fas fa-edit" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="viewSlideDetail({{ loop.index0 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="查看详情"
+                                data-tooltip="详情">
+                                <i class="fas fa-eye" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="moveOutlineSlide({{ loop.index0 }}, {{ loop.index0 - 1 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="上移"
+                                data-tooltip="上移" {% if loop.first %}disabled{% endif %}>
+                                <i class="fas fa-arrow-up" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="moveOutlineSlide({{ loop.index0 }}, {{ loop.index0 + 1 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="下移"
+                                data-tooltip="下移" {% if loop.last %}disabled{% endif %}>
+                                <i class="fas fa-arrow-down" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="deleteOutlineSlide({{ loop.index0 }})"
+                                class="outline-tool-btn outline-tool-btn--small outline-tool-btn--danger"
+                                aria-label="删除此页" data-tooltip="删除">
+                                <i class="fas fa-trash-alt" aria-hidden="true"></i>
+                            </button>
+                        </div>
 
-                            <!-- 操作按钮 -->
-                            <div style="position: absolute; top: 10px; right: 10px; display: flex; gap: 5px;">
-                                <button onclick="editSingleSlide({{ loop.index0 }})" class="btn btn-primary"
-                                    style="font-size: 0.7em; padding: 4px 8px; border-radius: 4px;" title="编辑此页">
-                                    编辑
-                                </button>
-                                <button onclick="viewSlideDetail({{ loop.index0 }})" class="btn btn-info"
-                                    style="font-size: 0.7em; padding: 4px 8px; border-radius: 4px;" title="查看详情">
-                                    详情
-                                </button>
+                        <div class="outline-slide-card__body" onclick="viewSlideDetail({{ loop.index0 }})">
+                            <div class="outline-slide-card__header">
+                                <span class="outline-slide-card__number">{{ slide.get('page_number', loop.index)
+                                    }}</span>
+                                <div class="outline-slide-card__heading">
+                                    <h5>{{ slide.get('title', '未命名幻灯片') }}</h5>
+                                    {% if slide.get('subtitle') %}
+                                    <p>{{ slide.get('subtitle') }}</p>
+                                    {% endif %}
+                                </div>
                             </div>
-
-                            <div onclick="viewSlideDetail({{ loop.index0 }})"
-                                style="cursor: pointer; margin-right: 60px;">
-                                <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                                    <span
-                                        style="background: #1f2933; color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 0.8em; font-weight: bold; margin-right: 10px;">
-                                        {{ slide.get('page_number', loop.index) }}
-                                    </span>
-                                    <strong style="color: var(--text-primary); font-size: 0.9em;">{{ slide.get('title',
-                                        '未命名幻灯片') }}</strong>
-                                </div>
-                                {% if slide.get('subtitle') %}
-                                <p
-                                    style="color: var(--text-secondary); font-size: 0.8em; margin: 5px 0; font-style: italic;">
-                                    {{ slide.get('subtitle') }}</p>
+                            <p class="outline-slide-card__excerpt">
+                                {% if slide.get('content_points') and slide.get('content_points')|length > 0 %}
+                                {{ slide.get('content_points')[0][:80] }}{% if slide.get('content_points')[0]|length >
+                                80 %}...{% endif %}
+                                {% elif slide.get('content') %}
+                                {{ slide.get('content')[:80] }}{% if slide.get('content')|length > 80 %}...{% endif %}
+                                {% else %}
+                                暂无内容
                                 {% endif %}
-                                <div style="color: var(--text-secondary); font-size: 0.8em; line-height: 1.4;">
-                                    {% if slide.get('content_points') and slide.get('content_points')|length > 0 %}
-                                    {{ slide.get('content_points')[0][:80] }}{% if slide.get('content_points')[0]|length
-                                    > 80 %}...{% endif %}
-                                    {% if slide.get('content_points')|length > 1 %}
-                                    <br><span style="color: var(--text-muted);">+{{ slide.get('content_points')|length -
-                                        1 }} 个要点</span>
-                                    {% endif %}
-                                    {% elif slide.get('content') %}
-                                    {{ slide.get('content')[:80] }}{% if slide.get('content')|length > 80 %}...{% endif
-                                    %}
-                                    {% else %}
-                                    <span style="color: var(--text-muted);">暂无内容</span>
-                                    {% endif %}
-                                </div>
+                            </p>
+                            <div class="outline-slide-card__meta">
+                                <span><i class="fas fa-grip-vertical" aria-hidden="true"></i>可拖拽</span>
+                                {% if slide.get('content_points') and slide.get('content_points')|length > 1 %}
+                                <span>+{{ slide.get('content_points')|length - 1 }} 个要点</span>
+                                {% endif %}
+                                {% if slide.get('slide_type') %}
+                                <span>{{ slide.get('slide_type') }}</span>
+                                {% endif %}
                             </div>
                         </div>
-                        {% endfor %}
-                    </div>
+                    </article>
+                    {% endfor %}
                 </div>
             </div>
 
             <!-- 详细视图 -->
-            <div id="detailView" style="display: none; max-height: 500px; overflow-y: auto;">
+            <div id="detailView" class="outline-view outline-view--detail">
                 {% for slide in project.outline.get('slides', []) %}
-                <div
-                    style="padding: 20px; margin-bottom: 15px; background: var(--surface-muted); border-radius: 10px; border-left: 4px solid #1f2933; position: relative;">
-                    <div style="display: flex; align-items: center; margin-bottom: 15px;">
-                        <span
-                            style="background: #1f2933; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold; margin-right: 15px;">
-                            {{ slide.get('page_number', loop.index) }}
-                        </span>
-                        <div style="flex: 1;">
-                            <strong class="stage-title">{{ slide.get('title', '未命名幻灯片') }}</strong>
+                <article data-outline-slide-index="{{ loop.index0 }}" draggable="true" class="outline-detail-row">
+                    <div class="outline-detail-row__top">
+                        <span class="outline-slide-card__number outline-slide-card__number--large">{{
+                            slide.get('page_number', loop.index) }}</span>
+                        <div class="outline-detail-row__heading">
+                            <h5>{{ slide.get('title', '未命名幻灯片') }}</h5>
                             {% if slide.get('subtitle') %}
-                            <br><em style="color: var(--text-secondary); font-size: 0.9em;">{{ slide.get('subtitle')
-                                }}</em>
+                            <p>{{ slide.get('subtitle') }}</p>
                             {% endif %}
                         </div>
-                        <button onclick="editSingleSlide({{ loop.index0 }})" class="btn btn-primary"
-                            style="font-size: 0.8em; padding: 6px 12px;" title="编辑此页">
-                            编辑
-                        </button>
+                        <div class="outline-detail-row__actions" aria-label="第 {{ loop.index }} 页操作">
+                            <button type="button" onclick="editSingleSlide({{ loop.index0 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="编辑此页"
+                                data-tooltip="编辑">
+                                <i class="fas fa-edit" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="moveOutlineSlide({{ loop.index0 }}, {{ loop.index0 - 1 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="上移"
+                                data-tooltip="上移" {% if loop.first %}disabled{% endif %}>
+                                <i class="fas fa-arrow-up" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="moveOutlineSlide({{ loop.index0 }}, {{ loop.index0 + 1 }})"
+                                class="outline-tool-btn outline-tool-btn--small" aria-label="下移"
+                                data-tooltip="下移" {% if loop.last %}disabled{% endif %}>
+                                <i class="fas fa-arrow-down" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" onclick="deleteOutlineSlide({{ loop.index0 }})"
+                                class="outline-tool-btn outline-tool-btn--small outline-tool-btn--danger"
+                                aria-label="删除此页" data-tooltip="删除">
+                                <i class="fas fa-trash-alt" aria-hidden="true"></i>
+                            </button>
+                        </div>
                     </div>
 
                     {% if slide.get('content_points') %}
-                    <div style="margin-top: 10px;">
-                        <h5 style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em;">内容要点：</h5>
-                        <ul style="margin: 0; padding-left: 20px; color: var(--text-secondary); line-height: 1.6;">
+                    <div class="outline-detail-row__content">
+                        <h6>内容要点</h6>
+                        <ul>
                             {% for point in slide.get('content_points', []) %}
-                            <li style="margin-bottom: 5px;">{{ point }}</li>
+                            <li>{{ point }}</li>
                             {% endfor %}
                         </ul>
                     </div>
                     {% elif slide.get('content') %}
-                    <div style="margin-top: 10px;">
-                        <h5 style="color: var(--text-secondary); margin-bottom: 8px; font-size: 0.9em;">内容：</h5>
-                        <div
-                            style="background: white; padding: 15px; border-radius: 6px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap;">
-                            {{ slide.get('content') }}</div>
+                    <div class="outline-detail-row__content">
+                        <h6>内容</h6>
+                        <p>{{ slide.get('content') }}</p>
                     </div>
                     {% endif %}
 
                     {% if slide.get('slide_type') %}
-                    <div style="margin-top: 10px;">
-                        <span
-                            style="background: var(--surface); color: var(--text-primary); padding: 4px 8px; border-radius: 4px; font-size: 0.8em;">
-                            类型: {{ slide.get('slide_type') }}
-                        </span>
+                    <div class="outline-detail-row__chips">
+                        <span>类型: {{ slide.get('slide_type') }}</span>
                     </div>
                     {% endif %}
-                </div>
+                </article>
                 {% endfor %}
             </div>
         </div>
-    </div>
+    </section>
     {% elif project.outline and project.outline is not none %}
     <!-- Show outline content if it exists but doesn't have slides structure -->
     <div style="margin-top: 40px;">

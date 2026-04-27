@@ -40,12 +40,11 @@ def build_google_generate_content_url(base_url: str, model: str) -> str:
     return f"{normalized_base_url}/v1beta/models/{normalized_model}:generateContent"
 
 
-def build_google_test_payload(prompt: str, max_output_tokens: int = 500) -> Dict[str, Any]:
+def build_google_test_payload(prompt: str) -> Dict[str, Any]:
     """Google 测试请求走原生 Gemini 格式，避免误用 OpenAI 兼容协议。"""
     return {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": max_output_tokens,
             "temperature": 0,
         },
     }
@@ -95,11 +94,10 @@ def build_anthropic_messages_url(base_url: str) -> str:
     return f"{normalize_anthropic_test_base_url(base_url)}/messages"
 
 
-def build_anthropic_test_payload(prompt: str, max_tokens: int = 1024) -> Dict[str, Any]:
+def build_anthropic_test_payload(prompt: str) -> Dict[str, Any]:
     """Anthropic 测试使用官方 messages 协议。"""
     return {
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
         "temperature": 0,
     }
 

@@ -97,7 +97,7 @@ class CommunitySettingsRequest(BaseModel):
     daily_checkin_reward_fixed: int = 5
     daily_checkin_reward_min: int = 2
     daily_checkin_reward_max: int = 8
-    invite_code_required_for_registration: bool = True
+    invite_code_required_for_registration: bool = False
     sponsor_page_enabled: bool = False
     site_notice_enabled: bool = False
     site_notice_level: str = "info"
@@ -1151,7 +1151,7 @@ async def export_redemption_codes(
 ):
     """Export redemption codes as CSV (filters match list endpoint)."""
     if not app_config.enable_credits_system:
-        raise HTTPException(status_code=400, detail="绉垎绯荤粺鏈惎鐢?")
+        raise HTTPException(status_code=400, detail="积分系统未启用")
 
     import csv
     import io

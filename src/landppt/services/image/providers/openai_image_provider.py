@@ -33,6 +33,7 @@ class OpenAIImageProvider(ImageGenerationProvider):
         self.model = config.get('model', 'gpt-image-1')
         self.default_size = config.get('default_size', '1024x1024')
         self.default_quality = config.get('default_quality', 'auto')
+        self.response_format = config.get('response_format')
 
         # 速率限制
         self.rate_limit_requests = config.get('rate_limit_requests', 50)
@@ -232,16 +233,24 @@ class OpenAIImageProvider(ImageGenerationProvider):
             return image
         if not isinstance(image, dict):
             return None
-        if "b64_json" in image:
-            return image["b64_json"]
+        b64_json = image.get("b64_json")
+        if b64_json:
+            return b64_json
         if "image_url" in image:
             image_url = image.get("image_url") or {}
             if isinstance(image_url, dict):
                 url = image_url.get("url")
                 if url:
                     return url
-        if "url" in image:
-            return image.get("url")
+            elif isinstance(image_url, str) and image_url:
+                return image_url
+        url = image.get("url")
+        if url:
+            return url
+        for key in ("base64", "image_base64", "image", "data"):
+            payload = image.get(key)
+            if isinstance(payload, str) and payload:
+                return payload
         return None
 
     def _extract_base64_from_data_url(self, value: str) -> Optional[str]:
@@ -275,8 +284,13 @@ class OpenAIImageProvider(ImageGenerationProvider):
             "prompt": request.prompt,
             "n": 1,
             "size": size,
-            "response_format": "b64_json"  # 使用base64格式便于保存
         }
+
+        # Many OpenAI-compatible image endpoints reject `response_format`.
+        # Only send it when explicitly configured; response processing already
+        # supports both b64_json and URL-based image results.
+        if self.response_format:
+            api_request["response_format"] = self.response_format
 
         # 添加质量参数
         if request.quality:
@@ -298,21 +312,20 @@ class OpenAIImageProvider(ImageGenerationProvider):
                     error_code="no_data"
                 )
 
-            image_data = response_data['data'][0]
+            image_payload = None
+            for image_data in response_data['data']:
+                image_payload = self._extract_image_payload(image_data)
+                if image_payload:
+                    break
 
-            # 支持两种响应格式：b64_json 和 url
-            if 'b64_json' in image_data:
-                image_base64 = image_data['b64_json']
-                image_path, image_size = await self._save_image_from_base64(image_base64, request)
-            elif 'url' in image_data:
-                image_url = image_data['url']
-                image_path, image_size = await self._download_image(image_url, request)
-            else:
+            if not image_payload:
                 return ImageOperationResult(
                     success=False,
                     message="No image URL or base64 data in response",
                     error_code="no_image"
                 )
+
+            image_path, image_size = await self._save_image_from_payload(image_payload, request)
 
             # 创建图片信息
             image_info = self._create_image_info(

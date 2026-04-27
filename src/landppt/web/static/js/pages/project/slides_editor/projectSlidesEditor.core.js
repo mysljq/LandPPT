@@ -306,6 +306,7 @@ function setSafeIframeContent(iframe, html, options = {}) {
     const preparedHtml = prepareHtmlForPreview(html);
 
     if (!force && iframe.getAttribute('data-current-content') === preparedHtml) {
+        requestThumbnailPreviewScale(iframe);
         return;
     }
 
@@ -315,12 +316,9 @@ function setSafeIframeContent(iframe, html, options = {}) {
     // 使用requestAnimationFrame优化性能
     requestAnimationFrame(() => {
         try {
-            // 直接设置srcdoc，减少延迟
-            iframe.srcdoc = preparedHtml;
-            iframe.setAttribute('data-current-content', preparedHtml);
+            const handleIframeLoad = function () {
+                requestThumbnailPreviewScale(iframe);
 
-            // 简化的加载完成处理
-            iframe.onload = function () {
                 // 减少延迟，提高响应速度
                 setTimeout(() => {
                     try {
@@ -345,12 +343,39 @@ function setSafeIframeContent(iframe, html, options = {}) {
                     } catch (e) {
                         // 静默处理错误，避免控制台噪音
                     }
-                }, 50); // 减少延迟时间
+                }, 50);
             };
+
+            iframe.addEventListener('load', handleIframeLoad, { once: true });
+
+            // 直接设置srcdoc，减少延迟
+            iframe.srcdoc = preparedHtml;
+            iframe.setAttribute('data-current-content', preparedHtml);
         } catch (e) {
             // 设置iframe内容失败
         }
     });
+}
+
+function requestThumbnailPreviewScale(iframe) {
+    if (!iframe || typeof iframe.closest !== 'function' || !iframe.closest('.slide-preview')) {
+        return;
+    }
+
+    const runScale = () => {
+        if (typeof applyThumbnailPreviewScale === 'function') {
+            applyThumbnailPreviewScale(iframe);
+        }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(runScale);
+        });
+        return;
+    }
+
+    setTimeout(runScale, 0);
 }
 
 function syncIframeCurrentContent(iframe, html) {
@@ -512,6 +537,7 @@ function cleanupIframeCharts(iframe) {
 // 拖拽和右键菜单相关变量
 let draggedSlideIndex = -1;
 let copiedSlideData = null;
+let copiedSlideOutlineData = null;
 let contextMenuSlideIndex = -1;
 
 // 检查是否有幻灯片数据

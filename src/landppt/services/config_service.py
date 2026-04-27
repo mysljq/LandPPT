@@ -5,6 +5,7 @@ Configuration management service for LandPPT
 import os
 import json
 import logging
+import tempfile
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dotenv import load_dotenv, set_key, unset_key
@@ -86,7 +87,16 @@ class ConfigService:
             "comfyui_tts_timeout_seconds": {"type": "number", "category": "generation_params", "default": "600"},
             "comfyui_tts_chunk_chars": {"type": "number", "category": "generation_params", "default": "120"},
             "comfyui_tts_force_precision": {"type": "text", "category": "generation_params", "default": ""},
-            
+            "mimo_api_key": {"type": "password", "category": "generation_params", "default": ""},
+            "mimo_base_url": {"type": "url", "category": "generation_params", "default": "https://api.xiaomimimo.com/v1"},
+            "mimo_tts_model": {"type": "text", "category": "generation_params", "default": "mimo-v2.5-tts-voicedesign"},
+            "mimo_tts_clone_model": {"type": "text", "category": "generation_params", "default": "mimo-v2.5-tts-voiceclone"},
+            "mimo_tts_voice_prompt": {"type": "textarea", "category": "generation_params", "default": "年轻、放松、语速偏快，像 Tom 猫那种俏皮又有点夸张的卡通感；说话轻快自然、有活力，吐字清楚，不要正式播音腔。"},
+            "custom_tts_api_url": {"type": "url", "category": "generation_params", "default": "http://localhost:9880/"},
+            "custom_tts_api_speaker": {"type": "text", "category": "generation_params", "default": "TOM女"},
+            "custom_tts_api_speed": {"type": "text", "category": "generation_params", "default": "1"},
+            "custom_tts_api_novasr": {"type": "text", "category": "generation_params", "default": "1"},
+
             # Parallel Generation Configuration
             "enable_parallel_generation": {"type": "boolean", "category": "generation_params", "default": "true"},
             "parallel_slides_count": {"type": "number", "category": "generation_params", "default": "3"},
@@ -250,7 +260,24 @@ class ConfigService:
                 config[key] = value
         
         return config
-    
+
+    def _set_env_key_in_place(self, env_key: str, value: str) -> None:
+        """Apply python-dotenv key semantics without replacing the .env inode."""
+        with self.env_path.open("r+b") as env_file:
+            original_content = env_file.read()
+
+            with tempfile.TemporaryDirectory(prefix="landppt-dotenv-") as temp_dir:
+                staged_path = Path(temp_dir) / ".env"
+                staged_path.write_bytes(original_content)
+                set_key(str(staged_path), env_key, value, quote_mode="never")
+                updated_content = staged_path.read_bytes()
+
+            env_file.seek(0)
+            env_file.write(updated_content)
+            env_file.truncate()
+            env_file.flush()
+            os.fsync(env_file.fileno())
+
     def update_config(self, config: Dict[str, Any]) -> bool:
         """Update configuration values"""
         try:
@@ -264,8 +291,8 @@ class ConfigService:
                     else:
                         value = str(value)
 
-                    # Update .env file (without quotes)
-                    set_key(self.env_file, env_key, value, quote_mode="never")
+                    # Preserve the inode so updates work through a bind-mounted file.
+                    self._set_env_key_in_place(env_key, value)
 
                     # Update current environment
                     os.environ[env_key] = value

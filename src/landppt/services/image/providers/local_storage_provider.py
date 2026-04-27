@@ -31,7 +31,7 @@ class FileSystemStorageProvider(LocalStorageProvider):
         # 存储配置
         self.base_dir = Path(config.get('base_dir', 'temp/images_cache/local_storage'))
         self.max_file_size = config.get('max_file_size_mb', 50) * 1024 * 1024  # MB to bytes
-        self.supported_formats = config.get('supported_formats', ['jpg', 'jpeg', 'png', 'webp', 'gif'])
+        self.supported_formats = config.get('supported_formats', ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'])
         
         # 创建存储目录
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -250,6 +250,7 @@ class FileSystemStorageProvider(LocalStorageProvider):
             'webp': ImageFormat.WEBP,
             'bmp': ImageFormat.BMP,
             'tiff': ImageFormat.TIFF,
+            'svg': ImageFormat.SVG,
         }
         image_format = format_map.get(file_ext, ImageFormat.JPEG)
 
@@ -353,6 +354,7 @@ class FileSystemStorageProvider(LocalStorageProvider):
                 'webp': ImageFormat.WEBP,
                 'bmp': ImageFormat.BMP,
                 'tiff': ImageFormat.TIFF,
+                'svg': ImageFormat.SVG,
             }
             image_format = format_map.get(file_ext, ImageFormat.JPEG)
 

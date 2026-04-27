@@ -97,7 +97,33 @@ def _should_fallback_to_sqlite(exc: Exception, original_url: str) -> bool:
     return missing_driver or connectivity_error
 
 
+def mask_database_url(database_url: str) -> str:
+    """Return a database URL safe for logs by redacting the password."""
+    value = str(database_url or "")
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return "<invalid>"
+    if not parsed.password or "@" not in parsed.netloc:
+        return value
+    userinfo, hostinfo = parsed.netloc.rsplit("@", 1)
+    username = userinfo.split(":", 1)[0]
+    return parsed._replace(netloc=f"{username}:***@{hostinfo}").geturl()
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except Exception:
+        logger.warning("Invalid %s=%r, using default %s", name, os.getenv(name), default)
+        return default
+    return max(minimum, value)
+
+
 def _create_sync_engine(sync_database_url: str, sync_connect_args: dict, pool_size: int, max_overflow: int):
+    pool_size = _env_int("DB_POOL_SIZE", pool_size, minimum=1)
+    max_overflow = _env_int("DB_MAX_OVERFLOW", max_overflow, minimum=0)
+    pool_recycle = _env_int("DB_POOL_RECYCLE", 1800, minimum=1)
     return create_engine(
         sync_database_url,
         connect_args=sync_connect_args,
@@ -105,6 +131,7 @@ def _create_sync_engine(sync_database_url: str, sync_connect_args: dict, pool_si
         pool_pre_ping=True,  # Verify connections before using
         pool_size=pool_size,
         max_overflow=max_overflow,
+        pool_recycle=pool_recycle,
     )
 
 
@@ -116,12 +143,20 @@ def _validate_database_connection(sync_engine, sync_database_url: str) -> None:
 
 
 def _build_async_engine(async_database_url: str, async_connect_args: dict):
-    return create_async_engine(
-        async_database_url,
-        echo=False,  # Disable SQL logging to reduce noise
-        pool_pre_ping=True,
-        connect_args=async_connect_args if "sqlite" in async_database_url else {}
-    )
+    kwargs = {
+        "echo": False,  # Disable SQL logging to reduce noise
+        "pool_pre_ping": True,
+        "connect_args": async_connect_args if "sqlite" in async_database_url else {},
+    }
+    if "sqlite" not in async_database_url:
+        kwargs.update(
+            {
+                "pool_size": _env_int("DB_ASYNC_POOL_SIZE", _env_int("DB_POOL_SIZE", 10, minimum=1), minimum=1),
+                "max_overflow": _env_int("DB_ASYNC_MAX_OVERFLOW", _env_int("DB_MAX_OVERFLOW", 20), minimum=0),
+                "pool_recycle": _env_int("DB_POOL_RECYCLE", 1800, minimum=1),
+            }
+        )
+    return create_async_engine(async_database_url, **kwargs)
 
 
 def _qident(value: str) -> str:
@@ -266,7 +301,7 @@ except Exception as exc:
 
     logger.warning(
         "Default PostgreSQL backend is unavailable for %s; falling back to SQLite at %s",
-        configured_database_url,
+        mask_database_url(configured_database_url),
         SQLITE_FALLBACK_URL,
     )
     selected_database_url = SQLITE_FALLBACK_URL
@@ -275,7 +310,7 @@ except Exception as exc:
     )
     engine = _create_sync_engine(DATABASE_URL, connect_args, pool_size, max_overflow)
 
-logger.info("Database backend selected: %s", DATABASE_URL)
+logger.info("Database backend selected: %s", mask_database_url(DATABASE_URL))
 
 try:
     async_engine = _build_async_engine(ASYNC_DATABASE_URL, async_connect_args)
@@ -289,7 +324,7 @@ except Exception as exc:
         raise
     logger.warning(
         "Async database driver is unavailable for %s; async DB endpoints will be disabled until the driver is installed",
-        ASYNC_DATABASE_URL,
+        mask_database_url(ASYNC_DATABASE_URL),
     )
     async_engine = None
     AsyncSessionLocal = _MissingAsyncSessionFactory(exc)
@@ -319,7 +354,7 @@ async def get_async_db():
         yield session
 
 
-async def init_db():
+async def init_db(*, bootstrap_admin: bool = True):
     """Initialize database tables"""
     # Import here to avoid circular imports
     from .models import Base
@@ -394,13 +429,14 @@ async def init_db():
     async with async_engine.begin() as conn:
         await conn.run_sync(add_missing_columns)
 
-    # Optionally bootstrap an initial admin user
-    from ..auth.auth_service import init_default_admin
-    db = SessionLocal()
-    try:
-        init_default_admin(db)
-    finally:
-        db.close()
+    if bootstrap_admin:
+        # Optionally bootstrap an initial admin user.
+        from ..auth.auth_service import init_default_admin
+        db = SessionLocal()
+        try:
+            init_default_admin(db)
+        finally:
+            db.close()
 
 
 async def close_db():

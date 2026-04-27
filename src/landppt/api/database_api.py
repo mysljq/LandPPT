@@ -157,6 +157,10 @@ async def get_projects_summary(
         # Get project list
         scoped_user_id = None if user.is_admin else user.id
         project_list = await project_manager.list_projects(page=1, page_size=100, user_id=scoped_user_id)
+        if project_list.total > len(project_list.projects):
+            project_list = await project_manager.list_projects(
+                page=1, page_size=project_list.total, user_id=scoped_user_id
+            )
         
         # Calculate summary statistics
         total_projects = project_list.total

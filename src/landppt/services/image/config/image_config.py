@@ -142,7 +142,7 @@ class ImageServiceConfig:
             # 图片处理配置
             'processing': {
                 'max_file_size_mb': 50,
-                'supported_formats': ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+                'supported_formats': ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'],
                 'default_quality': 85,
                 # Store uploads/generations as WebP to reduce storage usage
                 'upload_convert_to_webp': True,

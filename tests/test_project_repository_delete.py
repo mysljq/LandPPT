@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session
 
-from landppt.database.models import Base, Project, User
+from landppt.database.models import Artifact, AsyncTask, Base, Project, User
 from landppt.database.repositories import ProjectRepository
 
 
@@ -95,6 +95,32 @@ async def test_delete_project_also_cleans_legacy_slide_revisions(tmp_path):
                 ),
                 {"project_id": "project-1", "revision_note": "legacy revision"},
             )
+            sync_session.add(
+                AsyncTask(
+                    id="task-1",
+                    task_type="export_pdf",
+                    status="completed",
+                    user_id=1,
+                    project_id="project-1",
+                    progress=1.0,
+                    input_data={},
+                )
+            )
+            sync_session.add(
+                Artifact(
+                    id="artifact-1",
+                    user_id=1,
+                    project_id="project-1",
+                    task_id="task-1",
+                    artifact_type="export_pdf",
+                    storage_backend="minio",
+                    storage_key="exports/project-1/task-1.pdf",
+                    filename="project-1.pdf",
+                    content_type="application/pdf",
+                    size_bytes=123,
+                    checksum_sha256="abc123",
+                )
+            )
             sync_session.commit()
 
             repo = ProjectRepository(_AsyncSessionAdapter(sync_session))
@@ -110,8 +136,18 @@ async def test_delete_project_also_cleans_legacy_slide_revisions(tmp_path):
                 text("SELECT COUNT(*) FROM slide_revisions WHERE project_id = :project_id"),
                 {"project_id": "project-1"},
             ).scalar_one()
+            artifact_count = sync_session.execute(
+                text("SELECT COUNT(*) FROM artifacts WHERE project_id = :project_id"),
+                {"project_id": "project-1"},
+            ).scalar_one()
+            async_task_count = sync_session.execute(
+                text("SELECT COUNT(*) FROM async_tasks WHERE project_id = :project_id"),
+                {"project_id": "project-1"},
+            ).scalar_one()
 
             assert project_count == 0
             assert slide_revision_count == 0
+            assert artifact_count == 0
+            assert async_task_count == 0
     finally:
         engine.dispose()

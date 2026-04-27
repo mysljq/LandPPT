@@ -48,6 +48,7 @@ class ImageFormat(str, Enum):
     WEBP = "webp"
     BMP = "bmp"
     TIFF = "tiff"
+    SVG = "svg+xml"
 
 
 class ImagePosition(str, Enum):

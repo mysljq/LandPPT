@@ -34,7 +34,7 @@ async function exportToPDF() {
             throw new Error('服务器返回了未知的响应格式。');
         }
 
-        if (data.status === 'processing' && data.task_id) {
+        if ((data.status === 'processing' || data.status === 'queued' || data.status === 'pending') && data.task_id) {
             const slideCount = data.slide_count || '多个';
             updateProgressToast(progressToast, `PDF生成任务已启动（共${slideCount}页），正在后台处理...`, 15);
             await trackPdfExportTask(data.task_id, progressToast);
@@ -170,7 +170,7 @@ async function exportToPPTX() {
             throw new Error('服务器返回了未知的响应格式。');
         }
 
-        if (data.status === 'processing' && data.task_id) {
+        if ((data.status === 'processing' || data.status === 'queued' || data.status === 'pending') && data.task_id) {
             updateProgressToast(progressToast, 'PPTX转换任务已启动，正在后台处理...', 20);
             await trackPptxExportTask(data.task_id, progressToast);
         } else if (data.download_url) {
@@ -330,7 +330,7 @@ async function exportToPPTXAsImages() {
             throw new Error('服务器返回了未知的响应格式。');
         }
 
-        if (data.status === 'processing' && data.task_id) {
+        if ((data.status === 'processing' || data.status === 'queued' || data.status === 'pending') && data.task_id) {
             updateProgressToast(progressToast, '图片PPTX生成任务已启动，正在后台处理...', 25);
             await trackPptxExportTask(data.task_id, progressToast, {
                 startProgress: 25,
@@ -360,25 +360,46 @@ async function exportToPPTXAsImages() {
 }
 
 
-function downloadHTML() {
-    // 显示提示信息
-    showNotification('正在准备HTML文件包...', 'info');
+async function downloadHTML() {
+    showNotification('正在生成HTML文件包...', 'info');
 
-    // 创建下载链接
-    const downloadLink = document.createElement('a');
-    downloadLink.href = `/api/projects/${window.landpptEditorConfig.projectId}/export/html`;
-    downloadLink.download = '';
-    downloadLink.style.display = 'none';
+    try {
+        // 先取回文件再触发下载，保证提示顺序与实际一致
+        const response = await fetch(`/api/projects/${window.landpptEditorConfig.projectId}/export/html`);
+        if (!response.ok) {
+            let detail = `服务返回异常(${response.status})`;
+            try {
+                const data = await response.json();
+                if (data && data.detail) detail = data.detail;
+            } catch (e) { /* 非JSON响应 */ }
+            throw new Error(detail);
+        }
 
-    // 添加到页面并触发下载
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
+        const blob = await response.blob();
 
-    // 延迟显示成功消息
-    setTimeout(() => {
-        showNotification('HTML文件包下载已开始', 'success');
-    }, 1000);
+        // 从Content-Disposition中解析文件名
+        let filename = 'PPT.zip';
+        const disposition = response.headers.get('content-disposition') || '';
+        const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match) {
+            filename = decodeURIComponent(utf8Match[1]);
+        }
+
+        const url = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = url;
+        downloadLink.download = filename;
+        downloadLink.style.display = 'none';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(url);
+
+        showNotification('HTML文件包已生成，开始下载', 'success');
+    } catch (error) {
+        console.error('HTML export error:', error);
+        showNotification(`HTML导出失败: ${error.message || error}`, 'error');
+    }
 }
 
 function showNotification(message, type = 'info') {

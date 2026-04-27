@@ -714,7 +714,6 @@ class GlobalMasterTemplateService:
                     full_response = ""
                     async for chunk in provider.stream_chat_completion(
                         messages=messages,
-                        max_tokens=ai_config.max_tokens,
                         temperature=0.7,
                         model=template_settings.get('model')
                     ):
@@ -727,7 +726,6 @@ class GlobalMasterTemplateService:
                     # 使用标准聊天API
                     response = await self._chat_completion(
                         messages=messages,
-                        max_tokens=ai_config.max_tokens,
                         temperature=0.7
                     )
                     full_response = response.content
@@ -743,7 +741,6 @@ class GlobalMasterTemplateService:
                     full_response = ""
                     async for chunk in provider.stream_text_completion(
                         prompt=ai_prompt,
-                        max_tokens=ai_config.max_tokens,
                         temperature=0.7,
                         model=template_settings.get('model')
                     ):
@@ -756,7 +753,6 @@ class GlobalMasterTemplateService:
                     # 使用标准文本完成API
                     response = await provider.text_completion(
                         prompt=ai_prompt,
-                        max_tokens=ai_config.max_tokens,
                         temperature=0.7,
                         model=template_settings.get('model')
                     )
@@ -833,7 +829,6 @@ class GlobalMasterTemplateService:
                 full_response = ""
                 async for chunk in provider.stream_text_completion(
                     prompt=ai_prompt,
-                    max_tokens=ai_config.max_tokens,
                     temperature=0.7,
                     model=template_settings.get('model')
                 ):
@@ -875,7 +870,6 @@ class GlobalMasterTemplateService:
                 # 调用标准AI生成
                 response = await provider.text_completion(
                     prompt=ai_prompt,
-                    max_tokens=ai_config.max_tokens,
                     temperature=0.7,
                     model=template_settings.get('model')
                 )

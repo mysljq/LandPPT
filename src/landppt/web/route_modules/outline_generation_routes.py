@@ -4,6 +4,7 @@ Outline generation routes extracted from the outline router.
 
 from __future__ import annotations
 
+import json
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -42,6 +43,37 @@ async def stream_outline_generation(
             raise HTTPException(status_code=404, detail="Project not found")
 
         user_ppt_service = get_ppt_service_for_user(user.id)
+        confirmed_requirements = project.confirmed_requirements or {}
+        force_file_outline_regeneration = bool(
+            confirmed_requirements.get("force_file_outline_regeneration")
+        )
+        existing_outline = project.outline if isinstance(project.outline, dict) else None
+        existing_slides = existing_outline.get("slides", []) if existing_outline else []
+
+        if existing_slides and not force_regenerate and not force_file_outline_regeneration:
+            async def generate_saved_outline():
+                import json
+                try:
+                    await user_ppt_service._update_outline_generation_stage(project_id, existing_outline)
+                except Exception as stage_error:
+                    logger.warning(
+                        "Failed to mark saved outline stage completed for project %s: %s",
+                        project_id,
+                        stage_error,
+                    )
+                yield f"data: {json.dumps({'status': {'step': 'cached', 'message': '已加载已有大纲', 'progress': 1.0}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'outline': existing_outline}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'done': True, 'llm_call_count': 0})}\n\n"
+
+            return StreamingResponse(
+                generate_saved_outline(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
         _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
         outline_provider_name = outline_settings.get("provider")
 
@@ -59,19 +91,14 @@ async def stream_outline_generation(
                 generate(),
                 media_type="text/event-stream",
                 headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
+                    "Cache-Control": "no-cache, no-transform",
                     "X-Accel-Buffering": "no",
                 },
             )
 
         async def generate():
             billed = False
-            confirmed_requirements = project.confirmed_requirements or {}
             content_source = confirmed_requirements.get("content_source")
-            force_file_outline_regeneration = bool(
-                confirmed_requirements.get("force_file_outline_regeneration")
-            )
             force_fresh_generation = bool(force_regenerate or force_file_outline_regeneration)
             if force_fresh_generation:
                 logger.info(
@@ -142,13 +169,14 @@ async def stream_outline_generation(
             generate(),
             media_type="text/event-stream",
             headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                "Cache-Control": "no-cache, no-transform",
                 # For nginx/traefik buffering; safe to include even if unused.
                 "X-Accel-Buffering": "no",
             },
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -202,6 +230,7 @@ async def generate_outline(
             language=language,
             network_mode=network_mode,
             target_audience=confirmed_requirements.get('target_audience', '普通大众'),
+            custom_audience=confirmed_requirements.get('custom_audience'),
             ppt_style=confirmed_requirements.get('ppt_style', 'general'),
             custom_style_prompt=confirmed_requirements.get('custom_style_prompt'),
             include_transition_pages=bool(confirmed_requirements.get('include_transition_pages', False)),
@@ -308,6 +337,7 @@ async def regenerate_outline(
             language=language,
             network_mode=network_mode,
             target_audience=confirmed_requirements.get('target_audience', '普通大众'),
+            custom_audience=confirmed_requirements.get('custom_audience'),
             ppt_style=confirmed_requirements.get('ppt_style', 'general'),
             custom_style_prompt=confirmed_requirements.get('custom_style_prompt'),
             include_transition_pages=bool(confirmed_requirements.get('include_transition_pages', False)),
@@ -410,6 +440,8 @@ async def regenerate_outline(
                 scenario=project_request.scenario,
                 requirements=confirmed_requirements.get('requirements', ''),
                 target_audience=confirmed_requirements.get('target_audience', '普通大众'),
+                custom_audience=confirmed_requirements.get('custom_audience'),
+                description=confirmed_requirements.get('description'),
                 language=language,
                 page_count_mode=page_count_settings.get('mode', 'ai_decide'),
                 min_pages=page_count_settings.get('min_pages', 5),
@@ -650,6 +682,8 @@ async def generate_file_outline(
                             scenario='general',
                             requirements=final_reqs,
                             target_audience=confirmed_requirements.get('target_audience', '普通大众'),
+                            custom_audience=confirmed_requirements.get('custom_audience'),
+                            description=confirmed_requirements.get('description'),
                             language=language,
                             page_count_mode=confirmed_requirements.get('page_count_settings', {}).get('mode', 'ai_decide'),
                             min_pages=confirmed_requirements.get('page_count_settings', {}).get('min_pages', 8),
@@ -766,13 +800,34 @@ async def update_project_outline(
     try:
         data = await request.json()
         outline_content = data.get('outline_content', '')
+        operation = data.get('operation')
+        try:
+            json.loads(outline_content)
+        except (TypeError, json.JSONDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid outline JSON")
 
-        success = await ppt_service.update_project_outline(project_id, outline_content)
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        if operation:
+            operation_success = await user_ppt_service.project_manager.apply_slide_structure_operation(
+                project_id,
+                operation,
+                user_id=user.id,
+            )
+            if not operation_success:
+                raise HTTPException(status_code=400, detail="Failed to apply slide structure operation")
+
+        success = await user_ppt_service.update_project_outline(project_id, outline_content)
         if success:
             return {"status": "success", "message": "Outline updated"}
         else:
             raise HTTPException(status_code=500, detail="Failed to update outline")
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

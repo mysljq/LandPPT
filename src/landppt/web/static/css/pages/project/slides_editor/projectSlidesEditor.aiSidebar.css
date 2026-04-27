@@ -383,11 +383,41 @@
 .ai-message.system {
     background: var(--surface-elevated);
     color: var(--text-secondary);
-    font-style: italic;
-    text-align: center;
-    margin: var(--spacing-xs) var(--spacing-md);
+    margin: var(--spacing-xs) var(--spacing-sm);
     font-size: 0.75rem;
     border: 1px solid var(--border-color);
+}
+
+.ai-empty-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--text-muted);
+    line-height: 1.25;
+}
+
+.ai-empty-hint i {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.ai-empty-hint-title {
+    color: var(--text-primary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.ai-empty-hint-chip {
+    max-width: 96px;
+    padding: 2px 7px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--surface-muted);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .ai-message:hover {
@@ -1002,5 +1032,81 @@
 
 .ai-regenerate-btn:hover i {
     animation: spin 1s linear infinite;
+}
+
+.ai-agent-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.ai-agent-event {
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 8px;
+    background: #fff;
+    color: #374151;
+    font-size: 13px;
+}
+
+.ai-agent-event-title {
+    color: #111827;
+    font-weight: 600;
+}
+
+.ai-agent-event-detail {
+    margin-top: 4px;
+    color: #4b5563;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+
+.ai-agent-event-toggle {
+    width: 100%;
+    min-height: 24px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.ai-agent-event-toggle:hover .ai-agent-event-summary,
+.ai-agent-event-toggle:focus-visible .ai-agent-event-summary {
+    color: #374151;
+}
+
+.ai-agent-event-toggle:focus-visible {
+    outline: 2px solid rgba(59, 130, 246, 0.35);
+    outline-offset: 3px;
+    border-radius: 4px;
+}
+
+.ai-agent-event-summary {
+    min-width: 0;
+    color: #6b7280;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ai-agent-event-caret {
+    color: #9ca3af;
+    font-size: 11px;
+    transition: transform 0.18s ease;
+}
+
+.ai-agent-event.is-collapsed .ai-agent-event-detail {
+    display: none;
+}
+
+.ai-agent-event.is-expanded .ai-agent-event-caret {
+    transform: rotate(90deg);
 }
 

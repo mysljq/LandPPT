@@ -5,8 +5,10 @@ Database service layer for converting between database models and API models
 import time
 import uuid
 import logging
+import copy
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +16,14 @@ from .repositories import (
     ProjectRepository, TodoBoardRepository, TodoStageRepository,
     ProjectVersionRepository, SlideDataRepository, PPTTemplateRepository, GlobalMasterTemplateRepository
 )
-from .models import Project as DBProject, TodoBoard as DBTodoBoard, TodoStage as DBTodoStage, PPTTemplate as DBPPTTemplate, GlobalMasterTemplate as DBGlobalMasterTemplate
+from .models import (
+    Project as DBProject,
+    TodoBoard as DBTodoBoard,
+    TodoStage as DBTodoStage,
+    SlideData as DBSlideData,
+    PPTTemplate as DBPPTTemplate,
+    GlobalMasterTemplate as DBGlobalMasterTemplate,
+)
 from ..api.models import (
     PPTProject, TodoBoard, TodoStage, ProjectListResponse,
     PPTGenerationRequest
@@ -53,6 +62,80 @@ class DatabaseService:
             return 0
         slides = outline.get("slides")
         return len(slides) if isinstance(slides, list) else 0
+
+    @staticmethod
+    def _clone_json(value: Any) -> Any:
+        return copy.deepcopy(value) if value is not None else None
+
+    @staticmethod
+    def _get_slide_content_type(slide_data: Dict[str, Any]) -> str:
+        return (
+            slide_data.get("content_type")
+            or slide_data.get("slide_type")
+            or slide_data.get("type")
+            or "content"
+        )
+
+    @classmethod
+    def _get_slide_metadata(cls, slide_data: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = slide_data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = slide_data.get("slide_metadata")
+        metadata = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+
+        for key in (
+            "slide_type",
+            "type",
+            "description",
+            "subtitle",
+            "content",
+            "content_points",
+            "page_number",
+        ):
+            if key in slide_data and slide_data.get(key) is not None:
+                metadata[key] = copy.deepcopy(slide_data[key])
+
+        return metadata
+
+    @classmethod
+    def _normalize_slide_json_entry(
+        cls,
+        slide_index: int,
+        slide_data: Dict[str, Any],
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        entry = dict(existing or {})
+        incoming = dict(slide_data or {})
+        for key, value in incoming.items():
+            if value is not None:
+                entry[key] = copy.deepcopy(value)
+
+        entry["page_number"] = slide_index + 1
+        entry["title"] = entry.get("title") or f"Slide {slide_index + 1}"
+        content_type = cls._get_slide_content_type(entry)
+        entry["content_type"] = content_type
+        entry.setdefault("slide_type", content_type)
+        entry["metadata"] = cls._get_slide_metadata(entry)
+        return entry
+
+    @classmethod
+    def _slide_record_from_payload(
+        cls,
+        project_id: str,
+        slide_index: int,
+        slide_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        slide_data = dict(slide_data or {})
+        return {
+            "project_id": project_id,
+            "slide_index": slide_index,
+            "slide_id": slide_data.get("slide_id", f"slide_{slide_index}"),
+            "title": slide_data.get("title", f"Slide {slide_index + 1}"),
+            "content_type": cls._get_slide_content_type(slide_data),
+            "html_content": slide_data.get("html_content", ""),
+            "slide_metadata": cls._get_slide_metadata(slide_data),
+            "is_user_edited": bool(slide_data.get("is_user_edited", False)),
+        }
     
     def _convert_db_project_to_api(self, db_project: DBProject) -> PPTProject:
         """Convert database project to API model"""
@@ -407,6 +490,89 @@ class DatabaseService:
                     logger.error(f"Failed to update TODO board progress for project {project_id}")
         
         return success
+
+    async def _sync_outline_to_existing_slides(
+        self,
+        project_id: str,
+        outline: Dict[str, Any],
+        user_id: Optional[int] = None,
+    ) -> None:
+        """Copy outline title/type metadata into existing slide storage."""
+        if not isinstance(outline, dict):
+            return
+
+        outline_slides = outline.get("slides")
+        if not isinstance(outline_slides, list):
+            return
+
+        project = await self.project_repo.get_by_id(project_id, user_id=user_id)
+        if not project:
+            return
+
+        stored_slides_data = list(project.slides_data or [])
+        update_project_json = bool(stored_slides_data)
+        slide_rows = {
+            slide.slide_index: slide
+            for slide in await self.slide_repo.get_slides_by_project_id(project_id)
+        }
+
+        for index, outline_slide in enumerate(outline_slides):
+            if not isinstance(outline_slide, dict):
+                continue
+
+            if index < len(stored_slides_data):
+                stored_slides_data[index] = self._normalize_slide_json_entry(
+                    index,
+                    outline_slide,
+                    existing=stored_slides_data[index],
+                )
+
+            slide_row = slide_rows.get(index)
+            if slide_row:
+                slide_row.title = outline_slide.get("title") or slide_row.title
+                slide_row.content_type = self._get_slide_content_type(outline_slide)
+                metadata = dict(slide_row.slide_metadata or {})
+                metadata.update(self._get_slide_metadata(outline_slide))
+                slide_row.slide_metadata = metadata
+                slide_row.updated_at = time.time()
+
+        if update_project_json:
+            project.slides_data = stored_slides_data
+            project.updated_at = time.time()
+
+        if update_project_json or slide_rows:
+            await self.session.commit()
+
+    async def _sync_single_slide_to_project_json(
+        self,
+        project_id: str,
+        slide_index: int,
+        slide_data: Dict[str, Any],
+        user_id: Optional[int] = None,
+    ) -> None:
+        project = await self.project_repo.get_by_id(project_id, user_id=user_id)
+        if not project:
+            return
+
+        slides_data = list(project.slides_data or [])
+        while len(slides_data) <= slide_index:
+            placeholder_index = len(slides_data)
+            slides_data.append(
+                {
+                    "page_number": placeholder_index + 1,
+                    "title": f"Slide {placeholder_index + 1}",
+                    "html_content": "",
+                }
+            )
+
+        slides_data[slide_index] = self._normalize_slide_json_entry(
+            slide_index,
+            slide_data,
+            existing=slides_data[slide_index],
+        )
+        project.slides_data = slides_data
+        project.updated_at = time.time()
+        await self.session.commit()
     
     async def save_project_outline(self, project_id: str, outline: Dict[str, Any]) -> bool:
         """Save project outline"""
@@ -431,13 +597,18 @@ class DatabaseService:
                 "updated_at": time.time()
             }
 
-            result = await self.project_repo.update(project_id, update_data)
+            result = await self.project_repo.update(project_id, update_data, user_id=effective_user_id)
 
             if result:
                 logger.info(f"Successfully saved outline for project {project_id}")
+                await self._sync_outline_to_existing_slides(
+                    project_id,
+                    outline,
+                    user_id=effective_user_id,
+                )
 
                 # 验证保存是否成功
-                saved_project = await self.project_repo.get_by_id(project_id)
+                saved_project = await self.project_repo.get_by_id(project_id, user_id=effective_user_id)
                 if saved_project and saved_project.outline:
                     logger.info(f"Verified outline saved: {len(saved_project.outline.get('slides', []))} slides")
                     return True
@@ -477,17 +648,7 @@ class DatabaseService:
             # 准备幻灯片数据
             slides_records = []
             for i, slide_data in enumerate(slides_data):
-                slide_record = {
-                    "project_id": project_id,
-                    "slide_index": i,
-                    "slide_id": slide_data.get("slide_id", f"slide_{i}"),
-                    "title": slide_data.get("title", f"Slide {i+1}"),
-                    "content_type": slide_data.get("content_type", "content"),
-                    "html_content": slide_data.get("html_content", ""),
-                    "slide_metadata": slide_data.get("metadata", {}),
-                    "is_user_edited": slide_data.get("is_user_edited", False)
-                }
-                slides_records.append(slide_record)
+                slides_records.append(self._slide_record_from_payload(project_id, i, slide_data))
 
             # 使用批量upsert方式更新幻灯片
             try:
@@ -545,16 +706,7 @@ class DatabaseService:
 
             slide_records = []
             for i, slide_data in enumerate(slides_data):
-                slide_records.append({
-                    "project_id": project_id,
-                    "slide_index": i,
-                    "slide_id": slide_data.get("slide_id", f"slide_{i}"),
-                    "title": slide_data.get("title", f"Slide {i+1}"),
-                    "content_type": slide_data.get("content_type", "content"),
-                    "html_content": slide_data.get("html_content", ""),
-                    "slide_metadata": slide_data.get("metadata", {}),
-                    "is_user_edited": slide_data.get("is_user_edited", False)
-                })
+                slide_records.append(self._slide_record_from_payload(project_id, i, slide_data))
 
             if slide_records:
                 await self.slide_repo.create_slides(slide_records)
@@ -593,16 +745,7 @@ class DatabaseService:
                     raise ValueError("幻灯片数据不能为空")
 
                 # Prepare slide record for database
-                slide_record = {
-                    "project_id": project_id,
-                    "slide_index": slide_index,
-                    "slide_id": slide_data.get("slide_id", f"slide_{slide_index}"),
-                    "title": slide_data.get("title", f"Slide {slide_index + 1}"),
-                    "content_type": slide_data.get("content_type", "content"),
-                    "html_content": slide_data.get("html_content", ""),
-                    "slide_metadata": slide_data.get("metadata", {}),
-                    "is_user_edited": slide_data.get("is_user_edited", False)
-                }
+                slide_record = self._slide_record_from_payload(project_id, slide_index, slide_data)
 
                 logger.debug(f"📊 准备保存的幻灯片记录: 标题='{slide_record['title']}', 跳过用户编辑={skip_if_user_edited}")
 
@@ -610,6 +753,12 @@ class DatabaseService:
                 result_slide = await self.slide_repo.upsert_slide(project_id, slide_index, slide_record, skip_if_user_edited=skip_if_user_edited)
 
                 if result_slide:
+                    await self._sync_single_slide_to_project_json(
+                        project_id,
+                        slide_index,
+                        slide_data,
+                        user_id=effective_user_id,
+                    )
                     logger.debug(f"✅ 幻灯片保存成功: 项目ID={project_id}, 索引={slide_index}, 数据库ID={result_slide.id}")
                     return True
                 else:
@@ -633,6 +782,213 @@ class DatabaseService:
         
         logger.error(f"❌ 保存单个幻灯片失败: 重试次数用尽, 项目ID={project_id}, 索引={slide_index}")
         return False
+
+    async def apply_slide_structure_operation(
+        self,
+        project_id: str,
+        operation: Dict[str, Any],
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Apply an outline structural operation to persisted slide order."""
+        if not isinstance(operation, dict):
+            return True
+
+        op_type = str(operation.get("type") or operation.get("operation") or "").strip().lower()
+        if op_type not in {"delete", "move", "insert"}:
+            return True
+
+        effective_user_id = user_id
+        if effective_user_id == USER_SCOPE_ALL:
+            effective_user_id = None
+        if effective_user_id is None:
+            effective_user_id = current_user_id.get()
+
+        project = await self.project_repo.get_by_id(project_id, user_id=effective_user_id)
+        if not project:
+            return False
+
+        if op_type == "insert":
+            return True
+
+        slide_rows = list(await self.slide_repo.get_slides_by_project_id(project_id))
+        slides_json = list(project.slides_data or [])
+
+        try:
+            from_index = int(operation.get("from_index", operation.get("slide_index", -1)))
+        except (TypeError, ValueError):
+            return False
+
+        changed = False
+
+        if op_type == "delete":
+            if 0 <= from_index < len(slide_rows):
+                removed = slide_rows.pop(from_index)
+                await self.session.delete(removed)
+                changed = True
+
+            if 0 <= from_index < len(slides_json):
+                slides_json.pop(from_index)
+                changed = True
+
+        elif op_type == "move":
+            try:
+                to_index = int(operation.get("to_index"))
+            except (TypeError, ValueError):
+                return False
+
+            if from_index == to_index:
+                return True
+
+            if 0 <= from_index < len(slide_rows):
+                moved_row = slide_rows.pop(from_index)
+                slide_rows.insert(max(0, min(to_index, len(slide_rows))), moved_row)
+                changed = True
+
+            if 0 <= from_index < len(slides_json):
+                moved_json = slides_json.pop(from_index)
+                slides_json.insert(max(0, min(to_index, len(slides_json))), moved_json)
+                changed = True
+
+        if not changed:
+            return True
+
+        for index, slide in enumerate(slide_rows):
+            slide.slide_index = index
+            slide.updated_at = time.time()
+
+        for index, slide_data in enumerate(slides_json):
+            if isinstance(slide_data, dict):
+                slide_data["page_number"] = index + 1
+
+        project.slides_data = slides_json
+        project.updated_at = time.time()
+        await self.session.commit()
+        return True
+
+    async def duplicate_project(
+        self,
+        project_id: str,
+        user_id: Optional[int] = None,
+        title_suffix: str = " (Copy)",
+    ) -> Optional[PPTProject]:
+        """Duplicate a project for the same owner."""
+        effective_user_id = user_id
+        if effective_user_id == USER_SCOPE_ALL:
+            effective_user_id = None
+        if effective_user_id is None:
+            effective_user_id = current_user_id.get()
+
+        source = await self.project_repo.get_by_id(project_id, user_id=effective_user_id)
+        if not source:
+            return None
+
+        new_project_id = str(uuid.uuid4())
+        now = time.time()
+
+        try:
+            duplicate = DBProject(
+                project_id=new_project_id,
+                user_id=source.user_id,
+                title=f"{source.title}{title_suffix}",
+                scenario=source.scenario,
+                topic=source.topic,
+                requirements=source.requirements,
+                status=source.status,
+                outline=self._clone_json(source.outline),
+                slides_html=source.slides_html,
+                slides_data=self._clone_json(source.slides_data),
+                confirmed_requirements=self._clone_json(source.confirmed_requirements),
+                project_metadata=self._clone_json(source.project_metadata),
+                version=source.version,
+                share_enabled=False,
+                share_token=None,
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(duplicate)
+            await self.session.flush()
+
+            template_id_map: Dict[int, int] = {}
+            template_stmt = select(DBPPTTemplate).where(DBPPTTemplate.project_id == project_id)
+            template_result = await self.session.execute(template_stmt)
+            for template in template_result.scalars().all():
+                copied_template = DBPPTTemplate(
+                    project_id=new_project_id,
+                    template_type=template.template_type,
+                    template_name=template.template_name,
+                    description=template.description,
+                    html_template=template.html_template,
+                    applicable_scenarios=self._clone_json(template.applicable_scenarios),
+                    style_config=self._clone_json(template.style_config),
+                    usage_count=template.usage_count,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self.session.add(copied_template)
+                await self.session.flush()
+                template_id_map[template.id] = copied_template.id
+
+            if source.todo_board:
+                copied_board = DBTodoBoard(
+                    project_id=new_project_id,
+                    current_stage_index=source.todo_board.current_stage_index,
+                    overall_progress=source.todo_board.overall_progress,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self.session.add(copied_board)
+                await self.session.flush()
+
+                for stage in source.todo_board.stages:
+                    self.session.add(
+                        DBTodoStage(
+                            todo_board_id=copied_board.id,
+                            project_id=new_project_id,
+                            stage_id=stage.stage_id,
+                            stage_index=stage.stage_index,
+                            title=stage.title,
+                            description=stage.description,
+                            status=stage.status,
+                            progress=stage.progress,
+                            result=self._clone_json(stage.result),
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+
+            for slide in sorted(source.slides, key=lambda item: item.slide_index):
+                # slide_id 列为 VARCHAR(100)。直接在原 id 后追加 "_copy_xxxxxxxx"
+                # 会在多次复制后不断变长并越界，导致 PostgreSQL
+                # StringDataRightTruncationError。改用基于编号的固定短 id，
+                # 长度恒定，不随复制次数增长。
+                new_slide_id = f"slide_{slide.slide_index}_{uuid.uuid4().hex[:8]}"
+                self.session.add(
+                    DBSlideData(
+                        project_id=new_project_id,
+                        slide_index=slide.slide_index,
+                        slide_id=new_slide_id,
+                        title=slide.title,
+                        content_type=slide.content_type,
+                        html_content=slide.html_content,
+                        slide_metadata=self._clone_json(slide.slide_metadata),
+                        template_id=template_id_map.get(slide.template_id),
+                        is_user_edited=slide.is_user_edited,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
+            await self.session.commit()
+            duplicated_project = await self.project_repo.get_by_id(
+                new_project_id,
+                user_id=source.user_id,
+            )
+            return self._convert_db_project_to_api(duplicated_project) if duplicated_project else None
+
+        except Exception:
+            await self.session.rollback()
+            logger.exception("Failed to duplicate project %s", project_id)
+            return None
 
     async def update_project(self, project_id: str, update_data: Dict[str, Any], user_id: Optional[int] = None) -> bool:
         """Update project data. If user_id is provided, enforces ownership."""

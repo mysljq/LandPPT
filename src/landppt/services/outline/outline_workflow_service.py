@@ -16,6 +16,7 @@ from ...utils.thread_pool import run_blocking_io
 from .outline_workflow_support import (
     build_file_info,
     build_processing_stats,
+    build_project_requirements_text,
     build_transition_page_requirement_text,
     build_validation_requirements,
     create_outline_from_file_content,
@@ -83,7 +84,7 @@ class OutlineWorkflowService:
         try:
             logger.info("Streaming file outline generation for %s", request.filename)
             project_requirements = (
-                (getattr(request, "requirements", "") or "")
+                build_project_requirements_text(request)
                 + build_transition_page_requirement_text(request)
             )
             try:
@@ -99,7 +100,7 @@ class OutlineWorkflowService:
                     project_scenario=request.scenario or "general",
                     project_requirements=project_requirements,
                     target_audience=getattr(request, "target_audience", "General audience"),
-                    custom_audience="",
+                    custom_audience=getattr(request, "custom_audience", "") or "",
                     ppt_style=getattr(request, "ppt_style", "general"),
                     custom_style_prompt=getattr(request, "custom_style_prompt", ""),
                     page_count_mode=getattr(request, "page_count_mode", "ai_decide"),
@@ -182,7 +183,7 @@ class OutlineWorkflowService:
         try:
             logger.info("Generating file outline for %s", request.filename)
             project_requirements = (
-                (getattr(request, "requirements", "") or "")
+                build_project_requirements_text(request)
                 + build_transition_page_requirement_text(request)
             )
             try:
@@ -198,7 +199,7 @@ class OutlineWorkflowService:
                     project_scenario=request.scenario or "general",
                     project_requirements=project_requirements,
                     target_audience=getattr(request, "target_audience", "General audience"),
-                    custom_audience="",
+                    custom_audience=getattr(request, "custom_audience", "") or "",
                     ppt_style=getattr(request, "ppt_style", "general"),
                     custom_style_prompt=getattr(request, "custom_style_prompt", ""),
                     page_count_mode=getattr(request, "page_count_mode", "ai_decide"),

@@ -51,7 +51,10 @@ function handleDrop(event, targetIndex) {
     }
 
     // 移动幻灯片
-    moveSlide(draggedSlideIndex, newIndex);
+    moveSlide(draggedSlideIndex, newIndex).catch((error) => {
+        console.error('Move slide failed:', error);
+        showNotification('移动幻灯片失败：' + (error?.message || error), 'error');
+    });
 }
 
 function handleDragEnd(event) {
@@ -65,7 +68,7 @@ function handleDragEnd(event) {
     draggedSlideIndex = -1;
 }
 
-function moveSlide(fromIndex, toIndex) {
+async function moveSlide(fromIndex, toIndex) {
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 ||
         fromIndex >= slidesData.length || toIndex > slidesData.length) {
         return;
@@ -99,10 +102,7 @@ function moveSlide(fromIndex, toIndex) {
     });
 
     // 同步更新大纲顺序（避免重新生成等操作按编辑器序号写入错误页）
-    updateOutlineForSlideOperation('move', fromIndex, { to_index: toIndex }).catch((e) => {
-        console.error('Outline move failed:', e);
-        showNotification('同步更新大纲顺序失败：' + (e?.message || e), 'warning');
-    });
+    await updateOutlineForSlideOperation('move', fromIndex, { to_index: toIndex });
 
     // 更新当前选中的索引
     if (currentSlideIndex === fromIndex) {
@@ -117,7 +117,7 @@ function moveSlide(fromIndex, toIndex) {
     refreshSidebar();
 
     // 保存到服务器
-    saveToServer();
+    await saveToServer();
 }
 
 // 右键菜单功能
@@ -160,6 +160,99 @@ function editSlide() {
     setMode('edit');
 }
 
+function cloneJsonValue(value, fallback = null) {
+    if (value === undefined || value === null) {
+        return fallback;
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+function getSlideOutlineSnapshot(slideIndex) {
+    if (
+        projectOutline &&
+        Array.isArray(projectOutline.slides) &&
+        slideIndex >= 0 &&
+        slideIndex < projectOutline.slides.length
+    ) {
+        return cloneJsonValue(projectOutline.slides[slideIndex], null);
+    }
+    return null;
+}
+
+function normalizeInsertedTitle(title) {
+    const baseTitle = title || 'Slide';
+    return `${baseTitle} (\u526f\u672c)`;
+}
+
+function renumberSlidesDataPages() {
+    if (!Array.isArray(slidesData)) {
+        return;
+    }
+    slidesData.forEach((slide, index) => {
+        if (slide && typeof slide === 'object') {
+            slide.page_number = index + 1;
+        }
+    });
+}
+
+function renumberProjectOutlinePages() {
+    if (!projectOutline || !Array.isArray(projectOutline.slides)) {
+        return;
+    }
+    projectOutline.slides.forEach((slide, index) => {
+        if (slide && typeof slide === 'object') {
+            slide.page_number = index + 1;
+        }
+    });
+}
+
+function cloneSlideForInsert(sourceSlide, insertIndex) {
+    const newSlide = cloneJsonValue(sourceSlide, {});
+    newSlide.page_number = insertIndex + 1;
+    newSlide.title = normalizeInsertedTitle(newSlide.title);
+    if (typeof newSlide.html_content !== 'string') {
+        newSlide.html_content = '';
+    }
+    return newSlide;
+}
+
+function cloneOutlineForInsert(sourceOutline, sourceSlide, insertIndex, title) {
+    const sourceMetadata = sourceSlide && sourceSlide.metadata && typeof sourceSlide.metadata === 'object'
+        ? sourceSlide.metadata
+        : {};
+    const fallbackType =
+        (sourceSlide && (sourceSlide.slide_type || sourceSlide.content_type || sourceSlide.type)) ||
+        sourceMetadata.slide_type ||
+        sourceMetadata.type ||
+        'content';
+
+    const outlineSlide = cloneJsonValue(sourceOutline, null) || {
+        title: sourceSlide && sourceSlide.title ? sourceSlide.title : title,
+        slide_type: fallbackType,
+        type: fallbackType,
+        description:
+            (sourceSlide && sourceSlide.description) ||
+            sourceMetadata.description ||
+            '',
+        content_points: cloneJsonValue(
+            (sourceSlide && sourceSlide.content_points) ||
+            sourceMetadata.content_points ||
+            [],
+            []
+        )
+    };
+
+    outlineSlide.page_number = insertIndex + 1;
+    outlineSlide.title = title;
+    const outlineType = outlineSlide.slide_type || outlineSlide.type || fallbackType;
+    outlineSlide.slide_type = outlineType;
+    outlineSlide.type = outlineType;
+    if (!Array.isArray(outlineSlide.content_points)) {
+        outlineSlide.content_points = [];
+    }
+    return outlineSlide;
+}
+
 function copySlide() {
     hideContextMenu();
     if (!isPPTGenerationCompleted()) {
@@ -168,6 +261,7 @@ function copySlide() {
     }
     if (contextMenuSlideIndex >= 0 && contextMenuSlideIndex < slidesData.length) {
         copiedSlideData = JSON.parse(JSON.stringify(slidesData[contextMenuSlideIndex]));
+        copiedSlideOutlineData = getSlideOutlineSnapshot(contextMenuSlideIndex);
         showNotification('幻灯片已复制到剪贴板', 'success');
     }
 }
@@ -184,43 +278,27 @@ async function pasteSlide() {
     }
 
     try {
-        // 获取全局母版模板
-        const globalTemplate = await getSelectedGlobalTemplate();
-
-        // 创建新的幻灯片数据
-        const newSlide = JSON.parse(JSON.stringify(copiedSlideData));
-        newSlide.page_number = contextMenuSlideIndex + 2;
-        newSlide.title = newSlide.title + ' (副本)';
-
-        // 如果有全局母版，使用模板生成新的HTML内容
-        if (globalTemplate) {
-            newSlide.html_content = await generateSlideWithGlobalTemplate(
-                globalTemplate,
-                newSlide.title,
-                '复制的幻灯片内容'
-            );
-        }
+        const insertIndex = contextMenuSlideIndex + 1;
+        const newSlide = cloneSlideForInsert(copiedSlideData, insertIndex);
+        const newOutline = cloneOutlineForInsert(
+            copiedSlideOutlineData,
+            copiedSlideData,
+            insertIndex,
+            newSlide.title
+        );
 
         // 插入到指定位置
-        slidesData.splice(contextMenuSlideIndex + 1, 0, newSlide);
+        slidesData.splice(insertIndex, 0, newSlide);
 
         // 更新后续幻灯片的页码
-        for (let i = contextMenuSlideIndex + 2; i < slidesData.length; i++) {
-            slidesData[i].page_number = i + 1;
-        }
+        renumberSlidesDataPages();
 
         // 同步更新大纲
-        await updateOutlineForSlideOperation('insert', contextMenuSlideIndex + 1, {
-            title: newSlide.title,
-            slide_type: 'content',
-            type: 'content',
-            description: '复制的幻灯片内容',
-            content_points: []
-        });
+        await updateOutlineForSlideOperation('insert', insertIndex, newOutline);
 
         // 刷新界面
         refreshSidebar();
-        saveToServer();
+        await saveToServer();
         showNotification('幻灯片已粘贴', 'success');
     } catch (error) {
         showNotification('粘贴幻灯片失败：' + error.message, 'error');
@@ -283,7 +361,7 @@ async function insertNewSlide() {
 
         // 刷新界面
         refreshSidebar();
-        saveToServer();
+        await saveToServer();
         showNotification('新幻灯片已插入', 'success');
     } catch (error) {
         showNotification('插入新幻灯片失败：' + error.message, 'error');
@@ -298,43 +376,29 @@ async function duplicateSlide() {
     }
     if (contextMenuSlideIndex >= 0 && contextMenuSlideIndex < slidesData.length) {
         try {
-            // 获取全局母版模板
-            const globalTemplate = await getSelectedGlobalTemplate();
-
             const originalSlide = slidesData[contextMenuSlideIndex];
-            const duplicatedSlide = JSON.parse(JSON.stringify(originalSlide));
-            duplicatedSlide.page_number = contextMenuSlideIndex + 2;
-            duplicatedSlide.title = duplicatedSlide.title + ' (副本)';
-
-            // 如果有全局母版，使用模板重新生成HTML内容
-            if (globalTemplate) {
-                duplicatedSlide.html_content = await generateSlideWithGlobalTemplate(
-                    globalTemplate,
-                    duplicatedSlide.title,
-                    '复制的幻灯片内容'
-                );
-            }
+            const sourceOutline = getSlideOutlineSnapshot(contextMenuSlideIndex);
+            const insertIndex = contextMenuSlideIndex + 1;
+            const duplicatedSlide = cloneSlideForInsert(originalSlide, insertIndex);
+            const duplicatedOutline = cloneOutlineForInsert(
+                sourceOutline,
+                originalSlide,
+                insertIndex,
+                duplicatedSlide.title
+            );
 
             // 插入到原幻灯片后面
-            slidesData.splice(contextMenuSlideIndex + 1, 0, duplicatedSlide);
+            slidesData.splice(insertIndex, 0, duplicatedSlide);
 
             // 更新后续幻灯片的页码
-            for (let i = contextMenuSlideIndex + 2; i < slidesData.length; i++) {
-                slidesData[i].page_number = i + 1;
-            }
+            renumberSlidesDataPages();
 
             // 同步更新大纲
-            await updateOutlineForSlideOperation('insert', contextMenuSlideIndex + 1, {
-                title: duplicatedSlide.title,
-                slide_type: 'content',
-                type: 'content',
-                description: '复制的幻灯片内容',
-                content_points: []
-            });
+            await updateOutlineForSlideOperation('insert', insertIndex, duplicatedOutline);
 
             // 刷新界面
             refreshSidebar();
-            saveToServer();
+            await saveToServer();
             showNotification('幻灯片已复制', 'success');
         } catch (error) {
             showNotification('复制幻灯片失败：' + error.message, 'error');
@@ -440,18 +504,14 @@ function refreshSidebar() {
             <div class="drag-indicator bottom"></div>
         `;
 
-        // 设置iframe内容并应用缩放
+        slidesContainer.appendChild(thumbnailDiv);
+
+        // 设置iframe内容并应用缩放。先挂载到DOM，确保缩放计算能拿到真实容器宽度。
         const iframe = thumbnailDiv.querySelector('iframe');
         if (iframe) {
-            // 安全设置iframe内容
             setSafeIframeContent(iframe, slide.html_content);
-
-            iframe.onload = function () {
-                requestAnimationFrame(() => applyThumbnailPreviewScale(this));
-            };
+            requestThumbnailPreviewScale(iframe);
         }
-
-        slidesContainer.appendChild(thumbnailDiv);
     });
 
     // 重新初始化事件监听器

@@ -1234,7 +1234,7 @@
         font-size: 13px;
     }
 
-    /* ── Checkbox card ── */
+    /* ── Checkbox card (legacy, kept for compatibility) ── */
     .req-checkbox-card {
         padding: 14px 16px;
         border: 1px solid var(--glass-border);
@@ -1275,6 +1275,104 @@
         margin-top: 4px;
         font-size: 12px;
         line-height: 1.55;
+    }
+
+    /* ── Compact switch row (transition pages / page numbers) ── */
+    .req-switch-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+
+    .req-switch {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border: 1px solid var(--glass-border);
+        border-radius: 10px;
+        background: var(--surface-subtle);
+        cursor: pointer;
+        color: var(--text-primary);
+        transition: border-color 0.2s ease, background 0.2s ease;
+    }
+
+    .req-switch:hover {
+        border-color: rgba(17, 17, 17, 0.25);
+    }
+
+    .req-switch input[type="checkbox"] {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+        width: 0;
+        height: 0;
+    }
+
+    .req-switch-track {
+        position: relative;
+        flex-shrink: 0;
+        width: 34px;
+        height: 20px;
+        border-radius: 999px;
+        background: rgba(17, 17, 17, 0.15);
+        transition: background 0.2s ease;
+    }
+
+    .req-switch-thumb {
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        transition: transform 0.2s ease;
+    }
+
+    .req-switch input:checked + .req-switch-track {
+        background: var(--surface-contrast, #111);
+    }
+
+    .req-switch input:checked + .req-switch-track .req-switch-thumb {
+        transform: translateX(14px);
+    }
+
+    .req-switch input:focus-visible + .req-switch-track {
+        box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.15);
+    }
+
+    .req-switch:has(input:checked) {
+        border-color: rgba(17, 17, 17, 0.35);
+        background: linear-gradient(135deg, rgba(17, 17, 17, 0.04), rgba(17, 17, 17, 0.01));
+    }
+
+    .req-switch-text {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        line-height: 1.3;
+    }
+
+    .req-switch-title {
+        font-weight: 600;
+        font-size: 13.5px;
+    }
+
+    .req-switch-hint {
+        color: var(--text-secondary);
+        font-size: 11.5px;
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    @media (max-width: 560px) {
+        .req-switch-row {
+            grid-template-columns: 1fr;
+        }
     }
 
     /* ── Submit area ── */

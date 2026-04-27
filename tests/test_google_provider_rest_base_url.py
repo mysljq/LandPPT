@@ -66,4 +66,5 @@ async def test_google_provider_uses_configured_base_url_for_rest(monkeypatch):
     assert calls, "expected at least one HTTP call"
     assert calls[0]["url"] == "https://mirror.example.com/prefix/v1beta/models/gemini-1.5-flash:generateContent"
     assert calls[0]["params"] == {"key": "test-key"}
+    assert "maxOutputTokens" not in calls[0]["json"]["generationConfig"]
 

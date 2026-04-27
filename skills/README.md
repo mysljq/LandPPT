@@ -4,6 +4,14 @@ This repository includes reusable Codex skills under `skills/`.
 
 ## Available
 
+- `landppt-skills`
+  - Path: `skills/landppt-skills/SKILL.md`
+  - Purpose: Independent LandPPT-style workflow for native editable PPTX generation, speaker scripts, narration audio, and explainer video export.
+  - Includes:
+    - Requirement, outline, prompt, and native PPTX guidance
+    - Self-contained local scripts for outline validation, reference PPTX analysis, native template/PPTX generation, narration, and video export
+    - No dependency on the LandPPT web service, database, protected routes, commercial conversion services, or HTML slide rendering
+
 - `landppt-ppt-generation`
   - Path: `skills/landppt-ppt-generation/SKILL.md`
   - Purpose: End-to-end LandPPT PPT generation and post-edit operations via user API key.

@@ -593,8 +593,7 @@ async def test_landppt_provider(
                 },
                 json={
                     "model": model,
-                    "messages": [{"role": "user", "content": "Hello"}],
-                    "max_tokens": 5
+                    "messages": [{"role": "user", "content": "Hello"}]
                 },
                 timeout=aiohttp.ClientTimeout(total=timeout_seconds)
             ) as response:

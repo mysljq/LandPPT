@@ -628,7 +628,7 @@ def get_auth_service() -> AuthService:
 
 
 def init_default_admin(db: Session) -> None:
-    """Optionally bootstrap an admin user when explicitly configured."""
+    """Bootstrap an initial admin user when enabled and the user table is empty."""
     if not app_config.bootstrap_admin_enabled:
         return
 
@@ -641,8 +641,7 @@ def init_default_admin(db: Session) -> None:
 
     if not bootstrap_username or not bootstrap_password:
         logger.warning(
-            "Skipping admin bootstrap because LANDPPT_BOOTSTRAP_ADMIN_USERNAME or "
-            "LANDPPT_BOOTSTRAP_ADMIN_PASSWORD is missing."
+            "Skipping admin bootstrap because the configured admin username or password is missing."
         )
         return
 

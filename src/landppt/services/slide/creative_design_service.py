@@ -6,10 +6,21 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from ...core.config import ai_config, resolve_timeout_seconds
+from ..prompt_asset_service import materialize_base64_image_data_urls_for_prompt
 from ..prompts import prompts_manager
+from ..prompts.prompt_utils import should_include_page_numbers
 
 
 logger = logging.getLogger(__name__)
+
+
+def _llm_wait_timeout(default: float = 600.0) -> float:
+    """Resolve the orchestration-level wait timeout from the user-configured LLM timeout."""
+    try:
+        return float(resolve_timeout_seconds(ai_config.llm_timeout_seconds, int(default)))
+    except Exception:
+        return float(default)
 
 
 if TYPE_CHECKING:
@@ -109,7 +120,12 @@ class CreativeDesignService:
     ) -> str:
         """Generate slide HTML from the selected template style."""
         try:
-            template_html = template["html_template"]
+            if isinstance(slide_data, dict):
+                slide_data["_include_page_numbers"] = should_include_page_numbers(confirmed_requirements)
+            template_html = await materialize_base64_image_data_urls_for_prompt(
+                template["html_template"],
+                user_id=self.user_id,
+            )
             template_name = template.get("template_name", "未知模板")
             logger.info("使用模板 %s 作为风格参考生成第%s页", template_name, page_number)
 
@@ -159,6 +175,11 @@ class CreativeDesignService:
     ) -> str:
         """Build slide-generation prompt context with consistent style guidance."""
         del template_name
+
+        template_html = await materialize_base64_image_data_urls_for_prompt(
+            template_html,
+            user_id=self.user_id,
+        )
 
         if not project_id:
             project_id = confirmed_requirements.get("project_id")
@@ -217,11 +238,16 @@ class CreativeDesignService:
             project_style=confirmed_requirements.get("ppt_style", "general"),
             global_constitution=global_constitution,
             current_page_brief=current_page_brief,
+            include_page_numbers=should_include_page_numbers(confirmed_requirements),
         )
 
     async def _extract_style_genes(self, template_html: str) -> str:
         """Extract core design genes from a template with AI fallback."""
         try:
+            template_html = await materialize_base64_image_data_urls_for_prompt(
+                template_html,
+                user_id=self.user_id,
+            )
             prompt = prompts_manager.get_style_genes_extraction_prompt(template_html)
             response = await self._text_completion_for_role(
                 "creative",
@@ -352,7 +378,7 @@ class CreativeDesignService:
         event = events_dict[project_id]
         if not event.is_set():
             try:
-                await asyncio.wait_for(event.wait(), timeout=600.0)
+                await asyncio.wait_for(event.wait(), timeout=_llm_wait_timeout())
             except asyncio.TimeoutError:
                 logger.warning("第%s页等待设计基因缓存超时，使用默认设计基因", page_number)
                 return default_genes
@@ -502,6 +528,14 @@ class CreativeDesignService:
     # 三层架构：全局宪法 + 页面类型指导 + 单页自由喂料
     # ================================================================
 
+    def _default_global_constitution(
+        self,
+        confirmed_requirements: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if should_include_page_numbers(confirmed_requirements):
+            return "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点与页码锚点\n- 首尾页可自由设计"
+        return "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点\n- 首尾页可自由设计"
+
     async def _get_or_generate_global_constitution(
         self,
         project_id: str,
@@ -513,7 +547,7 @@ class CreativeDesignService:
         """Layer 1: Get or generate global visual constitution, with cache."""
         cache_attr = "_cached_global_constitutions"
         event_attr = "_global_constitution_ready_events"
-        default = "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点与页码锚点\n- 首尾页可自由设计"
+        default = self._default_global_constitution(confirmed_requirements)
 
         if not project_id:
             return await self._generate_global_constitution(
@@ -576,7 +610,7 @@ class CreativeDesignService:
         event = events[project_id]
         if not event.is_set():
             try:
-                await asyncio.wait_for(event.wait(), timeout=600.0)
+                await asyncio.wait_for(event.wait(), timeout=_llm_wait_timeout())
             except asyncio.TimeoutError:
                 return default
         return getattr(self, cache_attr, {}).get(project_id, default)
@@ -589,7 +623,7 @@ class CreativeDesignService:
         first_slide_data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Call LLM to generate global visual constitution."""
-        default = "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点与页码锚点\n- 首尾页可自由设计"
+        default = self._default_global_constitution(confirmed_requirements)
         try:
             prompt = prompts_manager.get_global_visual_constitution_prompt(
                 confirmed_requirements=confirmed_requirements or {},
@@ -686,7 +720,7 @@ class CreativeDesignService:
         event = events[project_id]
         if not event.is_set():
             try:
-                await asyncio.wait_for(event.wait(), timeout=600.0)
+                await asyncio.wait_for(event.wait(), timeout=_llm_wait_timeout())
             except asyncio.TimeoutError:
                 return []
         return getattr(self, cache_attr, {}).get(project_id, [])
@@ -840,7 +874,7 @@ class CreativeDesignService:
         event = events[cache_key]
         if not event.is_set():
             try:
-                await asyncio.wait_for(event.wait(), timeout=600.0)
+                await asyncio.wait_for(event.wait(), timeout=_llm_wait_timeout())
             except asyncio.TimeoutError:
                 logger.warning("第%s页等待单页创意指导超时，使用 fallback", page_number)
                 return fallback
@@ -918,6 +952,10 @@ class CreativeDesignService:
         all_slides: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[str, str, str]:
         """组装设计基因、全局宪法和当前页指导。"""
+        template_html = await materialize_base64_image_data_urls_for_prompt(
+            template_html,
+            user_id=self.user_id,
+        )
         style_genes = await self._get_or_extract_style_genes(project_id, template_html, page_number)
 
         first_slide = (all_slides[0] if all_slides else slide_data) or {}
@@ -967,6 +1005,10 @@ class CreativeDesignService:
     ) -> tuple[str, str]:
         """Single-call extraction of style genes plus design guidance."""
         try:
+            template_html = await materialize_base64_image_data_urls_for_prompt(
+                template_html,
+                user_id=self.user_id,
+            )
             prompt = prompts_manager.get_combined_style_genes_and_guide_prompt(
                 template_html,
                 slide_data,
@@ -1126,7 +1168,7 @@ class CreativeDesignService:
             if not event.is_set():
                 logger.info("第%s页等待合并设计数据就绪（项目 %s）...", page_number, project_id)
                 try:
-                    await asyncio.wait_for(event.wait(), timeout=600.0)
+                    await asyncio.wait_for(event.wait(), timeout=_llm_wait_timeout())
                 except asyncio.TimeoutError:
                     logger.warning("第%s页等待合并设计数据超时，使用 fallback", page_number)
                     return (
@@ -1229,7 +1271,15 @@ class CreativeDesignService:
         return "\n".join(guides)
 
     def _build_slide_context(self, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
-        return prompts_manager.get_slide_context_prompt(slide_data, page_number, total_pages)
+        include_page_numbers = True
+        if isinstance(slide_data, dict) and "_include_page_numbers" in slide_data:
+            include_page_numbers = bool(slide_data.get("_include_page_numbers"))
+        return prompts_manager.get_slide_context_prompt(
+            slide_data,
+            page_number,
+            total_pages,
+            include_page_numbers=include_page_numbers,
+        )
 
     def _extract_style_template(self, existing_slides: List[Dict[str, Any]]) -> List[str]:
         """Extract a reusable style template from existing slides."""

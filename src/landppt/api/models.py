@@ -18,7 +18,7 @@ class ChatCompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use")
     messages: List[ChatMessage] = Field(..., description="A list of messages comprising the conversation so far")
     temperature: Optional[float] = Field(1.0, ge=0, le=2, description="Sampling temperature")
-    max_tokens: Optional[int] = Field(None, gt=0, description="Maximum number of tokens to generate")
+    max_tokens: Optional[int] = Field(None, gt=0, description="Accepted for OpenAI compatibility; ignored")
     top_p: Optional[float] = Field(1.0, ge=0, le=1, description="Nucleus sampling parameter")
     n: Optional[int] = Field(1, ge=1, le=128, description="Number of chat completion choices to generate")
     stream: Optional[bool] = Field(False, description="Whether to stream back partial progress")
@@ -31,7 +31,7 @@ class CompletionRequest(BaseModel):
     model: str = Field(..., description="ID of the model to use")
     prompt: Union[str, List[str]] = Field(..., description="The prompt(s) to generate completions for")
     temperature: Optional[float] = Field(1.0, ge=0, le=2, description="Sampling temperature")
-    max_tokens: Optional[int] = Field(16, gt=0, description="Maximum number of tokens to generate")
+    max_tokens: Optional[int] = Field(None, gt=0, description="Accepted for OpenAI compatibility; ignored")
     top_p: Optional[float] = Field(1.0, ge=0, le=1, description="Nucleus sampling parameter")
     n: Optional[int] = Field(1, ge=1, le=128, description="Number of completions to generate")
     stream: Optional[bool] = Field(False, description="Whether to stream back partial progress")
@@ -92,6 +92,7 @@ class PPTGenerationRequest(BaseModel):
     user_id: Optional[int] = Field(None, description="User ID for project ownership")
     # 目标受众和风格相关参数
     target_audience: Optional[str] = Field(None, description="Target audience for the PPT")
+    custom_audience: Optional[str] = Field(None, description="Custom audience details")
     ppt_style: str = Field("general", description="PPT style: 'general', 'conference', 'custom'")
     custom_style_prompt: Optional[str] = Field(None, description="Custom style prompt")
     include_transition_pages: bool = Field(False, description="Whether to add transition slides between major sections")
@@ -162,6 +163,9 @@ class ProjectListResponse(BaseModel):
     page: int
     page_size: int
 
+class ProjectRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+
 # Enhanced Slide Models
 class SlideContent(BaseModel):
     type: Literal["title", "content", "image", "chart", "list", "thankyou", "agenda", "section", "transition", "conclusion"]
@@ -198,6 +202,8 @@ class FileOutlineGenerationRequest(BaseModel):
     scenario: str = Field("general", description="PPT scenario type")
     requirements: Optional[str] = Field(None, description="Specific requirements from user")
     target_audience: Optional[str] = Field(None, description="Target audience for the PPT")
+    custom_audience: Optional[str] = Field(None, description="Custom audience details")
+    description: Optional[str] = Field(None, description="Additional description or requirements")
     language: str = Field("zh", description="Language for the PPT content: 'zh' for Chinese, 'en' for English")
     page_count_mode: str = Field("ai_decide", description="Page count mode: 'ai_decide', 'custom_range', 'fixed'")
     min_pages: Optional[int] = Field(8, description="Minimum pages for custom_range mode")
@@ -286,7 +292,8 @@ class GlobalMasterTemplateGenerateRequest(BaseModel):
     description: Optional[str] = Field("", description="Template description")
     tags: Optional[List[str]] = Field([], description="Template tags")
     generation_mode: str = Field("text_only", description="Generation mode: text_only, reference_style, exact_replica, pptx_extract")
-    reference_image: Optional[ReferenceImageData] = Field(None, description="Reference image for multimodal generation")
+    reference_image: Optional[ReferenceImageData] = Field(None, description="Reference image for multimodal generation (single, legacy)")
+    reference_images: Optional[List[ReferenceImageData]] = Field(None, description="Multiple reference images (cover, title, TOC, transition, ending, etc.)")
     reference_pptx: Optional[ReferencePptxData] = Field(None, description="Reference PPTX for template extraction")
 
 

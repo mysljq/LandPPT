@@ -144,9 +144,20 @@ class PPTPromptsManager:
         """获取单页HTML生成提示词"""
         return self.design.get_single_slide_html_prompt(*args, **kwargs)
 
-    def get_slide_context_prompt(self, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
+    def get_slide_context_prompt(
+        self,
+        slide_data: Dict[str, Any],
+        page_number: int,
+        total_pages: int,
+        include_page_numbers: bool = True,
+    ) -> str:
         """获取幻灯片上下文提示词（特殊页面设计要求）"""
-        return self.design.get_slide_context_prompt(slide_data, page_number, total_pages)
+        return self.design.get_slide_context_prompt(
+            slide_data,
+            page_number,
+            total_pages,
+            include_page_numbers=include_page_numbers,
+        )
 
 
 # 创建默认实例

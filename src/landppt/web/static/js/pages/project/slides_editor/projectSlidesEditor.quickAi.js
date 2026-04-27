@@ -760,6 +760,53 @@ function getCleanSlideHtmlForQuickAi() {
     return getCleanSlideHtmlForQuickEdit({ slideFrame });
 }
 
+async function computeQuickAiExpectedBaseHash(html) {
+    if (typeof crypto === 'undefined' || !crypto.subtle || typeof TextEncoder === 'undefined') {
+        return null;
+    }
+
+    const data = new TextEncoder().encode((html || '').trim());
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest))
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+function getQuickAiElementDomPath(element) {
+    if (!element || !element.ownerDocument) return null;
+
+    const path = [];
+    let node = element;
+    const doc = element.ownerDocument;
+
+    while (node && node.nodeType === 1 && node !== doc.documentElement) {
+        const parent = node.parentElement;
+        if (!parent) break;
+
+        const tagName = node.tagName;
+        const siblings = Array.from(parent.children || []).filter(child => child.tagName === tagName);
+        path.unshift({
+            tagName,
+            index: siblings.indexOf(node)
+        });
+        node = parent;
+    }
+
+    return path.length ? path : null;
+}
+
+function findQuickAiElementByDomPath(doc, path) {
+    if (!doc || !Array.isArray(path) || path.length === 0) return null;
+
+    let node = doc.documentElement;
+    for (const step of path) {
+        if (!node || !step) return null;
+        const matches = Array.from(node.children || []).filter(child => child.tagName === step.tagName);
+        node = matches[step.index] || null;
+    }
+    return node;
+}
+
 function parseQuickAiElementHtmlToIframeNode(elementHtml, iframeDoc, elementId) {
     if (!iframeDoc || !elementHtml) return null;
 
@@ -820,10 +867,10 @@ async function quickAiEditApply() {
         return;
     }
 
-    const iframeDoc = slideFrame.contentDocument;
     const currentSlide = (typeof slidesData !== 'undefined' && slidesData[currentSlideIndex]) ? slidesData[currentSlideIndex] : null;
 
     const elementId = ensureQuickAiElementId(selectedQuickEditElement);
+    const elementPath = getQuickAiElementDomPath(selectedQuickEditElement);
     quickAiTargetElementId = elementId;
 
     setQuickAiStatus('AI 正在处理…');
@@ -852,12 +899,21 @@ async function quickAiEditApply() {
         // 截图阶段结束后，恢复为“处理中”状态提示（避免一直停留在“截图中”）
         setQuickAiStatus('AI 正在处理…');
 
+        const slideContentForAgent = getCleanSlideHtmlForQuickAi() || currentSlide?.html_content || '';
+        const expectedBaseHtml = currentSlide?.html_content || getCleanSlideHtmlForQuickEdit({
+            slideFrame,
+            stripQuickAiIds: true
+        }) || '';
+        const expectedBaseHash = await computeQuickAiExpectedBaseHash(expectedBaseHtml);
+
         const payload = {
+            projectId: window.landpptEditorConfig.projectId,
             slideIndex: currentSlideIndex + 1,
+            mode: 'element',
             slideTitle: currentSlide?.title || '',
-            slideContent: getCleanSlideHtmlForQuickAi() || currentSlide?.html_content || '',
-            elementHtml: selectedQuickEditElement.outerHTML,
-            elementId: elementId,
+            slideContent: slideContentForAgent,
+            selectedElementHtml: selectedQuickEditElement.outerHTML,
+            selectedElementId: elementId,
             userRequest: userRequest,
             slideOutline: slideOutline,
             visionEnabled: visionEnabledForRequest,
@@ -870,7 +926,7 @@ async function quickAiEditApply() {
             }
         };
 
-        const response = await fetch('/api/ai/element-edit', {
+        const response = await fetch('/api/ai/slide-edit-agent/stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -878,46 +934,42 @@ async function quickAiEditApply() {
             body: JSON.stringify(payload)
         });
 
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result || !result.success) {
-            const message = (result && result.error) ? result.error : `请求失败：HTTP ${response.status}`;
-            throw new Error(message);
+        if (!response.ok) {
+            const message = await response.text().catch(() => '');
+            throw new Error(message || `请求失败：HTTP ${response.status}`);
         }
 
-        const updatedElementHtml = (result.updated_element_html || '').trim();
-        if (!updatedElementHtml) {
-            throw new Error('AI 未返回可用的元素 HTML');
+        const proposal = await collectAgentProposalFromStream(response, (event) => {
+            if (event.type === 'tool_call') {
+                setQuickAiStatus(`Agent 调用工具：${event.tool || ''}`);
+            } else if (event.type === 'validation_result') {
+                setQuickAiStatus(event.valid ? '校验通过，准备应用…' : '校验失败');
+            }
+        });
+
+        if (proposal.validation && proposal.validation.valid === false) {
+            throw new Error((proposal.validation.errors || []).join('；') || 'Agent草稿校验失败');
         }
+
+        const applyProposal = expectedBaseHash
+            ? { ...proposal, baseHash: expectedBaseHash }
+            : { ...proposal };
 
         // 保存一次撤销点：在真正应用前
         saveStateForUndo();
-
-        const target = iframeDoc.querySelector(`[data-quick-ai-id="${elementId}"]`) || selectedQuickEditElement;
-        const newNode = parseQuickAiElementHtmlToIframeNode(updatedElementHtml, iframeDoc, elementId);
-        if (!target || !newNode) {
-            throw new Error('无法解析或定位要替换的元素');
-        }
-
-        target.replaceWith(newNode);
+        const applied = await applyAgentProposal(applyProposal);
 
         // 重新绑定快速编辑事件到新元素（允许对新增元素补绑定）
         initQuickEditElementSelection();
-
-        // 重新选中，恢复手柄/拖拽等能力
-        selectQuickEditElement(newNode, { allowWhileAiSending: true });
-
-        // 保存并同步到缩略图/服务端
-        saveQuickEditChanges();
-
-        showToolbarStatus('AI 已应用到选中元素', 'success');
+        syncQuickElementAgentResult(
+            currentSlideIndex,
+            applied.htmlContent || applyProposal.htmlContent,
+            elementId,
+            elementPath
+        );
+        showToolbarStatus('Agent 已应用到选中元素', 'success');
         setQuickAiStatus('已应用，继续输入可再次编辑');
 
-        // 清理定位属性，避免长期残留在 iframe DOM 中
-        try {
-            if (selectedQuickEditElement) {
-                selectedQuickEditElement.removeAttribute('data-quick-ai-id');
-            }
-        } catch (e) { }
         quickAiTargetElementId = null;
 
         // 清空输入，便于下一次操作

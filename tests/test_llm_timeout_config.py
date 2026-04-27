@@ -42,3 +42,32 @@ def test_openai_compatible_timeout_uses_unified_llm_timeout():
     assert _get_httpx_timeout_seconds({}) == 600.0
     assert _get_httpx_timeout_seconds({"llm_timeout_seconds": "900"}) == 900.0
     assert _get_httpx_timeout_seconds({"timeout": 45}) == 45.0
+
+
+def test_ai_provider_factory_reuses_provider_for_same_config():
+    from landppt.ai.base import AIProvider
+    from landppt.ai.providers import AIProviderFactory
+
+    class DummyProvider(AIProvider):
+        async def chat_completion(self, messages, **kwargs):
+            raise NotImplementedError
+
+        async def text_completion(self, prompt, **kwargs):
+            raise NotImplementedError
+
+    old_provider = AIProviderFactory._providers.get("dummy")
+    AIProviderFactory._providers["dummy"] = DummyProvider
+    AIProviderFactory.clear_cache()
+    try:
+        first = AIProviderFactory.create_provider("dummy", {"model": "m1", "api_key": "k"})
+        second = AIProviderFactory.create_provider("dummy", {"api_key": "k", "model": "m1"})
+        third = AIProviderFactory.create_provider("dummy", {"api_key": "other", "model": "m1"})
+
+        assert second is first
+        assert third is not first
+    finally:
+        AIProviderFactory.clear_cache()
+        if old_provider is None:
+            AIProviderFactory._providers.pop("dummy", None)
+        else:
+            AIProviderFactory._providers["dummy"] = old_provider

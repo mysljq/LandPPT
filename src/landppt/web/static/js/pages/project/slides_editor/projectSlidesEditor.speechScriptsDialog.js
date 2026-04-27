@@ -307,10 +307,139 @@
             }
         }
 
+        function startSpeechProgressSse(taskId, onProgress, startFallback) {
+            if (typeof EventSource === 'undefined') {
+                return null;
+            }
+
+            const projectId = window.landpptEditorConfig && window.landpptEditorConfig.projectId;
+            if (!projectId) {
+                return null;
+            }
+
+            const url = `/api/projects/${projectId}/speech-scripts/progress/${taskId}/stream`;
+            const source = new EventSource(url, { withCredentials: true });
+            let fallbackStarted = false;
+            let fallbackHandle = null;
+            let closed = false;
+            let receivedProgress = false;
+            let startupTimer = null;
+
+            const closeSource = () => {
+                window.clearTimeout(startupTimer);
+                source.close();
+            };
+
+            const closeAll = () => {
+                closed = true;
+                closeSource();
+                if (fallbackHandle) {
+                    if (typeof fallbackHandle.close === 'function') {
+                        fallbackHandle.close();
+                    } else {
+                        window.clearInterval(fallbackHandle);
+                    }
+                    fallbackHandle = null;
+                }
+            };
+
+            const beginFallback = () => {
+                if (closed || fallbackStarted) {
+                    return;
+                }
+                fallbackStarted = true;
+                closeSource();
+                if (typeof startFallback === 'function') {
+                    fallbackHandle = startFallback();
+                }
+            };
+
+            startupTimer = window.setTimeout(() => {
+                if (!receivedProgress) {
+                    console.warn('Speech progress SSE did not start, falling back to polling');
+                    beginFallback();
+                }
+            }, 5000);
+
+            const handleEvent = (event) => {
+                try {
+                    receivedProgress = true;
+                    window.clearTimeout(startupTimer);
+                    const result = JSON.parse(event.data || '{}');
+                    if (result.success && result.progress) {
+                        const shouldClose = onProgress(result.progress) === true;
+                        if (shouldClose) {
+                            closeAll();
+                        }
+                    } else {
+                        console.warn('Speech progress SSE returned an error, falling back to polling', result);
+                        beginFallback();
+                    }
+                } catch (error) {
+                    console.error('Speech progress SSE parse error:', error);
+                    beginFallback();
+                }
+            };
+
+            source.addEventListener('progress', handleEvent);
+            source.addEventListener('done', handleEvent);
+            source.addEventListener('progress_error', (event) => {
+                console.warn('Speech progress SSE error event:', event && event.data);
+                beginFallback();
+            });
+            source.onerror = () => {
+                if (closed || receivedProgress) {
+                    return;
+                }
+                console.warn('Speech progress SSE connection failed, falling back to polling');
+                beginFallback();
+            };
+
+            return { close: closeAll };
+        }
+
         function startProgressTracking(taskId, progressToast, totalSlides) {
+            const sseHandle = startSpeechProgressSse(
+                taskId,
+                (progress) => {
+                    const percentage = progress.progress_percentage;
+                    updateProgressToast(progressToast, progress.message, percentage);
+
+                    if (progress.status === 'completed') {
+                        updateProgressToast(progressToast, progress.message, 100);
+                        setTimeout(() => {
+                            closeProgressToast(progressToast);
+                            showNotification('演讲稿生成完成！', 'success');
+                            console.log('Starting to poll for speech scripts...');
+                            pollForSpeechScripts();
+                        }, 500);
+                        return true;
+                    }
+
+                    if (progress.status === 'failed') {
+                        closeProgressToast(progressToast);
+                        showNotification(`生成失败: ${progress.message}`, 'error');
+                        return true;
+                    }
+
+                    return false;
+                },
+                () => startProgressTrackingPolling(taskId, progressToast, totalSlides)
+            );
+
+            if (sseHandle) {
+                return sseHandle;
+            }
+
+            return startProgressTrackingPolling(taskId, progressToast, totalSlides);
+        }
+
+        function startProgressTrackingPolling(taskId, progressToast, totalSlides) {
             let lastProgress = 0;
             let checkCount = 0;
+            let transientFailures = 0;
             const maxChecks = 300; // Maximum 5 minutes of tracking
+            const maxTransientFailures = 10;
 
             const interval = setInterval(async () => {
                 checkCount++;
@@ -324,6 +453,7 @@
                     console.log(`Progress check ${checkCount}:`, result);
 
                     if (result.success && result.progress) {
+                        transientFailures = 0;
                         const progress = result.progress;
                         const percentage = progress.progress_percentage;
 
@@ -353,17 +483,21 @@
 
                         lastProgress = percentage;
                     } else {
-                        // Task not found or error, stop tracking
-                        clearInterval(interval);
+                        // Task not found or error, retry a few times before stopping
+                        transientFailures += 1;
                         console.warn('Progress tracking failed, task not found');
-                        closeProgressToast(progressToast);
-                        showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        if (transientFailures >= maxTransientFailures) {
+                            clearInterval(interval);
+                            closeProgressToast(progressToast);
+                            showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        }
                     }
                 } catch (error) {
+                    transientFailures += 1;
                     console.error('Progress tracking error:', error);
 
                     // If too many errors or max checks reached, stop tracking
-                    if (checkCount >= maxChecks) {
+                    if (checkCount >= maxChecks || transientFailures >= maxTransientFailures) {
                         clearInterval(interval);
                         closeProgressToast(progressToast);
                         showNotification('进度跟踪超时，请刷新页面查看结果', 'warning');
@@ -375,8 +509,47 @@
         }
 
         function startSingleScriptProgressTracking(taskId, progressToast, slideIndex) {
+            const sseHandle = startSpeechProgressSse(
+                taskId,
+                (progress) => {
+                    const percentage = progress.progress_percentage;
+                    updateProgressToast(progressToast, progress.message, percentage);
+
+                    if (progress.status === 'completed') {
+                        updateProgressToast(progressToast, `Slide ${slideIndex + 1} script regenerated.`, 100);
+                        setTimeout(() => {
+                            closeProgressToast(progressToast);
+                            showNotification(`Slide ${slideIndex + 1} script updated.`, 'success');
+                            setTimeout(() => {
+                                showCurrentSpeechScripts();
+                            }, 1000);
+                        }, 1500);
+                        return true;
+                    }
+
+                    if (progress.status === 'failed') {
+                        closeProgressToast(progressToast);
+                        showNotification(`Slide ${slideIndex + 1} regeneration failed: ${progress.message}`, 'error');
+                        return true;
+                    }
+
+                    return false;
+                },
+                () => startSingleScriptProgressTrackingPolling(taskId, progressToast, slideIndex)
+            );
+
+            if (sseHandle) {
+                return sseHandle;
+            }
+
+            return startSingleScriptProgressTrackingPolling(taskId, progressToast, slideIndex);
+        }
+
+        function startSingleScriptProgressTrackingPolling(taskId, progressToast, slideIndex) {
             let checkCount = 0;
+            let transientFailures = 0;
             const maxChecks = 60; // Maximum 1 minute of tracking
+            const maxTransientFailures = 10;
 
             const interval = setInterval(async () => {
                 checkCount++;
@@ -390,6 +563,7 @@
                     console.log(`Single script progress check ${checkCount}:`, result);
 
                     if (result.success && result.progress) {
+                        transientFailures = 0;
                         const progress = result.progress;
                         const percentage = progress.progress_percentage;
 
@@ -419,17 +593,21 @@
                         }
 
                     } else {
-                        // Task not found or error, stop tracking
-                        clearInterval(interval);
+                        // Task not found or error, retry a few times before stopping
+                        transientFailures += 1;
                         console.warn('Single script progress tracking failed, task not found');
-                        closeProgressToast(progressToast);
-                        showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        if (transientFailures >= maxTransientFailures) {
+                            clearInterval(interval);
+                            closeProgressToast(progressToast);
+                            showNotification('进度跟踪失败，请刷新页面查看结果', 'warning');
+                        }
                     }
                 } catch (error) {
+                    transientFailures += 1;
                     console.error('Single script progress tracking error:', error);
 
                     // If too many errors or max checks reached, stop tracking
-                    if (checkCount >= maxChecks) {
+                    if (checkCount >= maxChecks || transientFailures >= maxTransientFailures) {
                         clearInterval(interval);
                         closeProgressToast(progressToast);
                         showNotification('进度跟踪超时，请刷新页面查看结果', 'warning');
@@ -558,7 +736,11 @@
 
                 // Clear progress tracking
                 if (progressInterval) {
-                    clearInterval(progressInterval);
+                    if (typeof progressInterval.close === 'function') {
+                        progressInterval.close();
+                    } else {
+                        clearInterval(progressInterval);
+                    }
                 }
                 closeProgressToast(progressToast);
 

@@ -475,14 +475,14 @@ async def batch_regenerate_slides_async(
 
     async def slides_batch_regeneration_task():
         try:
-            task_manager.update_task_status(task_id, TaskStatus.RUNNING, progress=1.0)
+            await task_manager.update_task_status_async(task_id, TaskStatus.RUNNING, progress=1.0)
         except Exception:
             pass
 
-        def on_slide_progress(completed: int, total: int):
+        async def on_slide_progress(completed: int, total: int):
             pct = (completed / total) * 100 if total > 0 else 0
             try:
-                task_manager.update_task_status(task_id, TaskStatus.RUNNING, progress=round(pct, 1))
+                await task_manager.update_task_status_async(task_id, TaskStatus.RUNNING, progress=round(pct, 1))
             except Exception:
                 pass
 
@@ -531,6 +531,7 @@ async def save_single_slide_content(
         html_content = data.get('html_content', '')
         requested_is_user_edited = data.get('is_user_edited', True)
         is_user_edited = bool(requested_is_user_edited)
+        incoming_slide_data = data.get('slide_data') if isinstance(data.get('slide_data'), dict) else {}
 
         logger.info(f"📄 接收到HTML内容，长度: {len(html_content)} 字符")
 
@@ -569,6 +570,28 @@ async def save_single_slide_content(
                 "html_content": html_content,
                 "is_user_edited": is_user_edited
             }
+
+        for key, value in incoming_slide_data.items():
+            if value is not None:
+                slide_data[key] = value
+
+        for key in (
+            "title",
+            "slide_type",
+            "type",
+            "content_type",
+            "description",
+            "subtitle",
+            "content",
+            "content_points",
+            "metadata",
+            "page_number",
+        ):
+            if key in data and data.get(key) is not None:
+                slide_data[key] = data.get(key)
+
+        slide_data['html_content'] = html_content
+        slide_data['is_user_edited'] = is_user_edited
 
         logger.debug(f"📝 更新第 {slide_index + 1} 页的内容")
         logger.debug(f"📊 幻灯片数据: 标题='{slide_data.get('title', '无标题')}', 用户编辑={is_user_edited}, 索引={slide_index}")

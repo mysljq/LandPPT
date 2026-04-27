@@ -124,10 +124,10 @@ async def _registration_template_ctx() -> dict:
 
     try:
         settings = await community_service.get_settings()
-        invite_required = bool(settings.get("invite_code_required_for_registration", True))
+        invite_required = bool(settings.get("invite_code_required_for_registration", False))
     except Exception as exc:
         logger.warning("Failed to load registration template settings: %s", exc)
-        invite_required = True
+        invite_required = False
 
     return {
         "invite_code_required_for_registration": invite_required,

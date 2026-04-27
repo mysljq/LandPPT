@@ -10,120 +10,124 @@ from typing import Dict, Any, List
 class OutlinePrompts:
     """PPT大纲生成相关的提示词集合"""
 
+    # ----------------------------------------------------------------
+    # 时间上下文
+    # ----------------------------------------------------------------
+
     @staticmethod
     def _build_current_time_context_zh() -> str:
-        """构建中文当前时间上下文。"""
         now = datetime.now().astimezone()
         quarter = (now.month - 1) // 3 + 1
-        timezone_name = now.tzname() or "Local"
+        tz_name = now.tzname() or "Local"
         return "\n".join([
-            f"- 当前本地时间：{now:%Y-%m-%d %H:%M:%S} ({timezone_name})",
-            f"- 当前年份：{now:%Y}",
-            f"- 当前月份：{now.month}",
-            f"- 当前季度：Q{quarter}",
-            "- 如果大纲需要使用“当前、今年、本月、本季度、最近”等时间语义，请以上述时间为准；若项目需求、调研内容或来源材料已给出明确日期或周期，优先使用来源值。",
+            f"- 当前本地时间：{now:%Y-%m-%d %H:%M:%S} ({tz_name})",
+            f"- 当前年份：{now:%Y}，月份：{now.month}，季度：Q{quarter}",
+            '- 若大纲需使用\u201c当前/今年/本月/本季度/最近\u201d等时间语义，请以上述时间为准；若项目需求或来源材料已给出明确日期，优先使用来源值。',
         ])
 
     @staticmethod
     def _build_current_time_context_en() -> str:
-        """Build English current-time context."""
         now = datetime.now().astimezone()
         quarter = (now.month - 1) // 3 + 1
-        timezone_name = now.tzname() or "Local"
+        tz_name = now.tzname() or "Local"
         return "\n".join([
-            f"- Current local time: {now:%Y-%m-%d %H:%M:%S} ({timezone_name})",
-            f"- Current year: {now:%Y}",
-            f"- Current month: {now.month}",
-            f"- Current quarter: Q{quarter}",
-            "- If the outline needs phrases such as \"current\", \"this year\", \"this month\", \"this quarter\", or \"recent\", use the time above. If the project brief, research content, or source material already gives an explicit date or period, prefer the source value instead of overriding it."
+            f"- Current local time: {now:%Y-%m-%d %H:%M:%S} ({tz_name})",
+            f"- Current year: {now:%Y}, month: {now.month}, quarter: Q{quarter}",
+            "- If the outline uses time-sensitive phrasing (\"current\", \"this year\", etc.), use the time above. If the brief or source material gives an explicit date, prefer the source value.",
         ])
 
+    # ----------------------------------------------------------------
+    # 过渡页指令
+    # ----------------------------------------------------------------
+
     @staticmethod
-    def _build_transition_page_instruction_zh(include_transition_pages: bool) -> str:
-        if not include_transition_pages:
+    def _build_transition_page_instruction_zh(include: bool) -> str:
+        if not include:
             return "过渡页：未开启；不要生成 transition 类型页面。"
         return (
-            "过渡页：已开启；请在主要章节或逻辑模块之间插入 slide_type=\"transition\" 的页面。"
-            "过渡页用于章节分隔、承上启下和节奏控制，content_points 只保留章节名、转场语或下一章提示。"
-            "过渡页计入总页数，固定页数或范围页数下不得额外超页。"
+            "过渡页：已开启；请在主要章节之间插入 slide_type=\"transition\" 的页面，"
+            "用于章节分隔和节奏控制。content_points 只保留章节名、转场语或下一章提示。"
+            "过渡页计入总页数。"
         )
 
     @staticmethod
-    def _build_transition_page_instruction_en(include_transition_pages: bool) -> str:
-        if not include_transition_pages:
+    def _build_transition_page_instruction_en(include: bool) -> str:
+        if not include:
             return "Transition slides: disabled; do not generate `transition` slides."
         return (
-            "Transition slides: enabled; insert slide_type=\"transition\" pages between major sections or logical modules. "
-            "Use them for section separation, bridging, and pacing. Keep content_points limited to the section title, a bridge phrase, or next-section cues. "
+            "Transition slides: enabled; insert slide_type=\"transition\" pages between major sections. "
+            "Use them for section separation and pacing. Keep content_points limited to section title / bridge phrase. "
             "Transition slides count toward the requested page count."
         )
-    
-    @staticmethod
-    def get_outline_prompt_zh(topic: str, scenario_desc: str, target_audience: str, 
-                             style_desc: str, requirements: str, description: str,
-                             research_section: str, page_count_instruction: str,
-                             expected_page_count: int, language: str,
-                             include_transition_pages: bool = False) -> str:
-        """获取中文大纲生成提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        transition_page_instruction = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
-        return f"""你是一位专业的PPT大纲策划专家，请基于以下项目信息，生成一个**结构清晰、内容创意、专业严谨、格式规范的JSON格式PPT大纲**。
 
-### 📌【项目信息】：
-- **主题**：{topic}
-- **应用场景**：{scenario_desc}
-- **目标受众**：{target_audience}
-- **PPT风格**：{style_desc}
-- **特殊要求**：{requirements or '无'}
-- **补充说明**：{description or '无'}
+    # ----------------------------------------------------------------
+    # 核心大纲生成（中文）
+    # ----------------------------------------------------------------
+
+    @staticmethod
+    def get_outline_prompt_zh(
+        topic: str, scenario_desc: str, target_audience: str,
+        style_desc: str, requirements: str, description: str,
+        research_section: str, page_count_instruction: str,
+        expected_page_count: int, language: str,
+        include_transition_pages: bool = False,
+    ) -> str:
+        time_ctx = OutlinePrompts._build_current_time_context_zh()
+        transition_inst = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
+
+        return f"""你是专业的PPT大纲策划专家。请基于以下项目信息，生成结构清晰、内容创意、专业严谨的 JSON 格式 PPT 大纲。
+
+### 项目信息
+- 主题：{topic}
+- 应用场景：{scenario_desc}
+- 目标受众：{target_audience}
+- PPT风格：{style_desc}
+- 特殊要求：{requirements or '无'}
+- 补充说明：{description or '无'}
 {research_section}
 
-### 📄【页数要求】：
+### 页数要求
 {page_count_instruction}
 
-### 🕒【当前时间参考】：
-{current_time_context}
+### 当前时间参考
+{time_ctx}
 
 ---
 
-### 📋【大纲生成规则】：
+### 大纲生成规则
 
-1. **内容契合度要求**：
-   - 所有幻灯片内容必须与上述项目信息严格匹配，确保主题明确、风格统一、内容相关。
-   - 信息表达要专业可信，同时具有吸引力与传播力。
+1. **内容契合**：所有幻灯片内容必须与项目信息严格匹配，风格统一、信息专业可信。
 
-2. **页面结构规范**：
-   - 必须包含以下固定结构（按顺序）：
-     · **第1页 — 封面页**（slide_type="title"）：展示主题标题、副标题或作者信息，是整套 PPT 的视觉开篇，应设计得令人印象深刻。
-     · **第2页 — 目录页**（slide_type="agenda"）：展示整套 PPT 的章节结构和导航索引，帮助观众一眼看懂全局脉络。目录页的 content_points 应列出后续各章节的标题。
-     · **第3页起 — 内容页**（slide_type="content"，若干）：合理分层，逻辑清晰，每页围绕一个主题展开。
-     · **可选章节过渡页**（slide_type="transition"）：仅在开启时插入在主要章节之间，用于承上启下和章节分隔。
-     · **最后一页 — 结论/感谢页**（slide_type="conclusion" 或 "thankyou"）：总结核心观点或致谢收尾，与首页在气质上形成呼应。
-   - 封面页、目录页和结论页属于特殊页面，后续会进行独立的创意设计，不会套用普通内容页的模板。
-   - {transition_page_instruction}
+2. **页面结构**（按顺序）：
+   - 第1页 — 封面页（slide_type="title"）：展示主题标题、副标题或作者信息。
+   - 第2页 — 目录页（slide_type="agenda"）：展示章节结构和导航索引，content_points 列出后续各章节标题。
+   - 第3页起 — 内容页（slide_type="content"）：合理分层，每页围绕一个主题。
+   - 可选过渡页（slide_type="transition"）：仅在开启时插入在主要章节之间。
+   - 最后一页 — 结论/感谢页（slide_type="conclusion" 或 "thankyou"）：总结或致谢收尾。
+   - {transition_inst}
 
 3. **内容点控制**：
-   - 封面页：content_points 只放核心标题信息（主标题、副标题、作者/日期等），保持克制。
-   - 目录页：content_points 列出后续各章节/部分的标题，作为导航索引。
-   - 过渡页：content_points 只保留章节名、转场语或下一章节提示，避免展开正文。
-   - 结论/感谢页：content_points 提炼核心结论或致谢信息，保持简洁有力。
-   - 普通内容页可适当展开，但仍要避免信息堆积与重复。
-   - 每个要点内容简洁清晰，可做适当解释，但**不超过50字符**。
-   - 内容分布需均衡，避免信息堆积或重复。
+   - 封面页 content_points 只放核心标题信息（主标题、副标题、作者/日期）。
+   - 目录页 content_points 列出后续章节标题作为导航索引。
+   - 过渡页 content_points 只保留章节名和转场提示。
+   - 结论/感谢页 content_points 提炼核心结论，保持简洁有力。
+   - 普通内容页可适当展开，每个要点不超过50字符，避免信息堆积。
 
-4. **图表展示优化**：
-   - 对适合可视化的信息，**建议并提供图表配置**，写入 `chart_config` 字段中。
-   - 图表需明确类型（如柱状图、折线图、饼图、甘特图、森林图、韦恩图、upset图、生存曲线图、漏斗图、环形图、和弦图、词云图、关联图、瀑布图、条形图、面积图等）、说明含义、配置样式及数据结构。
+4. **单页信息架构**：
+   - 每页只承担 1 个核心任务（解释/上手/对比/架构/总结等）；标题用顿号或「与/及」串联 2 个以上独立主题时，优先拆成多页。
+   - 普通内容页建议 1 个主模块 + 至多 1 个辅助模块；禁止同页并列两套完整流程且共用同一编号体系。
+   - content_points 应能映射为单一版式（流程/卡片/指标/对比/层级），不要把多类完全不同的信息塞进同一页。
+   - 页数紧张时宁可一页一任务、减少装饰性要点，也不要一页多主题。
 
-5. **语言风格与语境一致性**：
-   - 使用统一语言（{language}），保持语境一致，适合目标受众理解与接受。
-   - 如果需要提及“当前、今年、本月、本季度、最近”等时间语义，必须以上述当前时间为准；若需求或材料已给出明确时间，以原始时间为准。
+5. **图表建议**：对适合可视化的信息，在 chart_config 字段中给出图表类型（bar/pie/line/scatter/radar 等）和简要说明。
+
+6. **语言一致性**：统一使用 {language}。若需提及时间语义，以上述当前时间为准；若需求已给出明确时间，以原始时间为准。
 
 ---
 
-### 🧾【输出格式要求】：
+### 输出格式
 
-请严格使用如下JSON格式进行输出，**使用代码块包裹，内容必须有效且结构完整**：
+严格使用以下 JSON 格式，用 ```json``` 代码块包裹：
 
 ```json
 {{
@@ -135,30 +139,10 @@ class OutlinePrompts:
       "page_number": 1,
       "title": "页面标题",
       "content_points": ["要点1", "要点2", "要点3"],
-      "slide_type": "title|agenda|transition|content|conclusion|thankyou",
-      "type": "title|agenda|transition|content|conclusion|thankyou",
-      "description": "此页的简要说明与目的",
-      "chart_config": {{
-        "type": "bar",
-        "data": {{
-          "labels": ["示例A", "示例B", "示例C"],
-          "datasets": [{{
-            "label": "数据说明",
-            "data": [80, 95, 70],
-            "backgroundColor": ["#FF6B6B", "#4ECDC4", "#FFD93D"],
-            "borderColor": ["#FF5252", "#26A69A", "#F4A261"],
-            "borderWidth": 2
-          }}]
-        }},
-        "options": {{
-          "responsive": true,
-          "plugins": {{
-            "legend": {{"position": "top"}},
-            "title": {{"display": true, "text": "图表标题"}}
-          }},
-          "scales": {{"y": {{"beginAtZero": true}}}}
-        }}
-      }}
+      "slide_type": "title",
+      "type": "title",
+      "description": "此页的简要说明",
+      "chart_config": null
     }}
   ],
   "metadata": {{
@@ -166,82 +150,86 @@ class OutlinePrompts:
     "language": "{language}",
     "total_slides": {expected_page_count},
     "generated_with_ai": true,
-    "enhanced_with_charts": true,
     "content_depth": "professional"
   }}
 }}
-```"""
+```
+
+slide_type 可选值：title / agenda / transition / content / conclusion / thankyou
+chart_config 仅在需要图表时填写，含 type、data、options；不需要时设为 null。"""
+
+    # ----------------------------------------------------------------
+    # 核心大纲生成（英文）
+    # ----------------------------------------------------------------
 
     @staticmethod
-    def get_outline_prompt_en(topic: str, scenario_desc: str, target_audience: str,
-                             style_desc: str, requirements: str, description: str,
-                             research_section: str, page_count_instruction: str,
-                             expected_page_count: int, language: str,
-                             include_transition_pages: bool = False) -> str:
-        """获取英文大纲生成提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_en()
-        transition_page_instruction = OutlinePrompts._build_transition_page_instruction_en(include_transition_pages)
-        return f"""You are a **professional presentation outline designer**. Based on the following project details, please generate a **well-structured, creative, and professional JSON-format PowerPoint outline**.
+    def get_outline_prompt_en(
+        topic: str, scenario_desc: str, target_audience: str,
+        style_desc: str, requirements: str, description: str,
+        research_section: str, page_count_instruction: str,
+        expected_page_count: int, language: str,
+        include_transition_pages: bool = False,
+    ) -> str:
+        time_ctx = OutlinePrompts._build_current_time_context_en()
+        transition_inst = OutlinePrompts._build_transition_page_instruction_en(include_transition_pages)
 
-### 📌【Project Details】:
-- **Topic**: {topic}
-- **Scenario**: {scenario_desc}
-- **Target Audience**: {target_audience}
-- **PPT Style**: {style_desc}
-- **Special Requirements**: {requirements or 'None'}
-- **Additional Notes**: {description or 'None'}
+        return f"""You are a professional presentation outline designer. Based on the following project details, generate a **well-structured, creative, and professional JSON-format PowerPoint outline**.
+
+### Project Details
+- Topic: {topic}
+- Scenario: {scenario_desc}
+- Target Audience: {target_audience}
+- PPT Style: {style_desc}
+- Special Requirements: {requirements or 'None'}
+- Additional Notes: {description or 'None'}
 {research_section}
 
-**Page Count Requirements:**
+### Page Count Requirements
 {page_count_instruction}
 
-### 🕒【Current Time Reference】:
-{current_time_context}
+### Current Time Reference
+{time_ctx}
 
 ---
 
-### 📋【Outline Generation Rules】:
+### Outline Generation Rules
 
-1. **Content Relevance**:
-   - All slide content must strictly align with the project details above.
-   - Ensure the theme is clear, the tone is consistent, and the message is well-targeted.
+1. **Content Relevance**: All slide content must strictly align with the project details above.
 
-2. **Slide Structure**:
-   - The deck must include the following fixed structure (in order):
-     · **Page 1 — Cover Slide** (slide_type="title"): Display the main title, subtitle, or author info. This is the visual opening of the entire PPT.
-     · **Page 2 — Agenda/TOC Slide** (slide_type="agenda"): Show the chapter structure and navigation index. The content_points should list the titles of subsequent sections.
-     · **Page 3+ — Content Slides** (slide_type="content"): Logically structured, each page focused on one topic.
-     · **Optional Transition Slides** (slide_type="transition"): Insert between major sections only when enabled, for section separation and pacing.
-     · **Last Page — Conclusion/Thank You Slide** (slide_type="conclusion" or "thankyou"): Summarize key points or express gratitude.
-   - Cover, Agenda, and Conclusion slides are special pages that will receive unique creative designs, not standard content page templates.
-   - {transition_page_instruction}
+2. **Slide Structure** (in order):
+   - Page 1 — Cover (slide_type="title"): Main title, subtitle, or author info.
+   - Page 2 — Agenda/TOC (slide_type="agenda"): Chapter structure and navigation index.
+   - Page 3+ — Content (slide_type="content"): Logically structured, one topic per page.
+   - Optional Transition (slide_type="transition"): Between major sections when enabled.
+   - Last Page — Conclusion/Thank You (slide_type="conclusion" or "thankyou").
+   - {transition_inst}
 
-3. **Content Density Control**:
-   - Cover slide: content_points should only contain core title info (main title, subtitle, author/date), keep it restrained.
-   - Agenda slide: content_points should list the titles of subsequent chapters/sections as navigation.
-   - Transition slide: content_points should only include the section title, a bridge phrase, or next-section cues; do not expand full body content.
-   - Conclusion slide: content_points should distill core conclusions or thanks, keep it concise.
-   - Regular content slides may be more detailed, but should still avoid overload and repetition.
-   - Each point should be **no more than 50 characters**.
-   - Distribute content evenly across slides to avoid overload or redundancy.
+3. **Content Density**:
+   - Cover: content_points only for core title info.
+   - Agenda: content_points list subsequent chapter titles.
+   - Transition: content_points limited to section title and bridge cues.
+   - Conclusion: concise summary or thanks.
+   - Content pages: each point under 50 characters; avoid overload.
 
-4. **Chart Suggestions**:
-   - For any data, comparisons, or visual-friendly content, suggest a chart and include its configuration under `chart_config`.
-   - Specify chart type (e.g., bar, pie, line), provide sample data, and chart options.
+4. **Per-Slide Information Architecture**:
+   - Each slide carries ONE core task (explain / get-started / compare / architecture / summary). If a title chains 2+ independent topics, split into multiple slides.
+   - Content pages: 1 primary module + at most 1 auxiliary module; never place two complete numbered flows sharing the same numbering scheme on one slide.
+   - content_points should map to a single layout family (process / cards / metrics / compare / stack); do not mix unrelated information types on one slide.
+   - When page count is tight, prefer one-task-per-slide with fewer decorative points over multi-topic slides.
 
-5. **Language & Tone**:
-   - The entire outline should be in **{language}** and aligned with the communication preferences of the target audience.
-   - If the outline needs time-sensitive phrasing such as "current", "this year", "this month", "this quarter", or "recent", use the current time above. If the brief or source material already includes an explicit date or period, use the source value.
+5. **Chart Suggestions**: For data-rich content, include a chart_config with type (bar/pie/line/scatter/radar etc.) and brief description.
+
+6. **Language**: Entire outline in **{language}**. Use current time reference where applicable; prefer source values when given.
 
 ---
 
-### 🧾【Required Output Format】:
+### Output Format
 
-Please follow the exact JSON format below, and **wrap the result in a code block**. The JSON must be valid and complete.
+Exact JSON format, wrapped in ```json``` code block:
 
 ```json
 {{
-  "title": "A compelling and professional PPT title",
+  "title": "A compelling PPT title",
   "total_pages": {expected_page_count},
   "page_count_mode": "final",
   "slides": [
@@ -249,30 +237,10 @@ Please follow the exact JSON format below, and **wrap the result in a code block
       "page_number": 1,
       "title": "Slide Title",
       "content_points": ["Point 1", "Point 2", "Point 3"],
-      "slide_type": "title|agenda|transition|content|conclusion|thankyou",
-      "type": "title|agenda|transition|content|conclusion|thankyou",
-      "description": "Brief description of this slide",
-      "chart_config": {{
-        "type": "bar",
-        "data": {{
-          "labels": ["Metric A", "Metric B", "Metric C"],
-          "datasets": [{{
-            "label": "Performance Data",
-            "data": [80, 95, 70],
-            "backgroundColor": ["#FF6B6B", "#4ECDC4", "#FFD93D"],
-            "borderColor": ["#FF5252", "#26A69A", "#F4A261"],
-            "borderWidth": 2
-          }}]
-        }},
-        "options": {{
-          "responsive": true,
-          "plugins": {{
-            "legend": {{"position": "top"}},
-            "title": {{"display": true, "text": "Chart Title"}}
-          }},
-          "scales": {{"y": {{"beginAtZero": true}}}}
-        }}
-      }}
+      "slide_type": "title",
+      "type": "title",
+      "description": "Brief description",
+      "chart_config": null
     }}
   ],
   "metadata": {{
@@ -280,19 +248,27 @@ Please follow the exact JSON format below, and **wrap the result in a code block
     "language": "{language}",
     "total_slides": {expected_page_count},
     "generated_with_ai": true,
-    "enhanced_with_charts": true,
     "content_depth": "professional"
   }}
 }}
-```"""
+```
+
+slide_type values: title / agenda / transition / content / conclusion / thankyou
+Use chart_config only when a chart is needed (include type, data, options); set to null otherwise."""
+
+    # ----------------------------------------------------------------
+    # 流式大纲生成
+    # ----------------------------------------------------------------
 
     @staticmethod
-    def get_streaming_outline_prompt(topic: str, target_audience: str, ppt_style: str,
-                                   page_count_instruction: str, research_section: str,
-                                   include_transition_pages: bool = False) -> str:
-        """获取流式大纲生成提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        transition_page_instruction = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
+    def get_streaming_outline_prompt(
+        topic: str, target_audience: str, ppt_style: str,
+        page_count_instruction: str, research_section: str,
+        include_transition_pages: bool = False,
+    ) -> str:
+        time_ctx = OutlinePrompts._build_current_time_context_zh()
+        transition_inst = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
+
         return f"""作为专业的PPT大纲生成助手，请为以下项目生成详细的PPT大纲。
 
 项目信息：
@@ -302,7 +278,7 @@ Please follow the exact JSON format below, and **wrap the result in a code block
 {page_count_instruction}{research_section}
 
 当前时间参考：
-{current_time_context}
+{time_ctx}
 
 请严格按照以下JSON格式生成PPT大纲：
 
@@ -324,151 +300,31 @@ Please follow the exact JSON format below, and **wrap the result in a code block
     ]
 }}
 
- slide_type可选值：
- - "title": 标题页/封面页
- - "content": 内容页
- - "agenda": 目录页
- - "transition": 章节过渡页（仅在开启时使用）
- - "conclusion": 总结/结论页
- - "thankyou": 结束页/感谢页
+slide_type 可选值：title / content / agenda / transition / conclusion / thankyou
 
 要求：
-1. 必须返回有效的JSON格式
+1. 必须返回有效的JSON格式，用```json```代码块包裹，不要包含其他文字说明
 2. 严格遵守页数要求
- 3. 第一页通常是标题页，最后一页通常是总结(conclusion)或感谢(thankyou)
-4. 第一页和最后一页要保持克制与聚焦，不要像普通内容页一样堆满要点
-5. {transition_page_instruction}
-6. 页面标题要简洁明确
-7. 内容要点要具体实用
-8. 根据重点内容和技术亮点安排页面内容
-9. 如果需要使用“当前 / 今年 / 本月 / 本季度 / 最近”等时间语义，请以上述当前时间为准；若输入信息已给出明确时间，以输入信息为准
+3. 第一页为标题页，最后一页为 conclusion 或 thankyou
+4. 首尾页保持克制与聚焦，不要像普通内容页一样堆满要点
+5. {transition_inst}
+6. 页面标题简洁明确，内容要点具体实用
+7. 每页只承担一个核心任务；标题串联多个独立主题时优先拆页，不要一页多主题
+8. 时间语义以上述当前时间为准；若输入信息已给出明确时间，以输入信息为准"""
 
-请只返回JSON，使用```json```代码块包裹，不要包含其他文字说明。
-
-示例格式：
-```json
-{{
-  "title": "PPT标题",
-  "slides": [
-    {{
-      "page_number": 1,
-      "title": "页面标题",
-      "content_points": ["要点1", "要点2"],
-      "slide_type": "title"
-    }}
-  ]
-}}
-```"""
+    # ----------------------------------------------------------------
+    # 大纲生成上下文（供其他模块使用）
+    # ----------------------------------------------------------------
 
     @staticmethod
-    def get_outline_generation_context(topic: str, target_audience: str, ppt_style: str,
-                                     page_count_instruction: str, focus_content: List[str],
-                                     tech_highlights: List[str], description: str) -> str:
-        """获取大纲生成上下文提示词"""
-        focus_content_str = ', '.join(focus_content) if focus_content else '无'
-        tech_highlights_str = ', '.join(tech_highlights) if tech_highlights else '无'
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        
-        return f"""请为以下项目生成详细的PPT大纲：
+    def get_outline_generation_context(
+        topic: str, target_audience: str, page_count_instruction: str,
+        ppt_style: str, custom_style: str, description: str,
+        page_count_mode: str,
+    ) -> str:
+        time_ctx = OutlinePrompts._build_current_time_context_zh()
 
-项目信息：
-- 主题：{topic}
-- 目标受众：{target_audience}
-- PPT风格：{ppt_style}
-- 重点展示内容：{focus_content_str}
-- 技术亮点：{tech_highlights_str}
-- 其他说明：{description or '无'}
-{page_count_instruction}
-
-当前时间参考：
-{current_time_context}
-
-请生成结构化的PPT大纲，包含每页的标题、内容要点和页面类型。确保内容逻辑清晰，符合目标受众需求。"""
-
-    @staticmethod
-    def get_streaming_outline_prompt(topic: str, target_audience: str, ppt_style: str,
-                                   page_count_instruction: str, research_section: str,
-                                   include_transition_pages: bool = False) -> str:
-        """获取流式大纲生成提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        transition_page_instruction = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
-        prompt = f"""
-作为专业的PPT大纲生成助手，请为以下项目生成详细的PPT大纲。
-
-项目信息：
-- 主题：{topic}
-- 目标受众：{target_audience}
-- PPT风格：{ppt_style}
-{page_count_instruction}{research_section}
-
-当前时间参考：
-{current_time_context}
-
-请严格按照以下JSON格式生成PPT大纲：
-
-{{
-    "title": "PPT标题",
-    "slides": [
-        {{
-            "page_number": 1,
-            "title": "页面标题",
-            "content_points": ["要点1", "要点2", "要点3"],
-            "slide_type": "title"
-        }},
-        {{
-            "page_number": 2,
-            "title": "页面标题",
-            "content_points": ["要点1", "要点2", "要点3"],
-            "slide_type": "content"
-        }}
-    ]
-}}
-
- slide_type可选值：
- - "title": 标题页/封面页
- - "content": 内容页
- - "agenda": 目录页
- - "transition": 章节过渡页（仅在开启时使用）
- - "conclusion": 总结/结论页
- - "thankyou": 结束页/感谢页
-
-要求：
-1. 必须返回有效的JSON格式
-2. 严格遵守页数要求
- 3. 第一页通常是标题页，最后一页通常是总结(conclusion)或感谢(thankyou)
-4. 第一页和最后一页要保持克制与聚焦，不要像普通内容页一样堆满要点
-5. {transition_page_instruction}
-6. 页面标题要简洁明确
-7. 内容要点要具体实用
-8. 根据重点内容和技术亮点安排页面内容
-9. 如果需要使用“当前 / 今年 / 本月 / 本季度 / 最近”等时间语义，请以上述当前时间为准；若输入信息已给出明确时间，以输入信息为准
-
-请只返回JSON，使用```json```代码块包裹，不要包含其他文字说明。
-
-示例格式：
-```json
-{{
-  "title": "PPT标题",
-  "slides": [
-    {{
-      "page_number": 1,
-      "title": "页面标题",
-      "content_points": ["要点1", "要点2"],
-      "slide_type": "title"
-    }}
-  ]
-}}
-```
-"""
-        return prompt
-
-    @staticmethod
-    def get_outline_generation_context(topic: str, target_audience: str, page_count_instruction: str,
-                                     ppt_style: str, custom_style: str, description: str,
-                                     page_count_mode: str) -> str:
-        """获取大纲生成上下文提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        context = f"""
+        return f"""
 项目信息：
 - 主题：{topic}
 - 目标受众：{target_audience}
@@ -478,7 +334,7 @@ Please follow the exact JSON format below, and **wrap the result in a code block
 - 其他说明：{description}
 
 当前时间参考：
-{current_time_context}
+{time_ctx}
 
 任务：生成完整的PPT大纲
 
@@ -509,4 +365,3 @@ Please follow the exact JSON format below, and **wrap the result in a code block
 }}
 ```
 """
-        return context

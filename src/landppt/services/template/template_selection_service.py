@@ -4,6 +4,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..prompts.template_prompts import TemplatePrompts
+from ..prompts.prompt_utils import should_include_page_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,10 @@ class TemplateSelectionService:
         if not enriched.get("description") and hasattr(project, "description"):
             enriched["description"] = getattr(project, "description", "") or ""
         user_prompt = TemplatePrompts.build_free_template_user_prompt(project, outline, enriched)
-        return TemplatePrompts.build_template_generation_prompt(user_prompt)
+        return TemplatePrompts.build_template_generation_prompt(
+            user_prompt,
+            include_page_numbers=should_include_page_numbers(enriched),
+        )
 
     @staticmethod
     def _extract_free_template_preview_html(response_content: str) -> Optional[str]:

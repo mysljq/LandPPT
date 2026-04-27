@@ -141,6 +141,24 @@ class ProgressTracker:
                 logger.warning(f"Failed to get progress from cache: {e}")
         return None
 
+    async def _ensure_local_progress(self, task_id: str) -> Optional[ProgressInfo]:
+        """Ensure this worker has a local copy before applying an update."""
+        with self._lock:
+            local = self._progress_data.get(task_id)
+        if local is not None:
+            return local
+
+        cached = await self._get_progress_from_cache(task_id)
+        if cached is None:
+            return None
+
+        with self._lock:
+            existing = self._progress_data.get(task_id)
+            if existing is not None:
+                return existing
+            self._progress_data[task_id] = cached
+        return cached
+
     async def _delete_progress_from_cache(self, task_id: str) -> None:
         cache = await self._get_cache()
         if cache and cache.is_connected:
@@ -274,6 +292,7 @@ class ProgressTracker:
 
     async def update_progress_async(self, task_id: str, **kwargs) -> Optional[ProgressInfo]:
         """Update progress for a task and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.update_progress(task_id, **kwargs)
         if progress:
             await self._save_progress_to_cache(progress)
@@ -281,6 +300,7 @@ class ProgressTracker:
 
     async def complete_task_async(self, task_id: str, message: str = "生成完成") -> Optional[ProgressInfo]:
         """Mark task as completed and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.complete_task(task_id, message=message)
         if progress:
             await self._save_progress_to_cache(progress)
@@ -288,6 +308,7 @@ class ProgressTracker:
 
     async def fail_task_async(self, task_id: str, error_message: str) -> Optional[ProgressInfo]:
         """Mark task as failed and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.fail_task(task_id, error_message=error_message)
         if progress:
             await self._save_progress_to_cache(progress)
@@ -295,6 +316,7 @@ class ProgressTracker:
 
     async def add_slide_completed_async(self, task_id: str, slide_index: int, slide_title: str) -> Optional[ProgressInfo]:
         """Mark a slide as completed and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.add_slide_completed(task_id, slide_index, slide_title)
         if progress:
             await self._save_progress_to_cache(progress)
@@ -304,6 +326,7 @@ class ProgressTracker:
         self, task_id: str, slide_index: int, slide_title: str, error: str
     ) -> Optional[ProgressInfo]:
         """Mark a slide as failed and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.add_slide_failed(task_id, slide_index, slide_title, error)
         if progress:
             await self._save_progress_to_cache(progress)
@@ -313,6 +336,7 @@ class ProgressTracker:
         self, task_id: str, slide_index: int, slide_title: str, reason: str
     ) -> Optional[ProgressInfo]:
         """Mark a slide as skipped and persist it (async)."""
+        await self._ensure_local_progress(task_id)
         progress = self.add_slide_skipped(task_id, slide_index, slide_title, reason)
         if progress:
             await self._save_progress_to_cache(progress)

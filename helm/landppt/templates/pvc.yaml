@@ -1,0 +1,21 @@
+{{- if .Values.persistence.enabled }}
+{{- $root := . }}
+{{- range $name, $cfg := dict "data" .Values.persistence.data "uploads" .Values.persistence.uploads "reports" .Values.persistence.reports "cache" .Values.persistence.cache "lib" .Values.persistence.lib }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "landppt.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "landppt.labels" $root | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with $root.Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $cfg.size }}
+{{- end }}
+{{- end }}

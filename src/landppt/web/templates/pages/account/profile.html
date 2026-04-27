@@ -5,299 +5,390 @@
 {% block extra_css %}
 <style>
     .profile-page {
+        display: grid;
+        gap: 0;
+        min-height: 640px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-xl);
+        background: var(--surface);
+        box-shadow: var(--shadow-soft);
+        overflow: hidden;
+    }
+
+    .profile-shell {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 640px;
+    }
+
+    /* —— Left nav —— */
+    .profile-nav {
         display: flex;
         flex-direction: column;
-        gap: var(--spacing-xl);
+        gap: 4px;
+        padding: 20px 14px;
+        border-right: 1px solid var(--border-color);
+        background:
+            linear-gradient(180deg, rgba(17, 24, 39, 0.03) 0%, transparent 40%),
+            var(--surface-subtle);
     }
 
-    .profile-header {
-        text-align: center;
-        margin-bottom: var(--spacing-xl);
+    .profile-nav-user {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 8px 18px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid var(--border-color);
     }
 
-    .profile-header h2 {
-        font-size: 2.4rem;
-        font-weight: 700;
-        color: var(--ink-strong);
-        margin-bottom: var(--spacing-sm);
-    }
-
-    .profile-header p {
-        color: var(--text-secondary);
+    .profile-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
         font-size: 1.05rem;
+        font-weight: 800;
+        color: #fff;
+        background: var(--primary-gradient);
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
     }
 
-    .profile-section-title {
+    .profile-nav-user-meta {
+        min-width: 0;
+    }
+
+    .profile-nav-user-meta strong {
+        display: block;
+        font-size: 0.95rem;
+        font-weight: 800;
         color: var(--ink-strong);
-        font-size: 1.25rem;
-        font-weight: 700;
-        margin-bottom: var(--spacing-md);
-        letter-spacing: 0.01em;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
-    .profile-info {
-        background: var(--surface-subtle);
+    .profile-nav-user-meta span {
+        display: block;
+        margin-top: 2px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .profile-tab {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 11px 12px;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        background: transparent;
+        color: var(--ink-muted);
+        font-size: 0.92rem;
+        font-weight: 700;
+        font-family: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .profile-tab i {
+        width: 18px;
+        text-align: center;
+        font-size: 0.9rem;
+        opacity: 0.85;
+    }
+
+    .profile-tab:hover {
+        background: rgba(17, 24, 39, 0.05);
+        color: var(--ink-strong);
+    }
+
+    .profile-tab.is-active {
+        background: var(--surface);
+        border-color: var(--border-color);
+        color: var(--ink-strong);
+        box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+    }
+
+    .profile-tab.is-active i {
+        opacity: 1;
+    }
+
+    .profile-nav-footer {
+        margin-top: auto;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-color);
+        display: grid;
+        gap: 6px;
+    }
+
+    .profile-nav-link {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        color: var(--ink-muted);
+        text-decoration: none;
+        font-size: 0.88rem;
+        font-weight: 700;
+        transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .profile-nav-link i {
+        width: 18px;
+        text-align: center;
+    }
+
+    .profile-nav-link:hover {
+        background: rgba(17, 24, 39, 0.05);
+        color: var(--ink-strong);
+    }
+
+    .profile-nav-link.danger {
+        color: #991b1b;
+    }
+
+    .profile-nav-link.danger:hover {
+        background: rgba(239, 68, 68, 0.08);
+        color: #7f1d1d;
+    }
+
+    .profile-nav-link.admin {
+        color: #991b1b;
+    }
+
+    /* —— Right content —— */
+    .profile-content {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+    }
+
+    .profile-panel {
+        display: none;
+        flex: 1;
+        padding: 28px 32px 32px;
+        animation: profilePanelIn 0.18s ease;
+    }
+
+    .profile-panel.is-active {
+        display: block;
+    }
+
+    @keyframes profilePanelIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .profile-panel-header {
+        margin-bottom: 22px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .profile-panel-header h2 {
+        font-size: 1.35rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: var(--ink-strong);
+        margin-bottom: 4px;
+    }
+
+    .profile-panel-header p {
+        color: var(--text-secondary);
+        font-size: 0.92rem;
+        font-weight: 600;
+    }
+
+    .profile-alerts {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+
+    .profile-page .alert {
+        border-radius: var(--border-radius-md);
+        padding: 10px 12px;
+        font-weight: 700;
+        border: 1px solid;
+        margin: 0;
+    }
+
+    .profile-page .alert-success {
+        background: rgba(34, 197, 94, 0.10);
+        border-color: rgba(34, 197, 94, 0.30);
+        color: #166534;
+    }
+
+    .profile-page .alert-error {
+        background: rgba(239, 68, 68, 0.10);
+        border-color: rgba(239, 68, 68, 0.30);
+        color: #991b1b;
+    }
+
+    .profile-page .alert-info {
+        background: rgba(59, 130, 246, 0.08);
+        border-color: rgba(59, 130, 246, 0.25);
+        color: #1e3a8a;
+    }
+
+    /* —— Info list —— */
+    .profile-info-list {
+        display: grid;
+        gap: 0;
         border: 1px solid var(--border-color);
         border-radius: var(--border-radius-md);
-        padding: var(--spacing-lg);
-        display: flex;
-        flex-direction: column;
-        gap: var(--spacing-md);
+        overflow: hidden;
+        max-width: 640px;
     }
 
     .profile-info-row {
         display: flex;
         justify-content: space-between;
-        gap: var(--spacing-sm);
-        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .profile-info-row:nth-child(even) {
+        background: rgba(17, 24, 39, 0.015);
+    }
+
+    .profile-info-row:last-child {
+        border-bottom: none;
     }
 
     .profile-info-label {
-        font-weight: 600;
-        color: var(--ink);
+        font-weight: 700;
+        color: var(--ink-muted);
+        font-size: 0.9rem;
+        flex-shrink: 0;
     }
 
     .profile-info-value {
+        color: var(--ink-strong);
+        font-weight: 650;
+        text-align: right;
+        word-break: break-word;
+    }
+
+    .meta-text {
         color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
     }
 
     .status-badge,
     .role-badge {
         display: inline-flex;
         align-items: center;
-        padding: 4px 14px;
-        border-radius: var(--border-radius-sm);
-        font-size: 0.85rem;
-        font-weight: 600;
-        letter-spacing: 0.02em;
-        border: 1px solid var(--border-color);
-        color: var(--ink-strong);
-        background: var(--surface);
-    }
-
-    .status-active,
-    .role-admin {
-        background: var(--surface-contrast);
-        border-color: var(--surface-contrast);
-        color: var(--surface);
-    }
-
-    .status-disabled {
-        border-style: dashed;
-        color: var(--text-secondary);
-    }
-
-    .role-standard {
-        background: transparent;
-        color: var(--text-secondary);
-    }
-
-    .meta-text {
-        color: var(--text-secondary);
-    }
-
-    .field-hint {
-        margin-top: var(--spacing-xs);
-        font-size: 0.85rem;
-        color: var(--text-secondary);
-    }
-
-    .profile-form .form-actions {
-        text-align: center;
-    }
-
-    .profile-form .btn-primary {
-        width: 100%;
-        justify-content: center;
-        background: var(--surface-contrast);
-        border-color: var(--surface-contrast);
-        color: var(--surface);
-    }
-
-    .profile-form .btn-primary:hover {
-        box-shadow: var(--shadow-soft);
-        transform: translateY(-1px);
-    }
-
-    .profile-actions {
-        display: flex;
-        gap: var(--spacing-sm);
-        justify-content: center;
-        flex-wrap: wrap;
-    }
-
-    .profile-action-btn {
-        min-width: 180px;
-        justify-content: center;
-        background: var(--surface-contrast);
-        border-color: var(--surface-contrast);
-        color: var(--surface);
-    }
-
-    .profile-action-btn:hover {
-        box-shadow: var(--shadow-soft);
-        transform: translateY(-1px);
-    }
-
-    .profile-page .alert,
-    .profile-page .alert-success,
-    .profile-page .alert-error,
-    .profile-page .alert-info {
-        background: var(--surface-subtle);
-        border-color: var(--border-color);
-        color: var(--ink-strong);
-        border-left: 4px solid var(--border-color);
-    }
-
-    .profile-page .alert-success {
-        border-left-color: #16a34a;
-    }
-
-    .profile-page .alert-error {
-        border-left-color: #ef4444;
-    }
-
-    .profile-page .alert-info {
-        border-left-color: #3b82f6;
-    }
-
-    .api-key-form-grid {
-        display: grid;
-        gap: var(--spacing-sm);
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    }
-
-    .api-key-form-grid .form-group {
-        margin-bottom: 0;
-    }
-
-    .api-key-actions {
-        display: flex;
-        gap: var(--spacing-sm);
-        flex-wrap: wrap;
-        margin-top: var(--spacing-sm);
-    }
-
-    .api-key-actions .btn {
-        width: auto;
-    }
-
-    .api-key-result {
-        margin-top: var(--spacing-md);
-        border: 1px solid var(--border-color);
-        border-radius: var(--border-radius-md);
-        background: var(--surface-subtle);
-        padding: var(--spacing-md);
-    }
-
-    .api-key-result code {
-        display: block;
-        margin-top: var(--spacing-xs);
-        padding: var(--spacing-sm);
-        border-radius: var(--border-radius-sm);
-        border: 1px dashed var(--border-color);
-        background: var(--surface);
-        color: var(--ink-strong);
-        overflow-wrap: anywhere;
-    }
-
-    .api-key-list {
-        margin-top: var(--spacing-md);
-        overflow-x: auto;
-        border: 1px solid var(--border-color);
-        border-radius: var(--border-radius-md);
-    }
-
-    .api-key-table {
-        width: 100%;
-        border-collapse: collapse;
-        min-width: 760px;
-    }
-
-    .api-key-table th,
-    .api-key-table td {
-        text-align: left;
-        padding: 10px 12px;
-        border-bottom: 1px solid var(--border-color);
-        color: var(--text-secondary);
-        font-size: 0.9rem;
-        vertical-align: middle;
-    }
-
-    .api-key-table th {
-        color: var(--ink-strong);
-        font-weight: 700;
-        background: var(--surface-subtle);
-    }
-
-    .api-key-table tbody tr:last-child td {
-        border-bottom: none;
-    }
-
-    .api-key-status {
-        display: inline-flex;
-        align-items: center;
+        gap: 6px;
+        padding: 4px 11px;
         border-radius: 999px;
-        padding: 2px 10px;
         font-size: 0.8rem;
         font-weight: 700;
         border: 1px solid var(--border-color);
-    }
-
-    .api-key-status.active {
-        color: #166534;
-        background: #dcfce7;
-        border-color: #86efac;
-    }
-
-    .api-key-status.inactive {
-        color: #7f1d1d;
-        background: #fee2e2;
-        border-color: #fca5a5;
-    }
-
-    .api-key-empty {
-        text-align: center;
-        color: var(--text-secondary);
-        padding: var(--spacing-md);
-    }
-
-    .api-key-card {
-        grid-column: 1 / -1;
-    }
-
-    .profile-balance {
-        font-size: 1.5rem;
-        font-weight: 700;
+        background: var(--surface);
         color: var(--ink-strong);
     }
 
-    .checkin-panel {
-        position: relative;
-        overflow: hidden;
-        display: grid;
-        gap: var(--spacing-md);
-        margin-top: var(--spacing-sm);
-        padding: var(--spacing-lg);
-        border-radius: var(--border-radius-md);
-        border: 1px solid color-mix(in srgb, var(--surface-contrast) 18%, var(--border-color));
-        background:
-            linear-gradient(135deg, color-mix(in srgb, var(--surface-contrast) 10%, var(--surface)) 0%, var(--surface-subtle) 100%);
+    .status-active {
+        background: rgba(22, 163, 74, 0.10);
+        border-color: rgba(22, 163, 74, 0.28);
+        color: #166534;
     }
 
-    .checkin-panel::before {
+    .status-disabled {
+        background: rgba(239, 68, 68, 0.08);
+        border-color: rgba(239, 68, 68, 0.22);
+        color: #991b1b;
+    }
+
+    .role-admin {
+        background: rgba(17, 24, 39, 0.92);
+        border-color: transparent;
+        color: #fff;
+    }
+
+    .role-standard {
+        background: rgba(17, 24, 39, 0.04);
+        color: var(--ink-muted);
+    }
+
+    /* —— Credits —— */
+    .balance-panel {
+        display: grid;
+        gap: 16px;
+        max-width: 560px;
+    }
+
+    .balance-hero {
+        padding: 20px 18px;
+        border-radius: var(--border-radius-lg);
+        background: var(--primary-gradient);
+        color: #fff;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .balance-hero::after {
         content: "";
         position: absolute;
-        inset: 0 auto 0 0;
-        width: 4px;
-        background: linear-gradient(180deg, var(--surface-contrast), color-mix(in srgb, var(--surface-contrast) 55%, transparent));
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        right: -30px;
+        top: -40px;
+        background: rgba(255, 255, 255, 0.08);
+        pointer-events: none;
+    }
+
+    .balance-hero .label {
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.72);
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .profile-balance {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 2rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1.1;
+    }
+
+    .checkin-panel {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        border-radius: var(--border-radius-md);
+        border: 1px solid var(--border-color);
+        background: var(--surface-subtle);
     }
 
     .checkin-top {
         display: flex;
         justify-content: space-between;
-        align-items: flex-start;
-        gap: var(--spacing-md);
+        align-items: center;
+        gap: 10px;
         flex-wrap: wrap;
     }
 
@@ -317,23 +408,20 @@
     .checkin-actions {
         display: flex;
         align-items: center;
-        gap: var(--spacing-sm);
+        gap: 10px;
         flex-wrap: wrap;
     }
 
     .checkin-actions .btn {
-        min-width: 160px;
+        min-width: 148px;
         justify-content: center;
     }
 
     .checkin-feedback {
         min-height: 1.25rem;
         color: var(--text-secondary);
-        font-size: 0.9rem;
-    }
-
-    .profile-links {
-        margin-top: var(--spacing-sm);
+        font-size: 0.88rem;
+        font-weight: 600;
     }
 
     .profile-links .btn {
@@ -341,35 +429,307 @@
         justify-content: center;
     }
 
-    .profile-redeem {
-        margin-top: var(--spacing-md);
-        padding-top: var(--spacing-md);
-        border-top: 1px solid var(--border-color);
+    .redeem-form {
+        display: flex;
+        gap: 10px;
+        align-items: stretch;
     }
 
-    @media (max-width: 640px) {
+    .redeem-form input {
+        flex: 1;
+        min-width: 0;
+        padding: 11px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-md);
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: var(--surface);
+        color: var(--ink-strong);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .redeem-form input:focus {
+        outline: none;
+        border-color: rgba(17, 24, 39, 0.35);
+        box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.08);
+    }
+
+    /* —— Forms —— */
+    .profile-form {
+        max-width: 480px;
+    }
+
+    .profile-form.wide {
+        max-width: none;
+    }
+
+    .profile-form .form-group {
+        margin-bottom: 14px;
+    }
+
+    .profile-form .form-group:last-of-type {
+        margin-bottom: 0;
+    }
+
+    .profile-form label {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: var(--ink-strong);
+        margin-bottom: 8px;
+    }
+
+    .profile-form input {
+        padding: 12px 14px;
+        border-radius: var(--border-radius-md);
+        border: 1px solid var(--border-color);
+        background: var(--surface);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .profile-form input:focus {
+        outline: none;
+        border-color: rgba(17, 24, 39, 0.35);
+        box-shadow: 0 0 0 4px rgba(17, 24, 39, 0.08);
+        transform: none;
+        background: var(--surface);
+    }
+
+    .field-hint {
+        margin-top: 6px;
+        font-size: 0.82rem;
+        color: var(--text-secondary);
+        font-weight: 600;
+        line-height: 1.45;
+    }
+
+    .profile-form .form-actions {
+        margin-top: 16px;
+    }
+
+    .profile-form .btn-primary,
+    .checkin-actions .btn-primary,
+    .profile-links .btn-primary,
+    .redeem-form .btn-primary,
+    .api-key-actions .btn-primary {
+        background: var(--surface-contrast);
+        border-color: var(--surface-contrast);
+        color: var(--surface);
+    }
+
+    .profile-form .btn-primary:hover,
+    .checkin-actions .btn-primary:hover,
+    .profile-links .btn-primary:hover,
+    .redeem-form .btn-primary:hover,
+    .api-key-actions .btn-primary:hover {
+        box-shadow: var(--shadow-soft);
+        transform: translateY(-1px);
+    }
+
+    .profile-form .btn-primary {
+        width: 100%;
+        justify-content: center;
+    }
+
+    /* —— API keys —— */
+    .api-key-form-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .api-key-form-grid .form-group {
+        margin-bottom: 0;
+    }
+
+    .api-key-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+    }
+
+    .api-key-actions .btn {
+        width: auto;
+    }
+
+    .api-key-result {
+        margin-top: 14px;
+        border: 1px solid rgba(22, 163, 74, 0.28);
+        border-radius: var(--border-radius-md);
+        background: rgba(22, 163, 74, 0.06);
+        padding: 14px;
+    }
+
+    .api-key-result strong {
+        color: #166534;
+        font-size: 0.9rem;
+    }
+
+    .api-key-result code {
+        display: block;
+        margin-top: 8px;
+        padding: 12px;
+        border-radius: var(--border-radius-sm);
+        border: 1px dashed rgba(22, 163, 74, 0.35);
+        background: var(--surface);
+        color: var(--ink-strong);
+        overflow-wrap: anywhere;
+        font-size: 0.88rem;
+        line-height: 1.5;
+    }
+
+    .api-key-list {
+        margin-top: 18px;
+        overflow-x: auto;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-md);
+        background: var(--surface);
+    }
+
+    .api-key-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 760px;
+    }
+
+    .api-key-table th,
+    .api-key-table td {
+        text-align: left;
+        padding: 11px 12px;
+        border-bottom: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        vertical-align: middle;
+    }
+
+    .api-key-table th {
+        color: var(--text-secondary);
+        font-weight: 800;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: var(--surface-subtle);
+    }
+
+    .api-key-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .api-key-table tbody tr:hover td {
+        background: rgba(17, 24, 39, 0.02);
+    }
+
+    .api-key-table code {
+        font-size: 0.84rem;
+        color: var(--ink-strong);
+        background: rgba(17, 24, 39, 0.05);
+        padding: 3px 7px;
+        border-radius: 6px;
+    }
+
+    .api-key-status {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        border: 1px solid var(--border-color);
+    }
+
+    .api-key-status.active {
+        color: #166534;
+        background: #dcfce7;
+        border-color: #86efac;
+    }
+
+    .api-key-status.inactive {
+        color: #7f1d1d;
+        background: #fee2e2;
+        border-color: #fca5a5;
+    }
+
+    .api-key-empty {
+        text-align: center;
+        color: var(--text-secondary);
+        padding: 22px 12px;
+        font-weight: 600;
+    }
+
+    /* —— Mobile —— */
+    @media (max-width: 900px) {
+        .profile-shell {
+            grid-template-columns: 1fr;
+        }
+
+        .profile-nav {
+            border-right: none;
+            border-bottom: 1px solid var(--border-color);
+            padding: 14px 12px;
+            gap: 0;
+        }
+
+        .profile-nav-user {
+            padding-bottom: 12px;
+            margin-bottom: 10px;
+        }
+
+        .profile-tabs {
+            display: flex;
+            gap: 6px;
+            overflow-x: auto;
+            padding-bottom: 2px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .profile-tab {
+            flex: 0 0 auto;
+            white-space: nowrap;
+            padding: 9px 12px;
+        }
+
+        .profile-nav-footer {
+            display: none;
+        }
+
+        .profile-panel {
+            padding: 20px 16px 24px;
+        }
+
+        .api-key-form-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .checkin-actions,
+        .api-key-actions,
+        .redeem-form {
+            flex-direction: column;
+        }
+
+        .checkin-actions .btn,
+        .api-key-actions .btn,
+        .redeem-form .btn {
+            width: 100%;
+        }
+
         .profile-info-row {
             flex-direction: column;
             align-items: flex-start;
             gap: 4px;
         }
 
-        .checkin-top,
-        .checkin-actions {
+        .profile-info-value {
+            text-align: left;
+        }
+    }
+
+    @media (min-width: 901px) {
+        .profile-tabs {
+            display: flex;
             flex-direction: column;
-            align-items: stretch;
-        }
-
-        .profile-action-btn {
-            width: 100%;
-        }
-
-        .api-key-actions {
-            flex-direction: column;
-        }
-
-        .api-key-actions .btn {
-            width: 100%;
+            gap: 4px;
         }
     }
 </style>
@@ -377,226 +737,268 @@
 
 {% block content %}
 <div class="profile-page">
-    <div class="profile-header">
-        <h2>用户资料</h2>
-        <p>管理你的账户信息与安全配置</p>
-    </div>
-
-    {% if error %}
-    <div class="alert alert-error">
-        {{ error }}
-    </div>
-    {% endif %}
-
-    {% if success %}
-    <div class="alert alert-success">
-        {{ success }}
-    </div>
-    {% endif %}
-
-    <div class="grid">
-        <div class="card">
-            <h3 class="profile-section-title">基本信息</h3>
-
-            <div class="profile-info">
-                <div class="profile-info-row">
-                    <span class="profile-info-label">用户名</span>
-                    <span class="profile-info-value">{{ user.username }}</span>
-                </div>
-
-                {% if user.email %}
-                <div class="profile-info-row">
-                    <span class="profile-info-label">邮箱</span>
-                    <span class="profile-info-value">{{ user.email }}</span>
-                </div>
-                {% endif %}
-
-                <div class="profile-info-row">
-                    <span class="profile-info-label">账户状态</span>
-                    {% if user.is_active %}
-                    <span class="status-badge status-active">活跃</span>
-                    {% else %}
-                    <span class="status-badge status-disabled">已禁用</span>
-                    {% endif %}
-                </div>
-
-                <div class="profile-info-row">
-                    <span class="profile-info-label">权限级别</span>
-                    {% if user.is_admin %}
-                    <span class="role-badge role-admin">管理员</span>
-                    {% else %}
-                    <span class="role-badge role-standard">普通用户</span>
-                    {% endif %}
-                </div>
-
-                <div class="profile-info-row">
-                    <span class="profile-info-label">注册时间</span>
-                    <span class="profile-info-value meta-text js-ts" data-ts="{{ user.created_at }}">-</span>
-                </div>
-
-                {% if user.last_login %}
-                <div class="profile-info-row">
-                    <span class="profile-info-label">最后登录</span>
-                    <span class="profile-info-value meta-text js-ts" data-ts="{{ user.last_login }}">-</span>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-
-        {% if credits_enabled %}
-        <div class="card">
-            <h3 class="profile-section-title">我的积分</h3>
-
-            <div class="profile-info">
-                <div class="profile-info-row">
-                    <span class="profile-info-label">当前余额</span>
-                    <span class="profile-info-value profile-balance" id="profileCreditsBalance">
-                        {{ user.credits_balance | default(0) }} 积分
+    <div class="profile-shell">
+        <aside class="profile-nav" aria-label="账户设置导航">
+            <div class="profile-nav-user">
+                <div class="profile-avatar" aria-hidden="true">{{ user.username[:1] }}</div>
+                <div class="profile-nav-user-meta">
+                    <strong>{{ user.username }}</strong>
+                    <span>
+                        {% if user.is_admin %}管理员{% else %}普通用户{% endif %}
+                        ·
+                        {% if user.is_active %}活跃{% else %}已禁用{% endif %}
                     </span>
                 </div>
-
-                <div class="checkin-panel">
-                    <div class="checkin-top">
-                        <div class="checkin-badge" id="checkinMeta">加载中...</div>
-                    </div>
-                    <div class="checkin-actions">
-                        <button type="button" class="btn btn-primary" id="checkinBtn" disabled>
-                            <i class="fas fa-hand-sparkles"></i> 立即签到
-                        </button>
-                        <span class="checkin-feedback" id="checkinFeedback"></span>
-                    </div>
-                </div>
-
-                <div class="profile-links">
-                    <a href="/credits" class="btn btn-primary">
-                        <i class="fas fa-coins"></i> 查看积分详情 / 充值
-                    </a>
-                </div>
-
-                <div class="profile-redeem">
-                    <form id="redeemForm" style="display:flex; gap:var(--spacing-sm);">
-                        <input type="text" id="redeemCode" placeholder="输入兑换码"
-                            style="flex:1; padding:var(--spacing-sm) var(--spacing-md);">
-                        <button type="submit" class="btn btn-primary">兑换</button>
-                    </form>
-                    <p id="redeemMsg" style="margin-top:var(--spacing-xs); font-size:0.85rem;"></p>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
-        <div class="card">
-            <h3 class="profile-section-title">修改密码</h3>
-
-            <form method="post" action="/auth/change-password" class="profile-form">
-                <div class="form-group">
-                    <label for="current_password">当前密码:</label>
-                    <input type="password" id="current_password" name="current_password" required placeholder="请输入当前密码">
-                </div>
-
-                <div class="form-group">
-                    <label for="new_password">新密码:</label>
-                    <input type="password" id="new_password" name="new_password" required placeholder="请输入新密码" minlength="6">
-                    <p class="field-hint">密码长度至少 6 位</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="confirm_password">确认新密码:</label>
-                    <input type="password" id="confirm_password" name="confirm_password" required placeholder="请再次输入新密码">
-                </div>
-
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">
-                        修改密码
-                    </button>
-                </div>
-            </form>
-        </div>
-
-        <div class="card api-key-card">
-            <h3 class="profile-section-title">API Key 管理</h3>
-            <p class="field-hint">创建你的专属 API Key，支持其他渠道调用服务</p>
-
-            <div id="apiKeyMessage" class="alert alert-info" style="display:none; margin-top: var(--spacing-sm);"></div>
-
-            <form id="apiKeyForm" class="profile-form" style="margin-top: var(--spacing-md);">
-                <div class="api-key-form-grid">
-                    <div class="form-group">
-                        <label for="api_key_name">Key 名称</label>
-                        <input id="api_key_name" name="name" type="text" maxlength="100" required value="" placeholder="">
-                    </div>
-
-                    <div class="form-group">
-                        <label for="api_key_custom">自定义 Key（可选）</label>
-                        <input id="api_key_custom" name="api_key" type="text" minlength="16" maxlength="512" placeholder="留空则自动生成">
-                        <p class="field-hint">最小长度 16；建议使用高强度随机字符串。</p>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="api_key_expires_days">过期天数（可选）</label>
-                        <input id="api_key_expires_days" name="expires_in_days" type="number" min="1" max="3650" placeholder="例如：30">
-                    </div>
-                </div>
-
-                <div class="api-key-actions">
-                    <button type="submit" id="apiKeyCreateBtn" class="btn btn-primary">创建 / 轮换</button>
-                    <button type="button" id="apiKeyRefreshBtn" class="btn btn-secondary">刷新列表</button>
-                </div>
-            </form>
-
-            <div id="apiKeyResult" class="api-key-result" style="display:none;">
-                <strong>本次生成的 API Key（仅展示一次）：</strong>
-                <code id="apiKeyResultValue"></code>
-                <div class="api-key-actions">
-                    <button type="button" id="apiKeyCopyBtn" class="btn btn-secondary btn-sm">复制 Key</button>
-                </div>
             </div>
 
-            <div class="api-key-list">
-                <table class="api-key-table">
-                    <thead>
-                        <tr>
-                            <th>名称</th>
-                            <th>前缀</th>
-                            <th>状态</th>
-                            <th>创建时间</th>
-                            <th>最近使用</th>
-                            <th>过期时间</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="apiKeyTableBody">
-                        <tr>
-                            <td class="api-key-empty" colspan="7">加载中...</td>
-                        </tr>
-                    </tbody>
-                </table>
+            <div class="profile-tabs" role="tablist" aria-orientation="vertical">
+                <button type="button" class="profile-tab is-active" role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true">
+                    <i class="fas fa-id-card"></i> 基本信息
+                </button>
+
+                {% if credits_enabled %}
+                <button type="button" class="profile-tab" role="tab" id="tab-credits" data-tab="credits" aria-controls="panel-credits" aria-selected="false">
+                    <i class="fas fa-coins"></i> 我的积分
+                </button>
+                {% endif %}
+
+                <button type="button" class="profile-tab" role="tab" id="tab-security" data-tab="security" aria-controls="panel-security" aria-selected="false">
+                    <i class="fas fa-lock"></i> 修改密码
+                </button>
+
+                <button type="button" class="profile-tab" role="tab" id="tab-apikeys" data-tab="apikeys" aria-controls="panel-apikeys" aria-selected="false">
+                    <i class="fas fa-key"></i> API Key
+                </button>
             </div>
-        </div>
-    </div>
 
-    <div class="card">
-        <h3 class="profile-section-title">快速操作</h3>
+            <div class="profile-nav-footer">
+                <a href="/dashboard" class="profile-nav-link">
+                    <i class="fas fa-table-columns"></i> 项目仪表板
+                </a>
+                <a href="/ai-config" class="profile-nav-link">
+                    <i class="fas fa-robot"></i> AI 配置
+                </a>
+                {% if user.is_admin %}
+                <a href="/admin" class="profile-nav-link admin">
+                    <i class="fas fa-cog"></i> 后台管理
+                </a>
+                {% endif %}
+                <a href="/auth/logout" class="profile-nav-link danger" onclick="return confirm('确定要退出登录吗？')">
+                    <i class="fas fa-right-from-bracket"></i> 退出登录
+                </a>
+            </div>
+        </aside>
 
-        <div class="profile-actions">
-            <a href="/dashboard" class="btn profile-action-btn">
-                项目仪表板
-            </a>
-
-            <a href="/ai-config" class="btn profile-action-btn">
-                AI配置
-            </a>
-
-            {% if user.is_admin %}
-            <a href="/admin" class="btn profile-action-btn"
-                style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: var(--ink);">
-                <i class="fas fa-cog"></i> 后台管理
-            </a>
+        <div class="profile-content">
+            {% if error or success %}
+            <div class="profile-alerts" style="padding: 18px 32px 0;">
+                {% if error %}
+                <div class="alert alert-error">{{ error }}</div>
+                {% endif %}
+                {% if success %}
+                <div class="alert alert-success">{{ success }}</div>
+                {% endif %}
+            </div>
             {% endif %}
 
-            <a href="/auth/logout" class="btn profile-action-btn" onclick="return confirm('确定要退出登录吗？')">
-                退出登录
-            </a>
+            <!-- Overview -->
+            <section class="profile-panel is-active" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
+                <div class="profile-panel-header">
+                    <h2>基本信息</h2>
+                    <p>查看账户状态与登录记录</p>
+                </div>
+
+                <div class="profile-info-list">
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">用户名</span>
+                        <span class="profile-info-value">{{ user.username }}</span>
+                    </div>
+
+                    {% if user.email %}
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">邮箱</span>
+                        <span class="profile-info-value">{{ user.email }}</span>
+                    </div>
+                    {% endif %}
+
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">账户状态</span>
+                        {% if user.is_active %}
+                        <span class="status-badge status-active">活跃</span>
+                        {% else %}
+                        <span class="status-badge status-disabled">已禁用</span>
+                        {% endif %}
+                    </div>
+
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">权限级别</span>
+                        {% if user.is_admin %}
+                        <span class="role-badge role-admin">管理员</span>
+                        {% else %}
+                        <span class="role-badge role-standard">普通用户</span>
+                        {% endif %}
+                    </div>
+
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">注册时间</span>
+                        <span class="profile-info-value meta-text js-ts" data-ts="{{ user.created_at }}">-</span>
+                    </div>
+
+                    {% if user.last_login %}
+                    <div class="profile-info-row">
+                        <span class="profile-info-label">最后登录</span>
+                        <span class="profile-info-value meta-text js-ts" data-ts="{{ user.last_login }}">-</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <!-- Credits -->
+            {% if credits_enabled %}
+            <section class="profile-panel" id="panel-credits" role="tabpanel" aria-labelledby="tab-credits" data-panel="credits" hidden>
+                <div class="profile-panel-header">
+                    <h2>我的积分</h2>
+                    <p>签到领取、兑换码充值与余额查看</p>
+                </div>
+
+                <div class="balance-panel">
+                    <div class="balance-hero">
+                        <div class="label"><i class="fas fa-wallet"></i> 当前余额</div>
+                        <div class="profile-balance" id="profileCreditsBalance">
+                            {{ user.credits_balance | default(0) }} 积分
+                        </div>
+                    </div>
+
+                    <div class="checkin-panel">
+                        <div class="checkin-top">
+                            <div class="checkin-badge" id="checkinMeta">加载中...</div>
+                        </div>
+                        <div class="checkin-actions">
+                            <button type="button" class="btn btn-primary" id="checkinBtn" disabled>
+                                <i class="fas fa-hand-sparkles"></i> 立即签到
+                            </button>
+                            <span class="checkin-feedback" id="checkinFeedback"></span>
+                        </div>
+                    </div>
+
+                    <div class="profile-links">
+                        <a href="/credits" class="btn btn-primary">
+                            <i class="fas fa-chart-line"></i> 查看积分详情 / 充值
+                        </a>
+                    </div>
+
+                    <div class="profile-redeem">
+                        <form id="redeemForm" class="redeem-form">
+                            <input type="text" id="redeemCode" placeholder="输入兑换码" autocomplete="off">
+                            <button type="submit" class="btn btn-primary">兑换</button>
+                        </form>
+                        <p id="redeemMsg" class="field-hint" style="margin-top:8px;"></p>
+                    </div>
+                </div>
+            </section>
+            {% endif %}
+
+            <!-- Security -->
+            <section class="profile-panel" id="panel-security" role="tabpanel" aria-labelledby="tab-security" data-panel="security" hidden>
+                <div class="profile-panel-header">
+                    <h2>修改密码</h2>
+                    <p>建议定期更新密码以保障账户安全</p>
+                </div>
+
+                <form method="post" action="/auth/change-password" class="profile-form">
+                    <div class="form-group">
+                        <label for="current_password">当前密码</label>
+                        <input type="password" id="current_password" name="current_password" required placeholder="请输入当前密码" autocomplete="current-password">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="new_password">新密码</label>
+                        <input type="password" id="new_password" name="new_password" required placeholder="请输入新密码" minlength="6" autocomplete="new-password">
+                        <p class="field-hint">密码长度至少 6 位</p>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="confirm_password">确认新密码</label>
+                        <input type="password" id="confirm_password" name="confirm_password" required placeholder="请再次输入新密码" autocomplete="new-password">
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-key"></i> 修改密码
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- API Keys -->
+            <section class="profile-panel" id="panel-apikeys" role="tabpanel" aria-labelledby="tab-apikeys" data-panel="apikeys" hidden>
+                <div class="profile-panel-header">
+                    <h2>API Key 管理</h2>
+                    <p>创建专属 API Key，供外部渠道调用服务</p>
+                </div>
+
+                <div id="apiKeyMessage" class="alert alert-info" style="display:none; margin-bottom: 12px;"></div>
+
+                <form id="apiKeyForm" class="profile-form wide">
+                    <div class="api-key-form-grid">
+                        <div class="form-group">
+                            <label for="api_key_name">Key 名称</label>
+                            <input id="api_key_name" name="name" type="text" maxlength="100" required value="" placeholder="例如：生产环境">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="api_key_custom">自定义 Key（可选）</label>
+                            <input id="api_key_custom" name="api_key" type="text" minlength="16" maxlength="512" placeholder="留空则自动生成">
+                            <p class="field-hint">最小长度 16；建议使用高强度随机字符串。</p>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="api_key_expires_days">过期天数（可选）</label>
+                            <input id="api_key_expires_days" name="expires_in_days" type="number" min="1" max="3650" placeholder="例如：30">
+                        </div>
+                    </div>
+
+                    <div class="api-key-actions">
+                        <button type="submit" id="apiKeyCreateBtn" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> 创建 / 轮换
+                        </button>
+                        <button type="button" id="apiKeyRefreshBtn" class="btn btn-secondary">
+                            <i class="fas fa-rotate"></i> 刷新列表
+                        </button>
+                    </div>
+                </form>
+
+                <div id="apiKeyResult" class="api-key-result" style="display:none;">
+                    <strong>本次生成的 API Key（仅展示一次）：</strong>
+                    <code id="apiKeyResultValue"></code>
+                    <div class="api-key-actions">
+                        <button type="button" id="apiKeyCopyBtn" class="btn btn-secondary btn-sm">
+                            <i class="fas fa-copy"></i> 复制 Key
+                        </button>
+                    </div>
+                </div>
+
+                <div class="api-key-list">
+                    <table class="api-key-table">
+                        <thead>
+                            <tr>
+                                <th>名称</th>
+                                <th>前缀</th>
+                                <th>状态</th>
+                                <th>创建时间</th>
+                                <th>最近使用</th>
+                                <th>过期时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="apiKeyTableBody">
+                            <tr>
+                                <td class="api-key-empty" colspan="7">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
         </div>
     </div>
 </div>
@@ -657,6 +1059,64 @@
         document.body.removeChild(textarea);
         return copied;
     }
+
+    // —— Tab navigation ——
+    function activateProfileTab(tabId, { updateHash = true } = {}) {
+        const tabs = document.querySelectorAll(".profile-tab[data-tab]");
+        const panels = document.querySelectorAll(".profile-panel[data-panel]");
+        let matched = false;
+
+        tabs.forEach((tab) => {
+            const active = tab.dataset.tab === tabId;
+            tab.classList.toggle("is-active", active);
+            tab.setAttribute("aria-selected", active ? "true" : "false");
+            if (active) {
+                matched = true;
+            }
+        });
+
+        if (!matched) {
+            tabId = "overview";
+            tabs.forEach((tab) => {
+                const active = tab.dataset.tab === tabId;
+                tab.classList.toggle("is-active", active);
+                tab.setAttribute("aria-selected", active ? "true" : "false");
+            });
+        }
+
+        panels.forEach((panel) => {
+            const active = panel.dataset.panel === tabId;
+            panel.classList.toggle("is-active", active);
+            if (active) {
+                panel.removeAttribute("hidden");
+            } else {
+                panel.setAttribute("hidden", "");
+            }
+        });
+
+        if (updateHash) {
+            const nextHash = `#${tabId}`;
+            if (window.location.hash !== nextHash) {
+                history.replaceState(null, "", nextHash);
+            }
+        }
+    }
+
+    document.querySelectorAll(".profile-tab[data-tab]").forEach((tab) => {
+        tab.addEventListener("click", () => {
+            activateProfileTab(tab.dataset.tab);
+        });
+    });
+
+    const initialTab = (window.location.hash || "").replace(/^#/, "") || "overview";
+    activateProfileTab(initialTab, { updateHash: false });
+
+    // 改密成功后自动切到「修改密码」面板（URL 带 success 时也保留 hash）
+    {% if success or error %}
+    if (!window.location.hash || window.location.hash === "#") {
+        activateProfileTab("security", { updateHash: true });
+    }
+    {% endif %}
 
     document.querySelectorAll(".js-ts").forEach((node) => {
         node.textContent = formatUnixTimestamp(node.dataset.ts);
@@ -839,7 +1299,9 @@
     function setApiKeyButtonsLoading(loading) {
         if (apiKeyCreateBtn) {
             apiKeyCreateBtn.disabled = loading;
-            apiKeyCreateBtn.textContent = loading ? "处理中..." : "创建 / 轮换";
+            apiKeyCreateBtn.innerHTML = loading
+                ? '<i class="fas fa-spinner fa-spin"></i> 处理中...'
+                : '<i class="fas fa-plus"></i> 创建 / 轮换';
         }
         if (apiKeyRefreshBtn) {
             apiKeyRefreshBtn.disabled = loading;

@@ -1,6 +1,6 @@
 [project]
 name = "landppt"
-version = "0.1.8"
+version = "0.3.2"
 description = "AI-powered PPT generation platform with OpenAI-compatible API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -71,6 +71,8 @@ dependencies = [
     "langchain-community>=0.3.27",
     "edge-tts>=6.1.0",
     "resend>=2.21.0",
+    "pymupdf>=1.23.0",
+    "boto3>=1.34.0",
 ]
 
 
@@ -94,6 +96,7 @@ test = [
 
 [project.scripts]
 landppt = "landppt.main:main"
+landppt-cli = "landppt.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sligter/LandPPT"

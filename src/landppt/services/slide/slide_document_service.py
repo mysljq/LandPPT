@@ -86,6 +86,19 @@ class SlideDocumentService:
                     points_html += f"<li style='margin-bottom: 0.8em; word-wrap: break-word;'>{point}</li>"
                 points_html += '</ul></div>'
             content_html = f'\n                <div style="padding: 3% 5%; width: 100%; aspect-ratio: 16/9; box-sizing: border-box; margin: 0 auto; position: relative; max-width: 1200px; display: flex; flex-direction: column;">\n                    <h1 style="font-size: clamp(1.5rem, 4vw, 3rem); color: #2c3e50; margin-bottom: clamp(15px, 2vh, 25px); border-bottom: 3px solid #3498db; padding-bottom: 10px; line-height: 1.2; flex-shrink: 0;">{title}</h1>\n                    <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">\n                        {points_html}\n                    </div>\n                    <div style="position: absolute; bottom: 15px; right: 20px; color: #95a5a6; font-size: clamp(10px, 1.5vw, 14px); font-weight: 500; background: rgba(255,255,255,0.8); padding: 4px 8px; border-radius: 4px; z-index: 10;">\n                        第{page_number}页 / 共{total_pages}页\n                    </div>\n                </div>\n                '
+        if isinstance(slide_data, dict) and slide_data.get("_include_page_numbers") is False:
+            content_html = re.sub(
+                r'\s*<!-- 页码 -->\s*<div style=".*?</div>',
+                '',
+                content_html,
+                flags=re.DOTALL,
+            )
+            content_html = re.sub(
+                rf'\s*<div style="[^"]*position:\s*absolute;[^"]*bottom:\s*15px;[^"]*right:\s*20px;[^"]*"[^>]*>\s*第{page_number}页 / 共{total_pages}页\s*</div>',
+                '',
+                content_html,
+                flags=re.DOTALL,
+            )
         return f"""\n    <!DOCTYPE html>\n    <html lang="zh-CN" style="height: 100%; display: flex; align-items: center; justify-content: center;">\n    <head>\n        <meta charset="UTF-8">\n        <meta name="viewport" content="width=device-width, initial-scale=1.0">\n        <title>{title}</title>\n        <style>\n            body {{\n                margin: 0;\n                padding: 0;\n                font-family: 'Microsoft YaHei', Arial, sans-serif;\n                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n                color: #2c3e50;\n                width: 1280px;\n                height: 720px;\n                position: relative;\n                overflow: hidden;\n            }}\n        </style>\n    </head>\n    <body>\n        {content_html}\n    </body>\n    </html>\n            """
 
     def _combine_slides_to_full_html(self, slides_data: List[Dict[str, Any]], title: str) -> str:

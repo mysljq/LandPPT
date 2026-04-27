@@ -59,9 +59,15 @@ async def web_dashboard(
             page_size=100,
             user_id=user.id,
         )
+        if projects_response.total > len(projects_response.projects):
+            projects_response = await ppt_service.project_manager.list_projects(
+                page=1,
+                page_size=projects_response.total,
+                user_id=user.id,
+            )
         projects = projects_response.projects
 
-        total_projects = len(projects)
+        total_projects = projects_response.total
         completed_projects = len([project for project in projects if project.status == "completed"])
         in_progress_projects = len([project for project in projects if project.status == "in_progress"])
         draft_projects = len([project for project in projects if project.status == "draft"])
@@ -177,6 +183,7 @@ async def start_project_workflow(
             language=language,
             network_mode=network_mode,
             target_audience=confirmed_requirements.get("target_audience", "普通大众"),
+            custom_audience=confirmed_requirements.get("custom_audience"),
             ppt_style=confirmed_requirements.get("ppt_style", "general"),
             custom_style_prompt=confirmed_requirements.get("custom_style_prompt"),
             description=confirmed_requirements.get("description"),

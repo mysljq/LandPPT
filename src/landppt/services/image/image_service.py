@@ -786,43 +786,144 @@ class ImageService:
                 error_code="upload_error"
             )
     
+    def _artifact_to_image_info(self, artifact) -> Optional[ImageInfo]:
+        """Convert an image_cache artifact row into ImageInfo metadata."""
+        try:
+            metadata = artifact.metadata_json or {}
+            if metadata:
+                image_info = ImageInfo(**metadata)
+                image_info.image_id = image_info.image_id or artifact.task_id or artifact.id
+                image_info.owner_user_id = image_info.owner_user_id or artifact.user_id
+                if not image_info.filename:
+                    image_info.filename = artifact.filename
+                return image_info
+
+            suffix = Path(artifact.filename or "").suffix.lower()
+            format_map = {
+                '.jpg': ImageFormat.JPEG,
+                '.jpeg': ImageFormat.JPEG,
+                '.png': ImageFormat.PNG,
+                '.webp': ImageFormat.WEBP,
+                '.gif': ImageFormat.GIF,
+                '.svg': ImageFormat.SVG,
+            }
+            image_format = format_map.get(suffix, ImageFormat.JPEG)
+            from .models import ImageMetadata
+            return ImageInfo(
+                image_id=artifact.task_id or artifact.id,
+                owner_user_id=artifact.user_id,
+                source_type=ImageSourceType.LOCAL_STORAGE,
+                provider=ImageProvider.LOCAL_STORAGE,
+                original_url="",
+                local_path="",
+                filename=artifact.filename,
+                title=artifact.filename,
+                metadata=ImageMetadata(
+                    width=0,
+                    height=0,
+                    format=image_format,
+                    file_size=int(artifact.size_bytes or 0),
+                ),
+                created_at=float(artifact.created_at or time.time()),
+                updated_at=float(artifact.updated_at or artifact.created_at or time.time()),
+            )
+        except Exception as exc:
+            logger.warning("Failed to convert image artifact %s to ImageInfo: %s", getattr(artifact, 'id', None), exc)
+            return None
+
+    def _artifact_source_type(self, artifact, image_info: Optional[ImageInfo]) -> str:
+        if image_info:
+            try:
+                return image_info.source_type.value
+            except Exception:
+                pass
+        metadata = artifact.metadata_json or {}
+        source_type = metadata.get("source_type") or metadata.get("source") or "local_storage"
+        return str(source_type)
+
+    def _artifact_to_gallery_item(self, artifact, image_info: ImageInfo) -> Dict[str, Any]:
+        from ..url_service import build_image_url
+
+        metadata = image_info.metadata if image_info else None
+        image_id = image_info.image_id if image_info else (artifact.task_id or artifact.id)
+        return {
+            "id": image_id,
+            "image_id": image_id,
+            "title": image_info.title if image_info else artifact.filename,
+            "description": image_info.description if image_info else None,
+            "filename": image_info.filename if image_info else artifact.filename,
+            "url": build_image_url(
+                image_id,
+                width=getattr(metadata, "width", None),
+                height=getattr(metadata, "height", None),
+            ),
+            "file_size": int(artifact.size_bytes or getattr(metadata, "file_size", 0) or 0),
+            "width": getattr(metadata, "width", 0) if metadata else 0,
+            "height": getattr(metadata, "height", 0) if metadata else 0,
+            "source_type": self._artifact_source_type(artifact, image_info),
+            "source": self._artifact_source_type(artifact, image_info),
+            "category": self._artifact_source_type(artifact, image_info),
+            "provider": image_info.provider.value if image_info else "local_storage",
+            "alt_text": (image_info.title or image_info.filename) if image_info else artifact.filename,
+            "created_at": float(artifact.created_at or 0),
+            "last_accessed": float(artifact.updated_at or artifact.created_at or 0),
+            "access_count": 0,
+            "tags": [tag.name if hasattr(tag, 'name') else str(tag) for tag in ((image_info.tags if image_info else []) or [])],
+            "artifact_id": artifact.id,
+            "storage_backend": artifact.storage_backend,
+        }
+
     async def get_image(self, image_id: str) -> Optional[ImageInfo]:
-        """获取图片信息"""
+        """获取图片信息；artifact/S3 为权威存储，本地缓存仅回退。"""
         if not self.initialized:
             await self.initialize()
-        
+
         try:
             effective_user_id = current_user_id.get()
+            artifact_user_id = None if effective_user_id in (None, USER_SCOPE_ALL) else effective_user_id
 
-            # Fast path: image_id is a cache_key (new format)
+            # Authoritative path: image_cache artifact metadata.
+            try:
+                from ..storage import get_artifact_service
+            except Exception:
+                from ..storage import get_artifact_service
+            artifact = await get_artifact_service().get_task_artifact(
+                image_id,
+                artifact_type="image_cache",
+                user_id=artifact_user_id,
+            )
+            if artifact:
+                return self._artifact_to_image_info(artifact)
+
+            # Compatibility fallback: local filesystem cache.
             cached_result = await self.cache_manager.get_cached_image(image_id)
             if cached_result:
                 image_info, _ = cached_result
-                if effective_user_id is None or image_info.owner_user_id == effective_user_id:
+                if effective_user_id in (None, USER_SCOPE_ALL) or image_info.owner_user_id == effective_user_id:
                     return image_info
                 return None
 
-            # Legacy path: scan cache for matching image_id
-            for cache_key, cache_info in cache_entries:
+            for cache_key in list(self.cache_manager._cache_index.keys()):
                 cached_result = await self.cache_manager.get_cached_image(cache_key)
                 if cached_result:
                     image_info, _ = cached_result
-                    if image_info.image_id == image_id and (effective_user_id is None or image_info.owner_user_id == effective_user_id):
+                    if image_info.image_id == image_id and (
+                        effective_user_id in (None, USER_SCOPE_ALL) or image_info.owner_user_id == effective_user_id
+                    ):
                         return image_info
-            
-            # 如果缓存中没有，尝试从存储提供者获取
+
             storage_providers = provider_registry.get_storage_providers()
             for provider in storage_providers:
                 image_info = await provider.get_image(image_id)
                 if image_info:
                     return image_info
-            
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Failed to get image {image_id}: {e}")
             return None
-    
+
     async def process_image(self, image_id: str, options: ImageProcessingOptions) -> ImageOperationResult:
         """处理图片"""
         if not self.initialized:
@@ -838,21 +939,18 @@ class ImageService:
                     error_code="image_not_found"
                 )
             
-            # 获取缓存的图片文件
-            cache_key = await self.cache_manager.is_cached(image_info)
-            if not cache_key:
-                return ImageOperationResult(
-                    success=False,
-                    message=f"Image {image_id} not in cache",
-                    error_code="image_not_cached"
-                )
-            
+            # 获取缓存的图片文件；artifact/S3 为权威存储，必要时按需物化到本地临时文件。
+            cache_key = image_info.image_id or image_id
             cached_result = await self.cache_manager.get_cached_image(cache_key)
+            if not cached_result:
+                legacy_cache_key = await self.cache_manager.is_cached(image_info)
+                if legacy_cache_key:
+                    cached_result = await self.cache_manager.get_cached_image(legacy_cache_key)
             if not cached_result:
                 return ImageOperationResult(
                     success=False,
-                    message=f"Failed to load cached image {image_id}",
-                    error_code="cache_load_error"
+                    message=f"Image {image_id} not available in artifact storage or local cache",
+                    error_code="image_not_cached"
                 )
             
             _, input_path = cached_result
@@ -888,43 +986,40 @@ class ImageService:
             )
     
     async def get_cache_stats(self) -> Dict[str, Any]:
-        """获取缓存统计"""
+        """获取图库统计；以 image_cache artifact 记录为准。"""
         user_id = current_user_id.get()
-        if user_id is None:
+        artifact_user_id = None if user_id in (None, USER_SCOPE_ALL) else user_id
+        try:
+            from ..storage import get_artifact_service
+
+            artifacts = await get_artifact_service().list_artifacts(
+                artifact_type="image_cache",
+                user_id=artifact_user_id,
+                limit=None,
+            )
+            source_stats: Dict[str, Dict[str, int]] = {}
+            total_size = 0
+            for artifact in artifacts:
+                image_info = self._artifact_to_image_info(artifact)
+                source_type = self._artifact_source_type(artifact, image_info)
+                size = int(artifact.size_bytes or 0)
+                total_size += size
+                source_stats.setdefault(source_type, {'count': 0, 'size': 0})
+                source_stats[source_type]['count'] += 1
+                source_stats[source_type]['size'] += size
+
+            categories = {key: value['count'] for key, value in source_stats.items()}
+            return {
+                'total_entries': len(artifacts),
+                'total_size_bytes': total_size,
+                'total_size_mb': total_size / (1024 * 1024) if total_size else 0,
+                'categories': categories,
+                'source_stats': source_stats,
+                'storage_backend': 'artifact',
+            }
+        except Exception as exc:
+            logger.warning("Failed to get artifact-backed image stats, falling back to local cache: %s", exc)
             return await self.cache_manager.get_cache_stats()
-
-        # Multi-worker processes: refresh filesystem index so new uploads/deletes are visible across workers.
-        await asyncio.get_event_loop().run_in_executor(None, self.cache_manager._load_cache_index)
-
-        prefix = f"u{user_id}_"
-        total_entries = 0
-        total_size = 0
-        source_stats: Dict[str, Dict[str, int]] = {}
-
-        cache_entries = list(self.cache_manager._cache_index.items())
-        for cache_key, cache_info in cache_entries:
-            if not cache_key.startswith(prefix):
-                continue
-            if not Path(cache_info.file_path).exists():
-                await self.cache_manager.remove_from_cache(cache_key)
-                continue
-            total_entries += 1
-            total_size += cache_info.file_size
-
-            file_path = Path(cache_info.file_path)
-            source_type = file_path.parent.parent.name if file_path.parent.parent.name in ['ai_generated', 'web_search', 'local_storage'] else 'unknown'
-            source_stats.setdefault(source_type, {'count': 0, 'size': 0})
-            source_stats[source_type]['count'] += 1
-            source_stats[source_type]['size'] += cache_info.file_size
-
-        categories = {k: v['count'] for k, v in source_stats.items()}
-        return {
-            'total_entries': total_entries,
-            'total_size_bytes': total_size,
-            'total_size_mb': total_size / (1024 * 1024) if total_size else 0,
-            'categories': categories,
-            'source_stats': source_stats
-        }
 
     async def list_cached_images(self,
                                 page: int = 1,
@@ -932,156 +1027,43 @@ class ImageService:
                                 category: Optional[str] = None,
                                 search: Optional[str] = None,
                                 sort: str = "created_desc") -> Dict[str, Any]:
-        """列出缓存的图片"""
+        """列出图库图片；以 image_cache artifact 记录为准。"""
         if not self.initialized:
             await self.initialize()
 
         try:
-            # 获取所有缓存的图片，包括引用
-            all_images = []
-            processed_content_hashes = set()
+            from ..storage import get_artifact_service
 
-            # Multi-worker processes: refresh filesystem index so new uploads/deletes are visible across workers.
-            await asyncio.get_event_loop().run_in_executor(None, self.cache_manager._load_cache_index)
-
-            cache_entries = list(self.cache_manager._cache_index.items())
-            logger.info(f"Processing {len(cache_entries)} cached images")
             effective_user_id = current_user_id.get()
+            artifact_user_id = None if effective_user_id in (None, USER_SCOPE_ALL) else effective_user_id
+            artifacts = await get_artifact_service().list_artifacts(
+                artifact_type="image_cache",
+                user_id=artifact_user_id,
+                limit=None,
+            )
 
-            # 首先处理主要的缓存条目
-            for cache_key, cache_info in cache_entries:
+            all_images = []
+            for artifact in artifacts:
                 try:
-                    # 检查文件是否存在
-                    file_path = Path(cache_info.file_path)
-                    if not file_path.exists():
-                        # Multi-worker processes: the in-memory index can be stale after clear/delete in another worker.
-                        await self.cache_manager.remove_from_cache(cache_key)
-                        continue
-
-                    # 加载图片元数据
-                    image_info = await self.cache_manager._load_image_metadata(cache_key)
+                    image_info = self._artifact_to_image_info(artifact)
                     if not image_info:
-                        logger.warning(f"Failed to load metadata for cache key: {cache_key}")
                         continue
 
-                    # 用户隔离：仅返回当前用户的图片（owner_user_id 必须匹配）
-                    if effective_user_id is not None and image_info.owner_user_id != effective_user_id:
+                    # 用户隔离：artifact query 已经按 user_id 过滤；双重校验 metadata。
+                    if artifact_user_id is not None and image_info.owner_user_id not in (None, artifact_user_id):
                         continue
 
-                    # 分类筛选
-                    if category and image_info.source_type.value != category:
+                    source_type = self._artifact_source_type(artifact, image_info)
+                    if category and source_type != category:
+                        continue
+                    if search and not self._matches_search_criteria(image_info, search):
                         continue
 
-                    # 搜索筛选
-                    if search:
-                        if not self._matches_search_criteria(image_info, search):
-                            continue
-
-                    # 构建图片信息
-                    from ..url_service import build_image_url
-                    image_data = {
-                        "id": image_info.image_id,  # 添加id字段
-                        "image_id": image_info.image_id,
-                        "title": image_info.title,
-                        "description": image_info.description,
-                        "filename": image_info.filename,
-                        "url": build_image_url(
-                            image_info.image_id,
-                            width=image_info.metadata.width if image_info.metadata else None,
-                            height=image_info.metadata.height if image_info.metadata else None,
-                        ),  # 使用URL服务生成绝对URL
-                        "file_size": cache_info.file_size,
-                        "width": image_info.metadata.width if image_info.metadata else 0,  # 添加宽度
-                        "height": image_info.metadata.height if image_info.metadata else 0,  # 添加高度
-                        "source_type": image_info.source_type.value,
-                        "source": image_info.source_type.value,  # 添加source字段用于分类
-                        "category": image_info.source_type.value,  # 添加category字段用于分类
-                        "provider": image_info.provider.value,
-                        "alt_text": image_info.title or image_info.filename,  # 添加alt_text
-                        "created_at": cache_info.created_at,
-                        "last_accessed": cache_info.last_accessed,
-                        "access_count": cache_info.access_count,
-                        "tags": [tag.name if hasattr(tag, 'name') else str(tag) for tag in (image_info.tags or [])]
-                    }
-
-                    all_images.append(image_data)
-                    processed_content_hashes.add(cache_key)
-                    logger.debug(f"Successfully processed image: {image_info.image_id}")
-
-                except Exception as e:
-                    logger.warning(f"Failed to process cached image {cache_key}: {e}")
+                    all_images.append(self._artifact_to_gallery_item(artifact, image_info))
+                except Exception as exc:
+                    logger.warning("Failed to process image artifact %s: %s", getattr(artifact, 'id', None), exc)
                     continue
 
-            # 然后处理引用文件
-            references_dir = self.cache_manager.metadata_dir / "references"
-            if references_dir.exists():
-                for reference_file in references_dir.glob("*.json"):
-                    try:
-                        # 从文件名提取内容哈希
-                        filename = reference_file.stem
-                        if '_' in filename:
-                            content_hash = filename.split('_')[0]
-
-                            # 如果这个内容哈希已经处理过，跳过
-                            if content_hash in processed_content_hashes:
-                                continue
-
-                            # 加载引用的图片信息
-                            import json
-                            with open(reference_file, 'r', encoding='utf-8') as f:
-                                metadata = json.load(f)
-
-                            from .models import ImageInfo
-                            image_info = ImageInfo(**metadata)
-
-                            # 分类筛选
-                            if category and image_info.source_type.value != category:
-                                continue
-
-                            # 搜索筛选
-                            if search:
-                                if not self._matches_search_criteria(image_info, search):
-                                    continue
-
-                            # 查找对应的缓存信息
-                            cache_info = self.cache_manager._cache_index.get(content_hash)
-                            if not cache_info:
-                                continue
-
-                            # 构建图片信息
-                            from ..url_service import build_image_url
-                            image_data = {
-                                "id": image_info.image_id,  # 添加id字段
-                                "image_id": image_info.image_id,
-                                "title": image_info.title,
-                                "description": image_info.description,
-                                "filename": image_info.filename,
-                                "url": build_image_url(
-                                    image_info.image_id,
-                                    width=image_info.metadata.width if image_info.metadata else None,
-                                    height=image_info.metadata.height if image_info.metadata else None,
-                                ),  # 使用URL服务生成绝对URL
-                                "file_size": cache_info.file_size,
-                                "width": image_info.metadata.width if image_info.metadata else 0,  # 添加宽度
-                                "height": image_info.metadata.height if image_info.metadata else 0,  # 添加高度
-                                "source_type": image_info.source_type.value,
-                                "source": image_info.source_type.value,  # 添加source字段用于分类
-                                "category": image_info.source_type.value,  # 添加category字段用于分类
-                                "provider": image_info.provider.value,
-                                "alt_text": image_info.title or image_info.filename,  # 添加alt_text
-                                "created_at": cache_info.created_at,
-                                "last_accessed": cache_info.last_accessed,
-                                "access_count": cache_info.access_count,
-                                "tags": [tag.name if hasattr(tag, 'name') else str(tag) for tag in (image_info.tags or [])]
-                            }
-
-                            all_images.append(image_data)
-
-                    except Exception as e:
-                        logger.warning(f"Failed to process reference file {reference_file}: {e}")
-                        continue
-
-            # 排序
             if sort == "created_desc":
                 all_images.sort(key=lambda x: x["created_at"], reverse=True)
             elif sort == "created_asc":
@@ -1093,22 +1075,19 @@ class ImageService:
             elif sort == "size_asc":
                 all_images.sort(key=lambda x: x["file_size"])
 
-            # 分页
             total_count = len(all_images)
             start_idx = (page - 1) * per_page
             end_idx = start_idx + per_page
-            page_images = all_images[start_idx:end_idx]
-
             return {
-                "images": page_images,
-                "total_count": total_count
+                "images": all_images[start_idx:end_idx],
+                "total_count": total_count,
             }
 
         except Exception as e:
-            logger.error(f"Failed to list cached images: {e}")
+            logger.error(f"Failed to list artifact-backed images: {e}")
             return {
                 "images": [],
-                "total_count": 0
+                "total_count": 0,
             }
 
     def _matches_search_criteria(self, image_info: ImageInfo, search: str) -> bool:
@@ -1155,32 +1134,45 @@ class ImageService:
         return True
 
     async def delete_image(self, image_id: str) -> bool:
-        """删除图片"""
+        """删除图片；同步删除 artifact 记录和对象，本地缓存仅做 best-effort 清理。"""
         if not self.initialized:
             await self.initialize()
 
         try:
             effective_user_id = current_user_id.get()
+            artifact_user_id = None if effective_user_id in (None, USER_SCOPE_ALL) else effective_user_id
 
-            # Prefer direct cache-key deletion (new format)
+            from ..storage import get_artifact_service
+
+            deleted_count = await get_artifact_service().delete_task_artifacts(
+                image_id,
+                artifact_type="image_cache",
+                user_id=artifact_user_id,
+            )
+            if deleted_count:
+                # Remove local compatibility cache without trying to delete the already removed artifact again.
+                try:
+                    await self.cache_manager.remove_from_cache(image_id, delete_artifact=False)
+                except Exception:
+                    pass
+                return True
+
+            # Compatibility fallback for legacy local-only images.
             if image_id in self.cache_manager._cache_index:
                 image_info = await self.cache_manager._load_image_metadata(image_id)
                 if not image_info:
                     return False
-                if effective_user_id is not None and image_info.owner_user_id != effective_user_id:
+                if effective_user_id not in (None, USER_SCOPE_ALL) and image_info.owner_user_id != effective_user_id:
                     return False
                 await self.cache_manager.remove_from_cache(image_id)
                 return True
 
-            # Legacy path: scan by metadata image_id
             for cache_key in list(self.cache_manager._cache_index.keys()):
                 try:
                     image_info = await self.cache_manager._load_image_metadata(cache_key)
-                    if not image_info:
+                    if not image_info or image_info.image_id != image_id:
                         continue
-                    if image_info.image_id != image_id:
-                        continue
-                    if effective_user_id is not None and image_info.owner_user_id != effective_user_id:
+                    if effective_user_id not in (None, USER_SCOPE_ALL) and image_info.owner_user_id != effective_user_id:
                         return False
                     await self.cache_manager.remove_from_cache(cache_key)
                     return True
@@ -1263,21 +1255,27 @@ class ImageService:
         }
 
     async def clear_all_cache(self) -> int:
-        """清空所有缓存"""
+        """清空全局图库；删除所有 image_cache artifact 对象和记录。"""
         if not self.initialized:
             await self.initialize()
 
         try:
-            # 清空所有缓存
-            deleted_count = await self.cache_manager.clear_cache()
-            logger.info(f"Cleared all cache, deleted {deleted_count} images")
+            from ..storage import get_artifact_service
+
+            deleted_count = await get_artifact_service().delete_artifacts(artifact_type="image_cache")
+            # Best-effort cleanup for legacy local files and thumbnails.
+            try:
+                await self.cache_manager.clear_cache()
+            except Exception:
+                pass
+            logger.info(f"Cleared all image artifacts, deleted {deleted_count} images")
             return deleted_count
         except Exception as e:
-            logger.error(f"Failed to clear all cache: {e}")
+            logger.error(f"Failed to clear all image artifacts: {e}")
             raise
 
     async def clear_user_cache(self, user_id: Optional[int] = None) -> int:
-        """清空指定用户作用域下的缓存图片。"""
+        """清空指定用户作用域下的图库图片；删除 artifact 对象和记录。"""
         if not self.initialized:
             await self.initialize()
 
@@ -1286,26 +1284,30 @@ class ImageService:
             return await self.clear_all_cache()
 
         try:
-            # Multi-worker processes: refresh filesystem index so new uploads/deletes are visible across workers.
-            await asyncio.get_event_loop().run_in_executor(None, self.cache_manager._load_cache_index)
+            from ..storage import get_artifact_service
 
-            deleted_count = 0
-            prefix = f"u{effective_user_id}_"
-            cache_keys = list(self.cache_manager._cache_index.keys())
-            for cache_key in cache_keys:
-                if not cache_key.startswith(prefix):
-                    continue
-                await self.cache_manager.remove_from_cache(cache_key)
-                deleted_count += 1
+            deleted_count = await get_artifact_service().delete_artifacts(
+                artifact_type="image_cache",
+                user_id=int(effective_user_id),
+            )
+
+            # Best-effort cleanup for local compatibility cache.
+            try:
+                prefix = f"u{effective_user_id}_"
+                for cache_key in list(self.cache_manager._cache_index.keys()):
+                    if cache_key.startswith(prefix):
+                        await self.cache_manager.remove_from_cache(cache_key, delete_artifact=False)
+            except Exception:
+                pass
 
             logger.info(
-                "Cleared user-scoped image cache for user %s, deleted %s images",
+                "Cleared user-scoped image artifacts for user %s, deleted %s images",
                 effective_user_id,
                 deleted_count,
             )
             return deleted_count
         except Exception as e:
-            logger.error(f"Failed to clear user cache for user {effective_user_id}: {e}")
+            logger.error(f"Failed to clear user image artifacts for user {effective_user_id}: {e}")
             raise
 
     async def deduplicate_cache(self) -> Dict[str, int]:

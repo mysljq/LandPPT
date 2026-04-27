@@ -63985,6 +63985,32 @@
     return (ownerDocument && ownerDocument.defaultView) || window;
   }
 
+  function getEffectiveLineHeightPx(style, fontSizePx, fontContext = null) {
+    const safeFontSizePx = Number.isFinite(fontSizePx) && fontSizePx > 0 ? fontSizePx : 16;
+    const lhStr = String((style && style.lineHeight) || '').trim().toLowerCase();
+    let lineHeightPx = NaN;
+
+    if (lhStr && lhStr !== 'normal') {
+      const parsedLineHeight = parseFloat(lhStr);
+      if (Number.isFinite(parsedLineHeight) && parsedLineHeight > 0) {
+        if (/^[0-9.]+$/.test(lhStr)) {
+          lineHeightPx = parsedLineHeight * safeFontSizePx;
+        } else if (lhStr.endsWith('%')) {
+          lineHeightPx = (parsedLineHeight / 100) * safeFontSizePx;
+        } else {
+          lineHeightPx = parsedLineHeight;
+        }
+      }
+    }
+
+    if (!Number.isFinite(lineHeightPx) || lineHeightPx <= 0) {
+      lineHeightPx = safeFontSizePx * 1.22;
+    }
+
+    const minLineHeightMultiplier = contextContainsCjkText(fontContext) ? 1.18 : 1.12;
+    return Math.max(lineHeightPx, safeFontSizePx * minLineHeightMultiplier);
+  }
+
   function getTextStyle(style, scale, fontContext = null) {
     let colorObj = parseColor(style.color);
 
@@ -63996,26 +64022,9 @@
 
     const isEffectivelyHiddenText = !colorObj.hex && colorObj.opacity <= 0.001;
 
-    let lineSpacing = null;
-    const fontSizePx = parseFloat(style.fontSize);
-    const lhStr = style.lineHeight;
-
-    if (lhStr && lhStr !== 'normal') {
-      let lhPx = parseFloat(lhStr);
-
-      // Edge Case: If browser returns a raw multiplier (e.g. "1.5")
-      // we must multiply by font size to get the height in pixels.
-      // (Note: getComputedStyle usually returns 'px', but inline styles might differ)
-      if (/^[0-9.]+$/.test(lhStr)) {
-        lhPx = lhPx * fontSizePx;
-      }
-
-      if (!isNaN(lhPx) && lhPx > 0) {
-        // Convert Pixel Height to Point Height (1px = 0.75pt)
-        // And apply the global layout scale.
-        lineSpacing = lhPx * 0.75 * scale;
-      }
-    }
+    const parsedFontSizePx = parseFloat(style.fontSize);
+    const fontSizePx = Number.isFinite(parsedFontSizePx) && parsedFontSizePx > 0 ? parsedFontSizePx : 16;
+    const lineSpacing = getEffectiveLineHeightPx(style, fontSizePx, fontContext) * 0.75 * scale;
 
     // --- Spacing (Margins) ---
     // Convert CSS margins (px) to PPTX Paragraph Spacing (pt).
@@ -64134,6 +64143,51 @@
     return false;
   }
 
+  function isInlineFlowTextDecorationElement(el, style, hasContent, hasVisualBox) {
+    if (!el || !style || !hasContent || !hasVisualBox) return false;
+    const tagName = String(el.tagName || '').toUpperCase();
+    const inlineTextTags = new Set([
+      'A',
+      'ABBR',
+      'B',
+      'BDI',
+      'BDO',
+      'CITE',
+      'CODE',
+      'DFN',
+      'EM',
+      'I',
+      'KBD',
+      'MARK',
+      'S',
+      'SAMP',
+      'SMALL',
+      'SPAN',
+      'STRONG',
+      'SUB',
+      'SUP',
+      'TIME',
+      'U',
+      'VAR',
+    ]);
+    if (!inlineTextTags.has(tagName)) return false;
+
+    const display = String(style.display || '');
+    if (!display.includes('inline')) return false;
+    if (style.position === 'absolute' || style.position === 'fixed') return false;
+
+    const children = Array.from(el.children || []);
+    return children.every((child) => {
+      if (isFormulaElement(child) || isIconElement(child)) return false;
+      const childTag = String(child.tagName || '').toUpperCase();
+      if (['IMG', 'SVG', 'CANVAS', 'VIDEO', 'IFRAME', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'].includes(childTag)) {
+        return false;
+      }
+      const childStyle = getNodeWindow(child).getComputedStyle(child);
+      return String(childStyle.display || '').includes('inline');
+    });
+  }
+
   /**
    * Determines if a given DOM node is primarily a text container.
    * Updated to correctly reject Icon elements so they are rendered as images.
@@ -64148,14 +64202,15 @@
 
     const isSafeInline = (el) => {
       if (isFormulaElement(el)) return false;
+      const tagName = String(el.tagName || '').toUpperCase();
       // 1. Reject Web Components / Custom Elements
-      if (el.tagName.includes('-')) return false;
+      if (tagName.includes('-')) return false;
       // 2. Reject Explicit Images/SVGs
-      if (el.tagName === 'IMG' || el.tagName === 'SVG') return false;
+      if (['IMG', 'SVG', 'CANVAS', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED'].includes(tagName)) return false;
 
       // 3. Reject Class-based Icons (FontAwesome, Material, Bootstrap, etc.)
       // If an <i> or <span> has icon classes, it is a visual object, not text.
-      if (el.tagName === 'I' || el.tagName === 'SPAN') {
+      if (tagName === 'I' || tagName === 'SPAN') {
         const cls = el.getAttribute('class') || '';
         if (
           cls.includes('fa-') ||
@@ -64170,13 +64225,13 @@
         }
       }
 
-      const style = window.getComputedStyle(el);
+      const style = getNodeWindow(el).getComputedStyle(el);
       const display = style.display;
       if (style.position === 'absolute' || style.position === 'fixed') return false;
 
       // 4. Standard Inline Tag Check
       const isInlineTag = ['SPAN', 'B', 'STRONG', 'EM', 'I', 'A', 'SMALL', 'MARK'].includes(
-        el.tagName
+        tagName
       );
       const isInlineDisplay = display.includes('inline');
 
@@ -64209,6 +64264,10 @@
         hasBorder || hasRadius || hasPadding || hasBackgroundImage || (hasVisibleBg && !allowInlineTextHighlight);
 
       // 6. Visual tags/chips should be rendered as elements, not merged into one text run.
+      // Inline text decorations (code chips, mark, kbd, highlighted spans) must stay in the
+      // parent text flow; otherwise following wrapped text exports as a separate textbox and
+      // can overlap the chip in PowerPoint.
+      if (isInlineFlowTextDecorationElement(el, style, hasContent, hasVisualBox)) return true;
       if (hasVisualBox) return false;
 
       // 7. Check for empty shapes (visual objects without text, like dots)
@@ -64443,31 +64502,66 @@
    * Helper to inline computed styles into an SVG clone
    */
   function inlineSvgStyles(source, target) {
-    const computed = window.getComputedStyle(source);
+    const sourceWin = getNodeWindow(source);
+    const computed = sourceWin.getComputedStyle(source);
     const properties = [
       'fill',
+      'fill-opacity',
       'stroke',
       'stroke-width',
+      'stroke-opacity',
+      'stroke-dasharray',
+      'stroke-dashoffset',
       'stroke-linecap',
       'stroke-linejoin',
+      'stop-color',
+      'stop-opacity',
       'opacity',
       'font-family',
       'font-size',
       'font-weight',
+      'font-style',
+      'text-anchor',
+      'dominant-baseline',
+      'alignment-baseline',
     ];
 
-    if (computed.fill === 'none') target.setAttribute('fill', 'none');
-    else if (computed.fill) target.style.fill = computed.fill;
+    const setComputedProperty = (prop, value) => {
+      if (!value || value === 'auto') return;
+      target.style.setProperty(prop, value);
+    };
 
-    if (computed.stroke === 'none') target.setAttribute('stroke', 'none');
-    else if (computed.stroke) target.style.stroke = computed.stroke;
+    const inlineColorProperty = (prop) => {
+      const value = computed.getPropertyValue(prop);
+      if (!value) return;
+      if (value === 'none') target.setAttribute(prop, 'none');
+      else setComputedProperty(prop, value);
+    };
+
+    inlineColorProperty('fill');
+    inlineColorProperty('stroke');
+
+    ['fill', 'stroke'].forEach((prop) => {
+      const attrValue = target.getAttribute(prop);
+      if (attrValue && attrValue.includes('var(')) {
+        target.removeAttribute(prop);
+      }
+    });
 
     properties.forEach((prop) => {
       if (prop !== 'fill' && prop !== 'stroke') {
-        const val = computed[prop];
-        if (val && val !== 'auto') target.style[prop] = val;
+        const val = computed.getPropertyValue(prop);
+        setComputedProperty(prop, val);
       }
     });
+
+    const styleAttr = target.getAttribute('style') || '';
+    if (styleAttr.includes('var(')) {
+      target.setAttribute('style', styleAttr.replace(/var\((--[^),]+)(?:,[^)]+)?\)/g, (_, varName) => {
+        const resolved = computed.getPropertyValue(varName).trim();
+        return resolved || 'currentColor';
+      }));
+    }
 
     for (let i = 0; i < source.children.length; i++) {
       if (target.children[i]) inlineSvgStyles(source.children[i], target.children[i]);
@@ -65434,7 +65528,7 @@
     let domOrderCounter = 0;
 
     // Sync Traversal Function
-    function collect(node, parentZIndex, parentOpacity, zIndexScale = 1) {
+    function collect(node, parentZIndex, parentOpacity, zIndexScale = 1, textOnlyMode = false) {
       const order = domOrderCounter++;
 
       let currentZ = parentZIndex;
@@ -65468,6 +65562,40 @@
         }
       }
 
+      // HYBRID MODE: subtrees using CSS features that OOXML cannot express are
+      // rasterized as a decoration layer, while their text is re-collected
+      // natively (editable) on top via textOnlyMode recursion.
+      if (!textOnlyMode && nodeType === 1 && nodeStyle && globalOptions.hybridRaster !== false) {
+        const hybridConfig = { ...layoutConfig, root };
+        const hybridReason = getHybridRasterReason(node, nodeStyle, hybridConfig);
+        if (hybridReason) {
+          // html2canvas already applies the node's own opacity; only the
+          // inherited (parent) opacity must be multiplied onto the raster.
+          const inheritedOpacity = Number.isFinite(parentOpacity)
+            ? Math.max(0, Math.min(1, parentOpacity))
+            : 1;
+          const hybrid = prepareHybridRasterItem(
+            node,
+            hybridConfig,
+            order,
+            currentZ,
+            nodeStyle,
+            globalOptions,
+            inheritedOpacity
+          );
+          if (hybrid) {
+            if (hybrid.items) renderQueue.push(...hybrid.items);
+            if (hybrid.job) asyncTasks.push(hybrid.job);
+            if (hybrid.recurseTextOnly) {
+              // Re-enter on the node itself in text-only mode so text held
+              // directly by the hybrid node (not just descendants) is emitted.
+              collect(node, parentZIndex, parentOpacity, zIndexScale, true);
+            }
+            return;
+          }
+        }
+      }
+
       // Prepare the item. If it needs async work, it returns a 'job'
       const result = prepareRenderItem(
         node,
@@ -65477,7 +65605,8 @@
         currentZ,
         nodeStyle,
         globalOptions,
-        currentOpacity
+        currentOpacity,
+        textOnlyMode
       );
 
       if (result) {
@@ -65495,7 +65624,7 @@
       // Recurse children synchronously
       const childNodes = node.childNodes;
       for (let i = 0; i < childNodes.length; i++) {
-        collect(childNodes[i], currentZ, currentOpacity, childZIndexScale);
+        collect(childNodes[i], currentZ, currentOpacity, childZIndexScale, textOnlyMode);
       }
     }
 
@@ -66204,6 +66333,123 @@
     });
   }
 
+  function hasRenderableBackgroundImage(backgroundImageValue) {
+    const value = String(backgroundImageValue || '').trim();
+    return !!value && value.toLowerCase() !== 'none';
+  }
+
+  function getElementClassText(node) {
+    if (!node || node.nodeType !== 1) return '';
+    const className = node.className;
+    if (typeof className === 'string') return className;
+    if (className && typeof className.baseVal === 'string') return className.baseVal;
+    return '';
+  }
+
+  function isSlideSizedBackgroundLayerNode(node, config) {
+    if (!node || !config) return false;
+    if (node === config.root) return true;
+
+    const classText = getElementClassText(node);
+    if (/\b(?:slide-canvas|pptx-slide)\b/i.test(classText)) return true;
+
+    if (
+      typeof node.getBoundingClientRect !== 'function' ||
+      !config.root ||
+      typeof config.root.getBoundingClientRect !== 'function'
+    ) {
+      return false;
+    }
+
+    const nodeRect = node.getBoundingClientRect();
+    const rootRect = config.root.getBoundingClientRect();
+    const rootW = rootRect.width || 0;
+    const rootH = rootRect.height || 0;
+    if (rootW <= 1 || rootH <= 1) return false;
+
+    const widthMatches = nodeRect.width >= rootW * 0.9;
+    const heightMatches = nodeRect.height >= rootH * 0.9;
+    const leftAligned = Math.abs(nodeRect.left - rootRect.left) <= Math.max(4, rootW * 0.05);
+    const topAligned = Math.abs(nodeRect.top - rootRect.top) <= Math.max(4, rootH * 0.05);
+    return widthMatches && heightMatches && leftAligned && topAligned;
+  }
+
+  function shouldRasterizeBackgroundOnlyLayer(
+    node,
+    config,
+    backgroundImageValue,
+    isBgClipText,
+    hasAnyGradientBackground,
+    hasUrlBackgroundImage
+  ) {
+    if (!node || !config || isBgClipText) return false;
+    if (!isSlideSizedBackgroundLayerNode(node, config)) return false;
+    if (!hasRenderableBackgroundImage(backgroundImageValue)) return false;
+    return hasAnyGradientBackground || hasUrlBackgroundImage;
+  }
+
+  function copyComputedCssProperty(sourceStyle, targetStyle, propertyName) {
+    const value =
+      sourceStyle && typeof sourceStyle.getPropertyValue === 'function'
+        ? sourceStyle.getPropertyValue(propertyName)
+        : '';
+    if (value) {
+      targetStyle.setProperty(propertyName, value, 'important');
+    }
+  }
+
+  async function rasterizeElementBackgroundOnly(node, widthPx, heightPx, safeOpacity = 1) {
+    const sourceDoc = (node && node.ownerDocument) || document;
+    const sourceWin = sourceDoc.defaultView || window;
+    const body = sourceDoc.body || sourceDoc.documentElement;
+    if (!body) return null;
+
+    const style = sourceWin.getComputedStyle(node);
+    const width = Math.max(1, Math.ceil(widthPx));
+    const height = Math.max(1, Math.ceil(heightPx));
+    const clone = sourceDoc.createElement('div');
+    const opacity = Number.isFinite(safeOpacity) ? Math.max(0, Math.min(1, safeOpacity)) : 1;
+
+    clone.setAttribute('aria-hidden', 'true');
+    clone.style.setProperty('position', 'fixed', 'important');
+    clone.style.setProperty('left', '-100000px', 'important');
+    clone.style.setProperty('top', '-100000px', 'important');
+    clone.style.setProperty('width', `${width}px`, 'important');
+    clone.style.setProperty('height', `${height}px`, 'important');
+    clone.style.setProperty('margin', '0', 'important');
+    clone.style.setProperty('padding', '0', 'important');
+    clone.style.setProperty('box-sizing', 'border-box', 'important');
+    clone.style.setProperty('display', 'block', 'important');
+    clone.style.setProperty('overflow', 'hidden', 'important');
+    clone.style.setProperty('pointer-events', 'none', 'important');
+    clone.style.setProperty('opacity', String(opacity), 'important');
+
+    [
+      'background-color',
+      'background-image',
+      'background-position',
+      'background-position-x',
+      'background-position-y',
+      'background-size',
+      'background-repeat',
+      'background-origin',
+      'background-clip',
+      'background-attachment',
+      'background-blend-mode',
+      'border-top-left-radius',
+      'border-top-right-radius',
+      'border-bottom-right-radius',
+      'border-bottom-left-radius',
+    ].forEach((propertyName) => copyComputedCssProperty(style, clone.style, propertyName));
+
+    body.appendChild(clone);
+    try {
+      return await elementToCanvasImage(clone, width, height, { padding: 0, scale: 2 });
+    } finally {
+      if (clone.parentNode) clone.parentNode.removeChild(clone);
+    }
+  }
+
   /**
    * Helper to identify elements that should be rendered as icons (Images).
    * Detects Custom Elements AND generic tags (<i>, <span>) with icon classes/pseudo-elements.
@@ -66270,6 +66516,40 @@
     const base = normalizeRenderableZIndex(zIndexRaw);
     const safeSteps = Number.isFinite(steps) ? Math.max(1, steps) : 1;
     return base + LOCAL_Z_LAYER_STEP * safeSteps;
+  }
+
+  function countExplicitTextLines(textParts) {
+    if (!Array.isArray(textParts) || textParts.length === 0) return 1;
+    let lineCount = 1;
+    textParts.forEach((part) => {
+      if (!part) return;
+      if (part.options && part.options.breakLine) {
+        lineCount += 1;
+        return;
+      }
+      const text = typeof part.text === 'string' ? part.text : '';
+      if (text.includes('\n')) {
+        lineCount += text.split('\n').length - 1;
+      }
+    });
+    return Math.max(1, lineCount);
+  }
+
+  function getSafeEditableTextHeightIn(currentHeightIn, node, style, scale, textParts = null) {
+    const safeHeightIn = Number.isFinite(currentHeightIn) && currentHeightIn > 0 ? currentHeightIn : 0;
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const fontSizePx = parseFloat(style && style.fontSize);
+    const lineHeightPx = getEffectiveLineHeightPx(style, fontSizePx, node);
+    const currentHeightPx = safeHeightIn / (PX_TO_INCH * safeScale);
+    const rectHeightPx =
+      node && typeof node.getBoundingClientRect === 'function'
+        ? node.getBoundingClientRect().height || 0
+        : 0;
+    const scrollHeightPx = node && Number.isFinite(node.scrollHeight) ? node.scrollHeight : 0;
+    const explicitLineHeightPx = countExplicitTextLines(textParts) * lineHeightPx;
+    const browserHeightPx = Math.max(currentHeightPx, rectHeightPx, scrollHeightPx, explicitLineHeightPx);
+    const paddedHeightPx = browserHeightPx + Math.max(2, lineHeightPx * 0.12);
+    return Math.max(safeHeightIn, paddedHeightPx * PX_TO_INCH * safeScale);
   }
 
   function decodePseudoContentValue(contentRaw) {
@@ -66614,6 +66894,434 @@
     return items;
   }
 
+  // ---------------------------------------------------------------------------
+  // HYBRID RASTER MODE
+  // Detects CSS features that OOXML/PptxGenJS cannot express faithfully. Such a
+  // subtree is exported as one raster "decoration layer" (with its text made
+  // transparent so it isn't baked in twice) plus native editable text boxes
+  // re-collected on top of it.
+  // ---------------------------------------------------------------------------
+
+  const HYBRID_MEDIA_TAGS = ['SVG', 'CANVAS', 'IMG', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED'];
+
+  function getHybridRasterReason(node, style, config) {
+    if (!node || node.nodeType !== 1 || !style) return null;
+    const tagUpper = String(node.tagName || '').toUpperCase();
+    // Media/formula/icon leaves already have dedicated raster handlers.
+    if (HYBRID_MEDIA_TAGS.includes(tagUpper)) return null;
+    if (tagUpper === 'TABLE') return null;
+    if (isFormulaElement(node) || isIconElement(node)) return null;
+    // Never hybrid-rasterize the slide root or slide-sized background layers:
+    // those keep children native via the background-only raster path, while a
+    // hybrid capture here would flatten the entire slide.
+    if (node === config.root) return null;
+    if (isSlideSizedBackgroundLayerNode(node, config)) return null;
+
+    const clipPath = style.clipPath || style.webkitClipPath;
+    if (clipPath && clipPath !== 'none') return 'clip-path';
+
+    const blend = style.mixBlendMode;
+    if (blend && blend !== 'normal') return 'mix-blend-mode';
+
+    const filter = style.filter;
+    if (filter && filter !== 'none' && !getSoftEdges(filter, 1)) return 'filter';
+
+    const backdrop = style.backdropFilter || style.webkitBackdropFilter;
+    if (backdrop && backdrop !== 'none') return 'backdrop-filter';
+
+    const maskImage = String(style.webkitMaskImage || style.maskImage || '').trim();
+    if (maskImage && maskImage !== 'none') return 'mask-image';
+
+    const borderImage = String(style.borderImageSource || '').trim();
+    if (borderImage && borderImage !== 'none') return 'border-image';
+
+    // Non-rotation transforms (scale/skew/matrix with shear) — getRotation()
+    // only extracts pure rotation, everything else silently distorts.
+    const transform = style.transform;
+    if (transform && transform !== 'none') {
+      const m = transform.match(/matrix\(([^)]+)\)/);
+      if (transform.includes('matrix3d')) return 'transform-3d';
+      if (m) {
+        const v = m[1].split(',').map(parseFloat);
+        if (v.length >= 4) {
+          const scaleX = Math.hypot(v[0], v[1]);
+          const scaleY = Math.hypot(v[2], v[3]);
+          const det = v[0] * v[3] - v[1] * v[2];
+          const notUnitScale = Math.abs(scaleX - 1) > 0.01 || Math.abs(scaleY - 1) > 0.01;
+          const hasShear = Math.abs(v[0] * v[2] + v[1] * v[3]) > 0.01 * scaleX * scaleY;
+          if (notUnitScale || hasShear || det < 0) return 'transform';
+        }
+      }
+    }
+
+    // Gradient backgrounds on containers WITH content: the sync path only
+    // supports single linear gradients on leaves; conic/radial/multi-layer
+    // gradients behind text/children need rasterization.
+    const bgImage = String(style.backgroundImage || '');
+    const bgClip = style.webkitBackgroundClip || style.backgroundClip;
+    if (bgClip !== 'text' && /\b(?:conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(bgImage)) {
+      return 'complex-gradient';
+    }
+    const hasChildren = node.children && node.children.length > 0;
+    const hasText = !!(node.textContent && node.textContent.trim());
+    if (
+      bgClip !== 'text' &&
+      (hasChildren || hasText) &&
+      /\bradial-gradient\s*\(/i.test(bgImage)
+    ) {
+      return 'radial-gradient-container';
+    }
+    const gradientLayers = splitTopLevelCommaParts(bgImage).filter((part) =>
+      /\b(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(part)
+    ).length;
+    if (bgClip !== 'text' && gradientLayers > 1 && (hasChildren || hasText)) {
+      return 'layered-gradient-container';
+    }
+
+    // Multiple or inset box-shadows — PPTX supports a single outer shadow only.
+    const shadow = style.boxShadow;
+    if (shadow && shadow !== 'none') {
+      const shadowParts = shadow.split(/,(?![^()]*\))/);
+      if (shadowParts.length > 1 || /\binset\b/.test(shadow)) return 'box-shadow';
+    }
+
+    return null;
+  }
+
+  function hybridSubtreeHasText(node) {
+    return !!(node && node.textContent && node.textContent.trim().length > 0);
+  }
+
+  /**
+   * Builds the raster decoration layer for a hybrid subtree.
+   * Returns { items, job, recurseTextOnly } or null to fall back to the
+   * standard per-element pipeline.
+   */
+  function prepareHybridRasterItem(
+    node,
+    config,
+    domOrder,
+    effectiveZIndex,
+    style,
+    globalOptions,
+    effectiveOpacity
+  ) {
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 0.5 || rect.height < 0.5) return null;
+
+    // Overflow guard: filters/shadows can paint outside the border box.
+    const overflowPx = estimateHybridOverflowPx(style);
+    const widthPx = rect.width + overflowPx * 2;
+    const heightPx = rect.height + overflowPx * 2;
+
+    const zIndex = normalizeRenderableZIndex(effectiveZIndex);
+    const x =
+      config.offX + (rect.left - overflowPx - config.rootX) * PX_TO_INCH * config.scale;
+    const y =
+      config.offY + (rect.top - overflowPx - config.rootY) * PX_TO_INCH * config.scale;
+    const w = widthPx * PX_TO_INCH * config.scale;
+    const h = heightPx * PX_TO_INCH * config.scale;
+
+    const hasText = hybridSubtreeHasText(node);
+
+    const item = {
+      type: 'image',
+      zIndex,
+      domOrder,
+      options: { x, y, w, h, data: null },
+    };
+
+    const job = async () => {
+      const rasterData = await rasterizeHybridDecorLayer(node, rect, overflowPx, {
+        hideText: hasText,
+        opacity: effectiveOpacity,
+      });
+      if (rasterData) item.options.data = rasterData;
+      else item.skip = true;
+    };
+
+    return { items: [item], job, recurseTextOnly: hasText };
+  }
+
+  function estimateHybridOverflowPx(style) {
+    let overflow = 0;
+    const shadow = style.boxShadow;
+    if (shadow && shadow !== 'none') {
+      const re = /(-?[\d.]+)px\s+(-?[\d.]+)px\s+([\d.]+)px(?:\s+(-?[\d.]+)px)?/g;
+      let m;
+      while ((m = re.exec(shadow))) {
+        const reach =
+          Math.max(Math.abs(parseFloat(m[1])), Math.abs(parseFloat(m[2]))) +
+          (parseFloat(m[3]) || 0) +
+          (parseFloat(m[4]) || 0);
+        if (reach > overflow) overflow = reach;
+      }
+    }
+    const filter = style.filter;
+    if (filter && filter !== 'none') {
+      const blurMatch = filter.match(/blur\(([\d.]+)px\)/);
+      if (blurMatch) overflow = Math.max(overflow, parseFloat(blurMatch[1]) * 3);
+      const dsMatch = filter.match(/drop-shadow\([^)]*?(-?[\d.]+)px\s+(-?[\d.]+)px\s+([\d.]+)px/);
+      if (dsMatch) {
+        overflow = Math.max(
+          overflow,
+          Math.max(Math.abs(parseFloat(dsMatch[1])), Math.abs(parseFloat(dsMatch[2]))) +
+            parseFloat(dsMatch[3])
+        );
+      }
+    }
+    return Math.min(80, Math.ceil(overflow));
+  }
+
+  /**
+   * True when a hybrid subtree can be rendered through SVG <foreignObject>.
+   * foreignObject uses the browser's native CSS renderer (conic gradients,
+   * clip-path, blend modes all paint correctly) but cannot fetch external
+   * resources (images, icon fonts) once serialized into an <img> source.
+   */
+  function canUseForeignObjectForHybrid(node) {
+    if (node.querySelector && node.querySelector('img, canvas, video, iframe, object, embed')) {
+      return false;
+    }
+    if (isIconElement(node)) return false;
+    if (node.querySelectorAll) {
+      const candidates = node.querySelectorAll('i, span, [class]');
+      for (let i = 0; i < candidates.length; i++) {
+        if (isIconElement(candidates[i])) return false;
+      }
+    }
+    // url(...) backgrounds anywhere in the subtree also need external fetches.
+    const win = getNodeWindow(node);
+    const all = [node, ...(node.querySelectorAll ? Array.from(node.querySelectorAll('*')) : [])];
+    for (const el of all) {
+      const bg = win.getComputedStyle(el).backgroundImage || '';
+      if (/\burl\s*\(/i.test(bg)) return false;
+    }
+    return true;
+  }
+
+  function inlineComputedStylesForForeignObject(sourceEl, targetEl, options = {}) {
+    const win = getNodeWindow(sourceEl);
+    const computed = win.getComputedStyle(sourceEl);
+    let cssText = '';
+    for (let i = 0; i < computed.length; i++) {
+      const prop = computed[i];
+      cssText += `${prop}:${computed.getPropertyValue(prop)};`;
+    }
+    targetEl.setAttribute('style', cssText);
+    if (options.hideText && !isFormulaElement(sourceEl)) {
+      let hasDirectText = false;
+      for (let i = 0; i < sourceEl.childNodes.length; i++) {
+        const child = sourceEl.childNodes[i];
+        if (child.nodeType === 3 && child.nodeValue && child.nodeValue.trim()) {
+          hasDirectText = true;
+          break;
+        }
+      }
+      if (hasDirectText) {
+        targetEl.style.setProperty('color', 'transparent', 'important');
+        // The inlined computed styles include -webkit-text-fill-color, which
+        // overrides `color` when painting text — it must be cleared too, or
+        // the raster keeps the text and it doubles up with the editable layer.
+        targetEl.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+        targetEl.style.setProperty('-webkit-text-stroke-color', 'transparent', 'important');
+        targetEl.style.setProperty('text-shadow', 'none', 'important');
+        targetEl.style.setProperty('text-decoration-color', 'transparent', 'important');
+      }
+    }
+    const sourceChildren = sourceEl.children;
+    const targetChildren = targetEl.children;
+    for (let i = 0; i < sourceChildren.length; i++) {
+      if (targetChildren[i]) {
+        inlineComputedStylesForForeignObject(sourceChildren[i], targetChildren[i], options);
+      }
+    }
+  }
+
+  async function rasterizeHybridViaForeignObject(node, rect, overflowPx, options = {}) {
+    const width = Math.max(1, Math.ceil(rect.width + overflowPx * 2));
+    const height = Math.max(1, Math.ceil(rect.height + overflowPx * 2));
+
+    const clone = node.cloneNode(true);
+    inlineComputedStylesForForeignObject(node, clone, options);
+    // Neutralize layout-context styles so the clone renders standalone at (overflow, overflow).
+    clone.style.setProperty('position', 'static', 'important');
+    clone.style.setProperty('margin', `${overflowPx}px 0 0 ${overflowPx}px`, 'important');
+    clone.style.setProperty('left', 'auto', 'important');
+    clone.style.setProperty('top', 'auto', 'important');
+    clone.style.setProperty('right', 'auto', 'important');
+    clone.style.setProperty('bottom', 'auto', 'important');
+    clone.style.setProperty('width', `${Math.ceil(rect.width)}px`, 'important');
+    clone.style.setProperty('height', `${Math.ceil(rect.height)}px`, 'important');
+    clone.style.setProperty('box-sizing', 'border-box', 'important');
+    // mix-blend-mode against an empty SVG canvas is a no-op that can blank the
+    // layer entirely; paint it normally and let PPTX stacking approximate it.
+    clone.style.setProperty('mix-blend-mode', 'normal', 'important');
+
+    const serializer = new XMLSerializer();
+    const wrapper = document.createElementNS('http://www.w3.org/1999/xhtml', 'div');
+    wrapper.appendChild(clone);
+    const svgMarkup =
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+      `<foreignObject x="0" y="0" width="100%" height="100%">` +
+      serializer.serializeToString(wrapper) +
+      `</foreignObject></svg>`;
+
+    const svgUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`;
+
+    const img = await new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = svgUrl;
+    });
+    if (!img) return null;
+
+    const maxPixels = 8_000_000;
+    let captureScale = 2;
+    if (width * height * captureScale * captureScale > maxPixels) {
+      captureScale = Math.max(1, Math.sqrt(maxPixels / Math.max(1, width * height)));
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(width * captureScale);
+    canvas.height = Math.ceil(height * captureScale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const rawOpacity = Number(options.opacity);
+    ctx.globalAlpha = Number.isFinite(rawOpacity) ? Math.max(0, Math.min(1, rawOpacity)) : 1;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    try {
+      const data = canvas.toDataURL('image/png');
+      if (!data || data.length < 64) return null;
+      // A fully transparent capture means foreignObject silently failed
+      // (e.g. unsupported markup) — return null so html2canvas takes over.
+      const probe = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      let hasInk = false;
+      for (let i = 3; i < probe.data.length; i += 4) {
+        if (probe.data[i] > 0) {
+          hasInk = true;
+          break;
+        }
+      }
+      return hasInk ? data : null;
+    } catch (_) {
+      // Tainted canvas — caller falls back to html2canvas.
+      return null;
+    }
+  }
+
+  /**
+   * Rasterizes a hybrid subtree via html2canvas. When hideText is true, text
+   * is made transparent inside the clone so the editable text layer above is
+   * the only visible copy; icon/formula/media subtrees keep their fill.
+   */
+  async function rasterizeHybridDecorLayer(node, rect, overflowPx, options = {}) {
+    if (canUseForeignObjectForHybrid(node)) {
+      try {
+        const foData = await rasterizeHybridViaForeignObject(node, rect, overflowPx, options);
+        if (foData) return foData;
+      } catch (e) {
+        console.warn('foreignObject hybrid raster failed, trying html2canvas:', e);
+      }
+    }
+    return rasterizeHybridViaHtml2Canvas(node, rect, overflowPx, options);
+  }
+
+  async function rasterizeHybridViaHtml2Canvas(node, rect, overflowPx, options = {}) {
+    const sourceDoc = node.ownerDocument || document;
+    const sourceWin = sourceDoc.defaultView || window;
+    const width = Math.max(1, Math.ceil(rect.width + overflowPx * 2));
+    const height = Math.max(1, Math.ceil(rect.height + overflowPx * 2));
+
+    const originalId = node.id;
+    const tempId = 'pptx-hybrid-' + Math.random().toString(36).substr(2, 9);
+    node.id = tempId;
+
+    const maxPixels = 8_000_000;
+    let captureScale = 2;
+    if (width * height * captureScale * captureScale > maxPixels) {
+      captureScale = Math.max(1, Math.sqrt(maxPixels / Math.max(1, width * height)));
+    }
+
+    const shouldKeepTextVisible = (el) => {
+      if (isFormulaElement(el) || isIconElement(el)) return true;
+      let p = el.parentElement;
+      while (p) {
+        if (isFormulaElement(p) || isIconElement(p)) return true;
+        p = p.parentElement;
+      }
+      return false;
+    };
+
+    try {
+      const canvas = await html2canvas(node, {
+        backgroundColor: null,
+        logging: false,
+        scale: captureScale,
+        useCORS: true,
+        width,
+        height,
+        x: -overflowPx,
+        y: -overflowPx,
+        removeContainer: true,
+        imageTimeout: 3500,
+        onclone: (clonedDoc) => {
+          const clonedNode = clonedDoc.getElementById(tempId);
+          if (!clonedNode) return;
+          clonedNode.style.overflow = 'visible';
+          if (options.hideText) {
+            const walker = clonedDoc.createTreeWalker(clonedNode, NodeFilter.SHOW_ELEMENT);
+            const toHide = [];
+            let cur = clonedNode;
+            while (cur) {
+              let hasDirectText = false;
+              for (let i = 0; i < cur.childNodes.length; i++) {
+                const child = cur.childNodes[i];
+                if (child.nodeType === 3 && child.nodeValue && child.nodeValue.trim()) {
+                  hasDirectText = true;
+                  break;
+                }
+              }
+              if (hasDirectText && !shouldKeepTextVisible(cur)) toHide.push(cur);
+              cur = walker.nextNode();
+            }
+            toHide.forEach((el) => {
+              el.style.setProperty('color', 'transparent', 'important');
+              // -webkit-text-fill-color overrides `color` for text painting;
+              // clear it too so hidden text can't survive in the raster.
+              el.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+              el.style.setProperty('-webkit-text-stroke-color', 'transparent', 'important');
+              el.style.setProperty('text-shadow', 'none', 'important');
+              el.style.setProperty('text-decoration-color', 'transparent', 'important');
+            });
+          }
+        },
+      });
+
+      const rawOpacity = Number(options.opacity);
+      const opacity = Number.isFinite(rawOpacity) ? Math.max(0, Math.min(1, rawOpacity)) : 1;
+      let outCanvas = canvas;
+      if (opacity < 0.999) {
+        outCanvas = document.createElement('canvas');
+        outCanvas.width = canvas.width;
+        outCanvas.height = canvas.height;
+        const ctx = outCanvas.getContext('2d');
+        ctx.globalAlpha = opacity;
+        ctx.drawImage(canvas, 0, 0);
+      }
+      const data = outCanvas.toDataURL('image/png');
+      return data && data.length > 64 ? data : null;
+    } catch (e) {
+      console.warn('Hybrid raster capture failed, falling back to element pipeline:', e);
+      return null;
+    } finally {
+      if (originalId) node.id = originalId;
+      else node.removeAttribute('id');
+    }
+  }
+
   /**
    * Replaces createRenderItem.
    * Returns { items: [], job: () => Promise, stopRecursion: boolean }
@@ -66626,7 +67334,8 @@
     effectiveZIndex,
     computedStyle,
     globalOptions = {},
-    effectiveOpacity = 1
+    effectiveOpacity = 1,
+    textOnlyMode = false
   ) {
     // 1. Text Node Handling
     if (node.nodeType === 3) {
@@ -66641,6 +67350,8 @@
       const range = document.createRange();
       range.selectNode(node);
       const rect = range.getBoundingClientRect();
+      const lineRectCount = Array.from(range.getClientRects ? range.getClientRects() : [])
+        .filter((lineRect) => lineRect && lineRect.width > 0.5 && lineRect.height > 0.5).length;
       range.detach();
 
       const style = getNodeWindow(parent).getComputedStyle(parent);
@@ -66648,6 +67359,9 @@
       const heightPx = rect.height;
       const unrotatedW = widthPx * PX_TO_INCH * config.scale;
       const unrotatedH = heightPx * PX_TO_INCH * config.scale;
+      const fontSizePx = parseFloat(style.fontSize);
+      const lineHeightIn = getEffectiveLineHeightPx(style, fontSizePx, parent) * PX_TO_INCH * config.scale;
+      const safeH = Math.max(unrotatedH, lineHeightIn * Math.max(1, lineRectCount) * 1.08);
 
       const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
       const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
@@ -66667,7 +67381,7 @@
                 options: textOptions,
               },
             ],
-            options: { x, y, w: unrotatedW, h: unrotatedH, margin: 0, autoFit: false },
+            options: { x, y, w: unrotatedW, h: safeH, margin: 0, autoFit: false, wrap: true, valign: 'top' },
           },
         ],
         stopRecursion: false,
@@ -66707,6 +67421,74 @@
     let h = unrotatedH;
 
     const items = [];
+
+    // TEXT-ONLY MODE (hybrid raster): visuals are already baked into the
+    // decoration raster; only re-emit editable text on top. Media, icons and
+    // formulas stay visible inside the raster, so skip them here.
+    if (textOnlyMode) {
+      const tagUpper = String(node.tagName || '').toUpperCase();
+      if (['SVG', 'CANVAS', 'IMG', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED'].includes(tagUpper)) {
+        return { items: [], stopRecursion: true };
+      }
+      if (isFormulaElement(node) || isIconElement(node)) {
+        return { items: [], stopRecursion: true };
+      }
+      const isListRoot = (tagUpper === 'UL' || tagUpper === 'OL') && !isComplexHierarchy(node);
+      if (!isListRoot) {
+        if (node.tagName === 'TABLE') {
+          // Keep table text editable; visuals come from the raster layer.
+          const tableData = extractTableData(node, config.scale);
+          return {
+            items: [
+              {
+                type: 'table',
+                zIndex: nextRenderableZIndex(zIndex),
+                domOrder,
+                tableData,
+                options: { x, y, w: unrotatedW, h: unrotatedH },
+              },
+            ],
+            stopRecursion: true,
+          };
+        }
+        if (!isTextContainer(node)) return null;
+        const textParts = finalizeInlineTextParts(
+          collectInlineTextParts(node, config.scale, safeOpacity, node)
+        );
+        if (textParts.length === 0) return { items: [], stopRecursion: true };
+
+        let align = style.textAlign || 'left';
+        if (align === 'start') align = 'left';
+        if (align === 'end') align = 'right';
+        let valign = 'top';
+        if (style.alignItems === 'center') valign = 'middle';
+        if (style.justifyContent === 'center' && style.display.includes('flex')) align = 'center';
+        textParts[0].options.fontSize = Math.floor(textParts[0]?.options?.fontSize) || 12;
+
+        items.push({
+          type: 'text',
+          zIndex: nextRenderableZIndex(zIndex),
+          domOrder,
+          textParts,
+          options: {
+            x,
+            y,
+            w,
+            h,
+            align,
+            valign,
+            inset: getPadding(style, config.scale),
+            rotate: rotation,
+            margin: 0,
+            wrap: true,
+            autoFit: false,
+          },
+        });
+        return { items, stopRecursion: true };
+      }
+      // List roots fall through to the standard UL/OL text extraction below,
+      // where textOnlyMode suppresses their background/formula visuals.
+    }
 
     if (node.tagName === 'TABLE') {
       const tableData = extractTableData(node, config.scale);
@@ -66874,9 +67656,9 @@
       });
 
       if (listItems.length > 0) {
-        // Add background if exists
+        // Add background if exists (skip in hybrid text-only mode: raster has it)
         const bgColorObj = parseColor(style.backgroundColor);
-        if (bgColorObj.hex && bgColorObj.opacity > 0) {
+        if (!textOnlyMode && bgColorObj.hex && bgColorObj.opacity > 0) {
           items.push({
             type: 'shape',
             zIndex,
@@ -66885,6 +67667,11 @@
             options: { x, y, w, h, fill: { color: bgColorObj.hex } },
           });
         }
+
+        const textBoxH =
+          bgColorObj.hex && bgColorObj.opacity > 0
+            ? h
+            : getSafeEditableTextHeightIn(h, node, style, config.scale, listItems);
 
         items.push({
           type: 'text',
@@ -66895,7 +67682,7 @@
             x,
             y,
             w,
-            h,
+            h: textBoxH,
             align: 'left',
             valign: 'top',
             margin: 0,
@@ -66904,12 +67691,12 @@
           },
         });
 
-        if (formulaArtifacts.items.length > 0) {
+        if (!textOnlyMode && formulaArtifacts.items.length > 0) {
           items.push(...formulaArtifacts.items);
         }
 
         const formulaJob =
-          formulaArtifacts.jobs.length > 0
+          !textOnlyMode && formulaArtifacts.jobs.length > 0
             ? async () => {
                 for (const job of formulaArtifacts.jobs) {
                   await job();
@@ -67266,6 +68053,57 @@
       if (childW >= widthPx - 2 && childH >= heightPx - 2) isImageWrapper = true;
     }
 
+    const shouldRasterizeBackgroundLayer =
+      !isImageWrapper &&
+      shouldRasterizeBackgroundOnlyLayer(
+        node,
+        config,
+        backgroundImageValue,
+        isBgClipText,
+        hasAnyGradientBackground,
+        hasUrlBackgroundImage
+      );
+    let backgroundLayerJob = null;
+    if (shouldRasterizeBackgroundLayer) {
+      const baseAlpha = safeOpacity * bgColorObj.opacity;
+      if (bgColorObj.hex && baseAlpha > 0.001) {
+        items.push({
+          type: 'shape',
+          zIndex,
+          domOrder: domOrder - 0.03,
+          shapeType: pptx.ShapeType.rect,
+          options: {
+            x,
+            y,
+            w,
+            h,
+            rotate: rotation,
+            fill: { color: bgColorObj.hex, transparency: (1 - baseAlpha) * 100 },
+            line: { type: 'none' },
+          },
+        });
+      }
+
+      const backgroundItem = {
+        type: 'image',
+        zIndex,
+        domOrder: domOrder - 0.02,
+        options: { x, y, w, h, rotate: rotation, data: null },
+      };
+      items.push(backgroundItem);
+      backgroundLayerJob = async () => {
+        const rasterData = await rasterizeElementBackgroundOnly(
+          node,
+          widthPx,
+          heightPx,
+          safeOpacity
+        );
+        if (rasterData) backgroundItem.options.data = rasterData;
+        else backgroundItem.skip = true;
+      };
+    }
+    const useSolidFill = bgColorObj.hex && !isImageWrapper && !shouldRasterizeBackgroundLayer;
+
     let textPayload = null;
     const isText = isTextContainer(node);
 
@@ -67293,7 +68131,7 @@
       }
     }
 
-    if (hasGradient || (softEdge && bgColorObj.hex && !isImageWrapper)) {
+    if (!shouldRasterizeBackgroundLayer && (hasGradient || (softEdge && bgColorObj.hex && !isImageWrapper))) {
       let bgData = null;
       let padIn = 0;
       if (softEdge) {
@@ -67377,7 +68215,7 @@
         items.push(...borderItems);
       }
     } else if (
-      (bgColorObj.hex && !isImageWrapper) ||
+      useSolidFill ||
       hasUniformBorder ||
       hasCompositeBorder ||
       hasShadow ||
@@ -67385,7 +68223,6 @@
     ) {
       const finalAlpha = safeOpacity * bgColorObj.opacity;
       const transparency = (1 - finalAlpha) * 100;
-      const useSolidFill = bgColorObj.hex && !isImageWrapper;
       const splitUniformBorderOverlay = hasUniformBorder && hasLeafChildren && !textPayload;
 
       if (hasPartialBorderRadius && useSolidFill && !textPayload) {
@@ -67460,6 +68297,15 @@
         if (textPayload) {
           textPayload.text[0].options.fontSize =
             Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
+          const canGrowTextBox =
+            !useSolidFill &&
+            !hasUniformBorder &&
+            !hasCompositeBorder &&
+            !hasShadow &&
+            !hasPartialBorderRadius;
+          const textBoxH = canGrowTextBox
+            ? getSafeEditableTextHeightIn(h, node, style, config.scale, textPayload.text)
+            : h;
           const textOptions = {
             shape: shapeType,
             ...shapeOpts,
@@ -67470,6 +68316,7 @@
             margin: 0,
             wrap: true,
             autoFit: false,
+            h: textBoxH,
           };
           items.push({
             type: 'text',
@@ -67540,7 +68387,7 @@
       items.push(...pseudoDecorationItems);
     }
 
-    return { items, stopRecursion: !!textPayload };
+    return { items, job: backgroundLayerJob, stopRecursion: !!textPayload };
   }
 
   function isComplexHierarchy(root) {
@@ -67687,7 +68534,7 @@
     return items;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-04-25-layer-clip-v21';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-07-09-hybrid-raster-v2';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

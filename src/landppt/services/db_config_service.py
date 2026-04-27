@@ -100,7 +100,16 @@ class DatabaseConfigService:
             "comfyui_tts_timeout_seconds": {"type": "number", "category": "generation_params", "default": "600"},
             "comfyui_tts_chunk_chars": {"type": "number", "category": "generation_params", "default": "120"},
             "comfyui_tts_force_precision": {"type": "text", "category": "generation_params", "default": ""},
-            
+            "mimo_api_key": {"type": "password", "category": "generation_params", "default": ""},
+            "mimo_base_url": {"type": "url", "category": "generation_params", "default": "https://api.xiaomimimo.com/v1"},
+            "mimo_tts_model": {"type": "text", "category": "generation_params", "default": "mimo-v2.5-tts-voicedesign"},
+            "mimo_tts_clone_model": {"type": "text", "category": "generation_params", "default": "mimo-v2.5-tts-voiceclone"},
+            "mimo_tts_voice_prompt": {"type": "textarea", "category": "generation_params", "default": "年轻、放松、语速偏快，像 Tom 猫那种俏皮又有点夸张的卡通感；说话轻快自然、有活力，吐字清楚，不要正式播音腔。"},
+            "custom_tts_api_url": {"type": "url", "category": "generation_params", "default": "http://localhost:9880/"},
+            "custom_tts_api_speaker": {"type": "text", "category": "generation_params", "default": "TOM女"},
+            "custom_tts_api_speed": {"type": "text", "category": "generation_params", "default": "1"},
+            "custom_tts_api_novasr": {"type": "text", "category": "generation_params", "default": "1"},
+
             # Parallel Generation Configuration
             "enable_parallel_generation": {"type": "boolean", "category": "generation_params", "default": "true"},
             "parallel_slides_count": {"type": "number", "category": "generation_params", "default": "3"},

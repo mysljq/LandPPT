@@ -15,6 +15,7 @@ import re
 from .models import (
     PPTScenario, PPTGenerationRequest, PPTGenerationResponse,
     PPTOutline, PPTProject, TodoBoard, ProjectListResponse,
+    ProjectRenameRequest,
     FileUploadResponse, SlideContent, FileOutlineGenerationRequest,
     FileOutlineGenerationResponse, TemplateSelectionRequest, TemplateSelectionResponse
 )
@@ -444,6 +445,66 @@ async def get_project(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting project: {str(e)}")
 
+@router.post("/projects/{project_id}/duplicate")
+async def duplicate_project(
+    project_id: str,
+    user: User = Depends(get_current_user_required)
+):
+    """Duplicate a project for the current user."""
+    try:
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.duplicate_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {
+            "status": "success",
+            "message": "Project duplicated successfully",
+            "project_id": project.project_id,
+            "project": project,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error duplicating project: {str(e)}")
+
+@router.patch("/projects/{project_id}/rename")
+async def rename_project(
+    project_id: str,
+    request: ProjectRenameRequest,
+    user: User = Depends(get_current_user_required)
+):
+    """Rename a project owned by the current user."""
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Project title is required")
+
+    try:
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        success = await user_ppt_service.project_manager.update_project_data(
+            project_id,
+            {"title": title},
+            user_id=user.id,
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to rename project")
+
+        return {
+            "status": "success",
+            "message": "Project renamed successfully",
+            "project_id": project_id,
+            "title": title,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error renaming project: {str(e)}")
+
 @router.get("/projects/{project_id}/todo", response_model=TodoBoard)
 async def get_project_todo_board(
     project_id: str,
@@ -839,6 +900,9 @@ async def upload_file_and_generate_outline(
     focus_content: Optional[str] = Form(None),
     tech_highlights: Optional[str] = Form(None),
     target_audience: Optional[str] = Form(None),
+    custom_audience: Optional[str] = Form(None),
+    requirements: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     network_mode: bool = Form(False),  # 是否启用联网搜索（与项目创建保持一致）
     language: str = Form("zh")  # 语言参数
 ):
@@ -886,9 +950,11 @@ async def upload_file_and_generate_outline(
                 context = {
                     'scenario': scenario,
                     'target_audience': target_audience or '普通大众',
-                    'requirements': '',
+                    'custom_audience': custom_audience or '',
+                    'requirements': requirements or '',
                     'ppt_style': ppt_style,
-                    'description': f'文件数量: {len(files)}',
+                    'description': description or '',
+                    'source_summary': f'文件数量: {len(files)}',
                     'file_processing_mode': file_processing_mode,
                 }
 
@@ -930,7 +996,10 @@ async def upload_file_and_generate_outline(
                 filename=final_filename,
                 topic=topic,
                 scenario=scenario,
-                requirements="",  # API调用暂时没有requirements参数
+                requirements=requirements,
+                target_audience=target_audience,
+                custom_audience=custom_audience,
+                description=description,
                 page_count_mode=page_count_mode,
                 min_pages=min_pages,
                 max_pages=max_pages,
@@ -939,7 +1008,6 @@ async def upload_file_and_generate_outline(
                 custom_style_prompt=custom_style_prompt,
                 file_processing_mode=file_processing_mode,
                 content_analysis_depth=content_analysis_depth,
-                target_audience=target_audience,
                 language=language
             )
 

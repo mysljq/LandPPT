@@ -203,8 +203,8 @@ body::before {
 
 .slide-preview {
     width: 100%;
-    height: 135px;
-    /* 调整高度以适应新的缩放比例：720*0.1875=135px */
+    aspect-ratio: 16 / 9;
+    height: auto;
     border: none;
     border-radius: 6px 6px 0 0;
     pointer-events: none;
@@ -225,7 +225,7 @@ body::before {
     width: 1280px;
     height: 720px;
     transform-origin: center center;
-    transform: translate(-50%, -50%) scale(0.1);
+    transform: translate(-50%, -50%) scale(0.1875);
 }
 
 .slide-title {
@@ -950,39 +950,23 @@ body::before {
     align-items: center;
     /* 硬件加速 */
     transform: translateZ(0);
-    padding: 20px;
-    box-sizing: border-box;
 }
 
 .slideshow-slide {
-    background: white;
-    border-radius: 10px;
-    box-shadow: 0 10px 30px rgba(255, 255, 255, 0.2);
+    background: transparent;
     overflow: hidden;
     position: relative;
-    /* 使用flex确保PPT居中且尺寸自适应 */
     width: 100%;
     height: 100%;
-    max-width: calc(100vh * 16/9 - 40px);
-    /* 基于高度计算最大宽度，保持16:9比例 */
-    max-height: calc(100vw * 9/16 - 40px);
-    /* 基于宽度计算最大高度，保持16:9比例 */
-    aspect-ratio: 16/9;
-    /* 强制保持16:9比例 */
     /* 硬件加速 */
     transform: translateZ(0);
     will-change: transform;
 }
 
 .slideshow-slide iframe {
-    width: 100%;
-    height: 100%;
     border: none;
     background: white;
-    /* 移除过渡效果，避免闪烁 */
-    transform-origin: center center;
     /* 硬件加速 */
-    transform: translateZ(0);
     will-change: opacity;
     /* 确保iframe始终可见 */
     opacity: 1;
@@ -999,8 +983,6 @@ body::before {
     position: absolute;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
 }
 
 .slideshow-slide .iframe-container iframe.hidden {
@@ -1018,89 +1000,77 @@ body::before {
     display: none;
 }
 
-.slideshow-controls {
+/* 透明遮罩：捕获iframe上方的鼠标事件（iframe内的事件不会冒泡到父页面），
+   并支持点击翻页 */
+/* The legacy shield must not intercept iframe clicks. */
+.slideshow-shield {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 20px;
-    opacity: 0;
-    transition: opacity 0.4s ease;
+    inset: 0;
+    z-index: 50;
     pointer-events: none;
 }
 
-.slideshow-controls.visible {
-    opacity: 1;
-    pointer-events: auto;
+.slideshow-overlay.ui-hidden .slideshow-shield {
+    cursor: none;
+}
+
+.slideshow-controls {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.65);
+    border-radius: 30px;
+    padding: 10px 16px;
+    z-index: 100;
+    transition: opacity 0.3s;
+}
+
+.slideshow-topbar {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    display: flex;
+    gap: 10px;
+    z-index: 100;
+    transition: opacity 0.3s;
+}
+
+.slideshow-overlay.ui-hidden .slideshow-controls,
+.slideshow-overlay.ui-hidden .slideshow-topbar {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .slideshow-btn {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.14);
     color: white;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    padding: 10px 20px;
-    border-radius: 25px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    padding: 8px 16px;
+    border-radius: 20px;
     cursor: pointer;
-    transition: all 0.3s ease;
-    font-size: 16px;
+    transition: background 0.2s;
+    font-size: 14px;
 }
 
 .slideshow-btn:hover {
     background: rgba(255, 255, 255, 0.3);
-    border-color: rgba(255, 255, 255, 0.5);
 }
 
 .slideshow-info {
-    position: absolute;
-    bottom: 30px;
-    left: 50%;
-    transform: translateX(-50%);
     color: white;
-    font-size: 18px;
-    font-weight: bold;
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.4s ease;
-}
-
-.slideshow-info.visible {
-    opacity: 1;
-}
-
-.slideshow-exit {
-    position: absolute;
-    top: 30px;
-    right: 30px;
-    background: rgba(255, 255, 255, 0.2);
-    color: white;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    padding: 10px 15px;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 20px;
-    transition: all 0.4s ease;
-    opacity: 0;
-    pointer-events: none;
-}
-
-.slideshow-exit.visible {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.slideshow-exit:hover {
-    background: rgba(255, 255, 255, 0.3);
-    border-color: rgba(255, 255, 255, 0.5);
+    font-size: 14px;
+    min-width: 64px;
+    text-align: center;
 }
 
 /* 响应式设计 */
 @media (max-width: 1200px) {
     .slide-preview {
-        height: 115px;
+        height: auto;
     }
 
     /* Hide text labels on medium screens to save space */
@@ -1119,7 +1089,7 @@ body::before {
     }
 
     .slide-preview {
-        height: 115px;
+        height: auto;
     }
 
     .slide-title {
@@ -1136,8 +1106,7 @@ body::before {
     }
 
     .slide-preview {
-        height: 105px;
-        /* 180px容器宽度，180/1280=0.141，720*0.141=101.52px */
+        height: auto;
     }
 
     .slide-title {
@@ -1164,8 +1133,7 @@ body::before {
     }
 
     .slide-preview {
-        height: 95px;
-        /* 160px容器宽度，160/1280=0.125，720*0.125=90px */
+        height: auto;
     }
 
     .slide-title {

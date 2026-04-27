@@ -95,7 +95,7 @@ class LLMManager:
         reasoning_effort = str(kwargs.get("reasoning_effort") or "")
         api_key_hash = hash(api_key) if api_key else "none"
         cache_key = (
-            f"{provider_key}:{model}:{temperature}:{max_tokens}:"
+            f"{provider_key}:{model}:{temperature}:"
             f"{api_key_hash}:{base_url}:{azure_endpoint}:{api_version}:{use_responses_api}:"
             f"{enable_reasoning}:{reasoning_effort}"
         )
@@ -111,7 +111,6 @@ class LLMManager:
             provider=provider_key,
             model=model,
             temperature=temperature,
-            max_tokens=max_tokens,
             **kwargs,
         )
 

@@ -1,6 +1,6 @@
         const projectId = '{{ project.project_id }}';
-        const projectOutline = {{ project.outline | tojson if project.outline else 'null' }};
-        const projectSlides = {{ project.outline.get('slides', []) | tojson if project.outline else '[]' }};
+        let projectOutline = {{ project.outline | tojson if project.outline else 'null' }};
+        let projectSlides = {{ project.outline.get('slides', []) | tojson if project.outline else '[]' }};
 
         async function archiveProject() {
             if (confirm('确定要归档这个项目吗？归档后项目将不会显示在活跃项目列表中。')) {
@@ -22,6 +22,25 @@
                     console.error('Error archiving project:', error);
                     alert('归档失败: ' + error.message);
                 }
+            }
+        }
+
+        async function duplicateProject() {
+            try {
+                const response = await fetch(`/api/projects/${projectId}/duplicate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+                const result = await response.json();
+                if (!response.ok || result.status !== 'success') {
+                    throw new Error(result.detail || result.message || 'Duplicate failed');
+                }
+                window.location.href = `/projects/${result.project_id}`;
+            } catch (error) {
+                console.error('Error duplicating project:', error);
+                alert('复制项目失败: ' + error.message);
             }
         }
 
@@ -66,22 +85,131 @@
         // 大纲视图切换
         let isDetailView = false;
 
+        function setOutlineToggleState(showDetailView) {
+            const toggleBtn = document.getElementById('outlineViewToggleBtn');
+            const toggleIcon = toggleBtn ? toggleBtn.querySelector('i') : null;
+            if (!toggleBtn || !toggleIcon) return;
+
+            if (showDetailView) {
+                toggleIcon.className = 'fas fa-th-large';
+                toggleBtn.setAttribute('aria-label', '切换为简洁视图');
+                toggleBtn.setAttribute('data-tooltip', '简洁视图');
+            } else {
+                toggleIcon.className = 'fas fa-list';
+                toggleBtn.setAttribute('aria-label', '切换为详细视图');
+                toggleBtn.setAttribute('data-tooltip', '详细视图');
+            }
+        }
+
         function toggleOutlineView() {
             const compactView = document.getElementById('compactView');
             const detailView = document.getElementById('detailView');
-            const toggleText = document.getElementById('viewToggleText');
+            if (!compactView || !detailView) return;
 
             if (isDetailView) {
                 compactView.style.display = 'block';
                 detailView.style.display = 'none';
-                toggleText.textContent = '详细视图';
                 isDetailView = false;
             } else {
                 compactView.style.display = 'none';
                 detailView.style.display = 'block';
-                toggleText.textContent = '简洁视图';
                 isDetailView = true;
             }
+            setOutlineToggleState(isDetailView);
+        }
+
+        function renumberProjectOutlineSlides() {
+            if (!projectOutline || !Array.isArray(projectOutline.slides)) return;
+            projectOutline.slides.forEach((slide, index) => {
+                if (slide && typeof slide === 'object') {
+                    slide.page_number = index + 1;
+                }
+            });
+            projectSlides = projectOutline.slides;
+        }
+
+        async function persistProjectOutline(operation) {
+            renumberProjectOutlineSlides();
+            const response = await fetch(`/projects/${projectId}/update-outline`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    outline_content: JSON.stringify(projectOutline, null, 2),
+                    operation
+                })
+            });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.detail || 'Outline update failed');
+            }
+        }
+
+        async function deleteOutlineSlide(slideIndex) {
+            if (!projectOutline || !Array.isArray(projectOutline.slides)) return;
+            if (projectOutline.slides.length <= 1) {
+                alert('至少保留一页幻灯片');
+                return;
+            }
+            if (!confirm(`确定删除第 ${slideIndex + 1} 页大纲吗？对应幻灯片也会同步删除。`)) {
+                return;
+            }
+            try {
+                projectOutline.slides.splice(slideIndex, 1);
+                await persistProjectOutline({ type: 'delete', slide_index: slideIndex });
+                window.location.reload();
+            } catch (error) {
+                alert('删除大纲失败: ' + error.message);
+            }
+        }
+
+        async function moveOutlineSlide(fromIndex, toIndex) {
+            if (!projectOutline || !Array.isArray(projectOutline.slides)) return;
+            if (fromIndex === toIndex) return;
+            if (fromIndex < 0 || fromIndex >= projectOutline.slides.length) return;
+            if (toIndex < 0 || toIndex >= projectOutline.slides.length) return;
+
+            const moved = projectOutline.slides.splice(fromIndex, 1)[0];
+            projectOutline.slides.splice(toIndex, 0, moved);
+
+            try {
+                await persistProjectOutline({ type: 'move', slide_index: fromIndex, to_index: toIndex });
+                window.location.reload();
+            } catch (error) {
+                alert('调整大纲顺序失败: ' + error.message);
+            }
+        }
+
+        function initializeOutlineDragAndDrop() {
+            document.querySelectorAll('[data-outline-slide-index]').forEach((element) => {
+                element.addEventListener('dragstart', (event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', element.dataset.outlineSlideIndex);
+                });
+                element.addEventListener('dragover', (event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    element.classList.add('is-drag-over');
+                });
+                element.addEventListener('dragleave', () => {
+                    element.classList.remove('is-drag-over');
+                });
+                element.addEventListener('drop', (event) => {
+                    event.preventDefault();
+                    element.classList.remove('is-drag-over');
+                    const fromIndex = Number.parseInt(event.dataTransfer.getData('text/plain'), 10);
+                    const toIndex = Number.parseInt(element.dataset.outlineSlideIndex, 10);
+                    if (Number.isInteger(fromIndex) && Number.isInteger(toIndex)) {
+                        moveOutlineSlide(fromIndex, toIndex);
+                    }
+                });
+                element.addEventListener('dragend', () => {
+                    document.querySelectorAll('.is-drag-over').forEach((dropTarget) => {
+                        dropTarget.classList.remove('is-drag-over');
+                    });
+                });
+            });
         }
 
         // 查看幻灯片详情
@@ -1107,3 +1235,9 @@
                 alert('AI优化失败: ' + error.message);
             }
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof initializeOutlineDragAndDrop === 'function') {
+                initializeOutlineDragAndDrop();
+            }
+        });

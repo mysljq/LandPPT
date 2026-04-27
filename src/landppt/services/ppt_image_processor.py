@@ -20,6 +20,7 @@ from .models.slide_image_info import (
     ImageRequirement, ImageSource, ImagePurpose
 )
 from .image.models import ImageSourceType
+from .prompt_asset_service import strip_base64_image_payloads_for_prompt
 from .prompts.system_prompts import SystemPrompts
 
 logger = logging.getLogger(__name__)
@@ -386,9 +387,10 @@ class PPTImageProcessor:
                 # 构建包含模板HTML的提示词
                 template_context = ""
                 if template_html.strip():
+                    template_excerpt = strip_base64_image_payloads_for_prompt(template_html)[:500]
                     template_context = f"""
 当前PPT模板HTML参考：
-{template_html[:500]}...
+{template_excerpt}...
 """
 
                 prompt = f"""作为专业的PPT设计师，请一次性完成以下幻灯片的图片规划。先判断该页面内容是否需要或适合配图，如果不需要或不适合配图则返回0；如果需要，请同时给出图片来源、数量、搜索关键词、AI生成尺寸和AI生成提示词。
@@ -1876,9 +1878,10 @@ class PPTImageProcessor:
             # 构建包含模板HTML的提示词
             template_context = ""
             if template_html.strip():
+                template_excerpt = strip_base64_image_payloads_for_prompt(template_html)[:500]
                 template_context = f"""
 当前PPT模板HTML参考：
-{template_html[:500]}...
+{template_excerpt}...
 """
 
             # 构建需求信息

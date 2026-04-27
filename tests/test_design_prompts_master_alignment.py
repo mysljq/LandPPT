@@ -53,6 +53,29 @@ def test_slide_context_prompt_for_regular_page_uses_directional_guidance():
     assert "完整信息单元" in prompt
 
 
+def test_design_prompts_omit_footer_page_number_guidance_when_disabled(monkeypatch):
+    monkeypatch.setattr(prompts_module, "_is_image_service_enabled", lambda: False)
+
+    prompt = prompts_module.DesignPrompts.get_single_slide_html_prompt(
+        slide_data={"title": "业务概览", "content_points": ["增长", "效率"]},
+        confirmed_requirements={
+            "topic": "年度经营汇报",
+            "target_audience": "管理层",
+            "include_page_numbers": False,
+        },
+        page_number=2,
+        total_pages=10,
+        context_info="普通内容页：页码锚点优先跟随模板原有位置。",
+        style_genes="- 保持页码锚点",
+        template_html="<div class='page'><header></header><main></main><footer>{{ current_page_number }}</footer></div>",
+    )
+
+    assert "页码" not in prompt
+    assert "Footer" not in prompt
+    assert "footer" not in prompt
+    assert "current_page_number" not in prompt
+
+
 def test_combined_style_prompt_includes_current_structure(monkeypatch):
     monkeypatch.setattr(prompts_module, "_is_image_service_enabled", lambda: False)
 

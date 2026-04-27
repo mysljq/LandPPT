@@ -359,15 +359,48 @@ def test_api_send_code_reset_sends_email_after_turnstile_check(monkeypatch):
         db.close()
 
 
-def test_resolve_registration_invite_allows_blank_when_switch_disabled():
+def test_resolve_registration_invite_allows_blank_when_switch_disabled(monkeypatch):
+    from landppt.core.config import app_config
     from landppt.services.community_service import community_service
 
+    monkeypatch.setattr(app_config, "invite_code_required_for_registration", True)
     db = _create_db()
     try:
         _set_community_setting(db, "invite_code_required_for_registration", "false")
         invite = community_service.resolve_registration_invite(db, "", "mail")
         assert invite is None
         assert community_service.is_invite_code_required_for_registration(db) is False
+    finally:
+        db.close()
+
+
+def test_resolve_registration_invite_allows_blank_by_default():
+    from landppt.services.community_service import community_service
+
+    db = _create_db()
+    try:
+        invite = community_service.resolve_registration_invite(db, "", "mail")
+        assert invite is None
+        assert community_service.is_invite_code_required_for_registration(db) is False
+    finally:
+        db.close()
+
+
+def test_resolve_registration_invite_uses_env_default_when_no_db_setting(monkeypatch):
+    from landppt.core.config import app_config
+    from landppt.services.community_service import community_service
+
+    monkeypatch.setattr(app_config, "invite_code_required_for_registration", True)
+    db = _create_db()
+    try:
+        try:
+            community_service.resolve_registration_invite(db, "", "mail")
+        except ValueError as exc:
+            assert "邀请码" in str(exc)
+        else:
+            raise AssertionError("Expected blank registration invite to be rejected")
+
+        assert community_service.is_invite_code_required_for_registration(db) is True
     finally:
         db.close()
 
@@ -380,6 +413,7 @@ def test_github_oauth_new_user_requires_and_consumes_invite_code():
     db = _create_db()
     try:
         _create_user(db, "admin", "admin@example.com")
+        _set_community_setting(db, "invite_code_required_for_registration", "true")
         invite = _create_invite(db, code="GITHUB01", channel="github", credits_amount=15, max_uses=1)
 
         user, created, error = get_or_create_user_by_github(

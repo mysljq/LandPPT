@@ -412,7 +412,7 @@ async function saveToServer() {
                 // 标记为用户编辑状态
                 slide.is_user_edited = true;
 
-                const success = await saveSingleSlideToServer(i, slide.html_content);
+                const success = await saveSingleSlideToServer(i, slide.html_content, { slideData: slide });
                 if (success) {
                     saveSuccessCount++;
                 } else {
@@ -446,7 +446,7 @@ async function saveToServerFallback() {
                 // 标记为用户编辑状态
                 slide.is_user_edited = true;
 
-                const success = await saveSingleSlideToServer(i, slide.html_content);
+                const success = await saveSingleSlideToServer(i, slide.html_content, { slideData: slide });
                 if (success) {
                     saveSuccessCount++;
                 } else {
@@ -524,11 +524,28 @@ async function saveSingleSlideToServer(slideIndex, htmlContent, options = {}) {
 
 
 
+        const sourceSlide = options.slideData || slidesData[slideIndex] || {};
+        const slidePayload = {
+            ...sourceSlide,
+            html_content: htmlContent,
+            page_number: slideIndex + 1
+        };
+        const slideType = slidePayload.slide_type || slidePayload.content_type || slidePayload.type || 'content';
+
         const requestData = {
-            html_content: htmlContent
+            html_content: htmlContent,
+            slide_data: slidePayload,
+            title: slidePayload.title || `Slide ${slideIndex + 1}`,
+            slide_type: slideType,
+            content_type: slideType,
+            content_points: slidePayload.content_points || [],
+            metadata: slidePayload.metadata || {},
+            page_number: slideIndex + 1
         };
         if (typeof options.isUserEdited === 'boolean') {
             requestData.is_user_edited = options.isUserEdited;
+        } else if (typeof slidePayload.is_user_edited === 'boolean') {
+            requestData.is_user_edited = slidePayload.is_user_edited;
         }
 
 

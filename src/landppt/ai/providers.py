@@ -6,6 +6,9 @@ import asyncio
 import json
 import logging
 import re
+import hashlib
+import threading
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union, Tuple
 
 from .base import AIProvider, AIMessage, AIResponse, MessageRole, TextContent, ImageContent, MessageContentType
@@ -63,6 +66,39 @@ def _build_httpx_timeout(config: Dict[str, Any]):
     write = min(30.0, total)
     pool = min(30.0, total)
     return httpx.Timeout(total, connect=connect, read=total, write=write, pool=pool)
+
+
+# Reasoning / "think" block markers emitted by some models (DeepSeek-R1, QwQ, etc.).
+# Covers <think>/<thinking>, full-width ＜think＞ and bracket 【think】 variants, with
+# optional attributes on the opening tag.
+_THINK_BLOCK_RE = re.compile(
+    r'[<＜【]\s*think(?:ing)?[^>＞】]*[>＞】][\s\S]*?[<＜【]\s*/\s*think(?:ing)?\s*[>＞】]',
+    re.IGNORECASE,
+)
+_THINK_OPEN_RE = re.compile(r'[<＜【]\s*think(?:ing)?[^>＞】]*[>＞】]', re.IGNORECASE)
+_THINK_LONE_CLOSE_RE = re.compile(
+    r'^[\s\S]*?[<＜【]\s*/\s*think(?:ing)?\s*[>＞】]', re.IGNORECASE
+)
+
+
+def strip_think_content(content: str) -> str:
+    """Remove model reasoning/think blocks so internal reasoning never reaches the user.
+
+    Handles well-formed <think>...</think> blocks (plus <thinking>, full-width ＜think＞
+    and bracket 【think】 variants), and the common case where a gateway strips the
+    opening tag but leaves the reasoning followed by a lone closing tag.
+    """
+    if not content:
+        return content
+
+    cleaned = _THINK_BLOCK_RE.sub('', content)
+
+    # Opening tag was stripped upstream but reasoning + lone "</think>" remain before the
+    # real answer: drop everything up to and including that closing tag.
+    if not _THINK_OPEN_RE.search(cleaned):
+        cleaned = _THINK_LONE_CLOSE_RE.sub('', cleaned, count=1)
+
+    return cleaned.strip()
 
 
 class OpenAIProvider(AIProvider):
@@ -165,6 +201,10 @@ class OpenAIProvider(AIProvider):
 
         if message.name:
             openai_message["name"] = message.name
+        if message.tool_call_id:
+            openai_message["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            openai_message["tool_calls"] = message.tool_calls
 
         return openai_message
 
@@ -205,6 +245,9 @@ class OpenAIProvider(AIProvider):
         *,
         stream: bool = False,
     ) -> Dict[str, Any]:
+        tools = config.pop("tools", None)
+        tool_choice = config.pop("tool_choice", None)
+        parallel_tool_calls = config.pop("parallel_tool_calls", None)
         request_kwargs: Dict[str, Any] = {
             "model": config.get("model", self.model),
             "messages": openai_messages,
@@ -213,14 +256,33 @@ class OpenAIProvider(AIProvider):
         }
         if stream:
             request_kwargs["stream"] = True
-
-        max_output_tokens = config.get("max_output_tokens")
-        if max_output_tokens is not None:
-            request_kwargs["max_tokens"] = max_output_tokens
+        if tools:
+            request_kwargs["tools"] = tools
+        if tool_choice is not None:
+            request_kwargs["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None:
+            request_kwargs["parallel_tool_calls"] = parallel_tool_calls
 
         self._apply_reasoning_config(request_kwargs, config, responses_api=False)
 
         return request_kwargs
+
+    def _extract_openai_tool_calls(self, message: Any) -> List[Dict[str, Any]]:
+        tool_calls = getattr(message, "tool_calls", None) or []
+        normalized: List[Dict[str, Any]] = []
+        for call in tool_calls:
+            function = getattr(call, "function", None)
+            normalized.append(
+                {
+                    "id": getattr(call, "id", None) or "",
+                    "type": getattr(call, "type", None) or "function",
+                    "function": {
+                        "name": getattr(function, "name", None) or "",
+                        "arguments": getattr(function, "arguments", None) or "{}",
+                    },
+                }
+            )
+        return normalized
 
     def _build_responses_request(
         self,
@@ -233,10 +295,6 @@ class OpenAIProvider(AIProvider):
             "temperature": config.get("temperature", 0.7),
             "top_p": config.get("top_p", 1.0),
         }
-
-        max_output_tokens = config.get("max_output_tokens")
-        if max_output_tokens is not None:
-            request_kwargs["max_output_tokens"] = max_output_tokens
 
         self._apply_reasoning_config(request_kwargs, config, responses_api=True)
 
@@ -312,39 +370,12 @@ class OpenAIProvider(AIProvider):
                 yield processed_content
 
     def _filter_think_content(self, content: str) -> str:
+        """Filter out model reasoning/think blocks before exposing output.
+
+        Delegates to the shared ``strip_think_content`` helper. Supports
+        <think>/<thinking>, full-width ＜think＞ and bracket 【think】 variants.
         """
-        Filter out content within think tags in all forms
-        Supports: <think>, <think>, ＜think＞, 【think】 and their closing tags
-        This prevents internal reasoning from being exposed in the output
-        """
-        if not content:
-            return content
-
-        import re
-
-        # Pattern to match different forms of think tags (opening and closing)
-        # Matches: <think>...</think>, <think>...</think>, ＜think＞...＜/think＞, 【think】...【/think】
-        # Also handles self-closing and nested tags
-        patterns = [
-            r'<think[\s\S]*?></think>',           # <think>...</think>
-        ]
-
-        # Apply all patterns
-        filtered_content = content
-        for pattern in patterns:
-            filtered_content = re.sub(pattern, '', filtered_content, flags=re.IGNORECASE)
-
-        # # Clean up any extra whitespace that might be left behind
-        # # Remove multiple consecutive empty lines
-        # filtered_content = re.sub(r'\n\s*\n\s*\n\s*\n', '', filtered_content)
-
-        # # Remove empty lines at the beginning and end
-        # filtered_content = filtered_content.strip()
-
-        # # Clean up extra spaces within lines
-        # filtered_content = re.sub(r' +', ' ', filtered_content)
-
-        return filtered_content
+        return strip_think_content(content or "")
 
     async def _chat_completion_via_chat_completions(
         self,
@@ -355,6 +386,7 @@ class OpenAIProvider(AIProvider):
         response = await self.client.chat.completions.create(**request_kwargs)
 
         choice = response.choices[0]
+        tool_calls = self._extract_openai_tool_calls(choice.message)
         filtered_content = self._filter_think_content(choice.message.content or "")
 
         return AIResponse(
@@ -367,6 +399,7 @@ class OpenAIProvider(AIProvider):
                 total_key="total_tokens",
             ),
             finish_reason=choice.finish_reason,
+            tool_calls=tool_calls,
             metadata={"provider": "openai", "transport": "chat_completions"},
         )
 
@@ -402,7 +435,7 @@ class OpenAIProvider(AIProvider):
             raise RuntimeError("OpenAI client not available")
 
         config = self._merge_config(**kwargs)
-        use_responses_api = self._should_use_responses_api(config)
+        use_responses_api = self._should_use_responses_api(config) and not config.get("tools")
         
         try:
             if use_responses_api:
@@ -537,7 +570,42 @@ class AnthropicProvider(AIProvider):
 
     def _convert_message_to_anthropic(self, message: AIMessage) -> Dict[str, Any]:
         """Convert AIMessage to Anthropic format, supporting multimodal content"""
+        if message.role == MessageRole.TOOL:
+            return {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id or "",
+                        "content": message.content if isinstance(message.content, str) else str(message.content),
+                    }
+                ],
+            }
+
         anthropic_message = {"role": message.role.value}
+
+        if message.tool_calls:
+            content_parts: List[Dict[str, Any]] = []
+            if isinstance(message.content, str) and message.content:
+                content_parts.append({"type": "text", "text": message.content})
+            for call in message.tool_calls:
+                function = call.get("function") or {}
+                arguments = function.get("arguments") or {}
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                content_parts.append(
+                    {
+                        "type": "tool_use",
+                        "id": call.get("id") or "",
+                        "name": function.get("name") or "",
+                        "input": arguments if isinstance(arguments, dict) else {},
+                    }
+                )
+            anthropic_message["content"] = content_parts
+            return anthropic_message
 
         if isinstance(message.content, str):
             # Simple text message
@@ -579,6 +647,55 @@ class AnthropicProvider(AIProvider):
             anthropic_message["content"] = str(message.content)
 
         return anthropic_message
+
+    def _convert_tools_to_anthropic(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        if not tools:
+            return None
+        converted: List[Dict[str, Any]] = []
+        for tool in tools:
+            function = tool.get("function") if tool.get("type") == "function" else tool
+            if not isinstance(function, dict):
+                continue
+            converted.append(
+                {
+                    "name": function.get("name"),
+                    "description": function.get("description") or "",
+                    "input_schema": function.get("parameters") or {"type": "object", "properties": {}},
+                }
+            )
+        return converted or None
+
+    def _extract_anthropic_response(self, response: Any) -> tuple[str, List[Dict[str, Any]], str, Dict[str, int]]:
+        text_parts: List[str] = []
+        tool_calls: List[Dict[str, Any]] = []
+        for part in getattr(response, "content", None) or []:
+            part_type = getattr(part, "type", None)
+            if part_type == "text":
+                text_parts.append(getattr(part, "text", "") or "")
+            elif part_type == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": getattr(part, "id", "") or "",
+                        "type": "function",
+                        "function": {
+                            "name": getattr(part, "name", "") or "",
+                            "arguments": json.dumps(getattr(part, "input", {}) or {}, ensure_ascii=False),
+                        },
+                    }
+                )
+        usage_obj = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage_obj, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage_obj, "output_tokens", 0) or 0)
+        return (
+            "".join(text_parts),
+            tool_calls,
+            str(getattr(response, "stop_reason", None) or "stop"),
+            {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+        )
     
     async def chat_completion(self, messages: List[AIMessage], **kwargs) -> AIResponse:
         """Generate chat completion using Anthropic Claude (uses streaming internally to avoid timeout)"""
@@ -589,6 +706,48 @@ class AnthropicProvider(AIProvider):
 
         # 使用流式响应来避免 SDK 的 10 分钟超时限制
         # 收集所有流式块后返回完整响应
+        tools = config.pop("tools", None)
+        tool_choice = config.pop("tool_choice", None)
+
+        if tools:
+            system_message = None
+            claude_messages = []
+            for msg in messages:
+                if msg.role == MessageRole.SYSTEM:
+                    system_message = msg.content if isinstance(msg.content, str) else str(msg.content)
+                else:
+                    claude_messages.append(self._convert_message_to_anthropic(msg))
+
+            request_kwargs: Dict[str, Any] = {
+                "model": config.get("model", self.model),
+                "messages": claude_messages,
+                "temperature": config.get("temperature", 0.7),
+                "max_tokens": int(config.get("anthropic_max_tokens") or config.get("max_completion_tokens") or 4096),
+                "tools": self._convert_tools_to_anthropic(tools),
+            }
+            if system_message:
+                request_kwargs["system"] = system_message
+            if tool_choice and isinstance(tool_choice, dict):
+                function = tool_choice.get("function") or {}
+                name = function.get("name") or tool_choice.get("name")
+                if name:
+                    request_kwargs["tool_choice"] = {"type": "tool", "name": name}
+
+            try:
+                response = await self.client.messages.create(**request_kwargs)
+                content, tool_calls, finish_reason, usage = self._extract_anthropic_response(response)
+                return AIResponse(
+                    content=content,
+                    model=getattr(response, "model", None) or config.get("model", self.model),
+                    usage=usage,
+                    finish_reason=finish_reason,
+                    tool_calls=tool_calls,
+                    metadata={"provider": "anthropic", "transport": "messages"},
+                )
+            except Exception as e:
+                logger.error(f"Anthropic API error: {e}")
+                raise
+
         try:
             full_content = ""
             async for chunk in self.stream_chat_completion(messages, **kwargs):
@@ -635,9 +794,6 @@ class AnthropicProvider(AIProvider):
         api_key = config.get("api_key", "")
         base_url = config.get("base_url", "https://api.anthropic.com")
         model = config.get("model", self.model)
-        # NOTE: `MAX_TOKENS` in this project refers to chunking/splitting, not model output length.
-        # Anthropic Messages API requires `max_tokens`, so we use a conservative fixed default here.
-        max_output_tokens = config.get("max_output_tokens", 32768)
         temperature = config.get("temperature", 0.7)
 
         # Convert messages to Anthropic format
@@ -663,7 +819,6 @@ class AnthropicProvider(AIProvider):
             body = {
                 "model": model,
                 "messages": claude_messages,
-                "max_tokens": max_output_tokens,
                 "temperature": temperature,
                 "stream": True
             }
@@ -903,6 +1058,46 @@ class GoogleProvider(AIProvider):
         }
         return content, str(finish_reason), usage
 
+    def _convert_tools_to_gemini(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        if not tools:
+            return None
+        declarations: List[Dict[str, Any]] = []
+        for tool in tools:
+            function = tool.get("function") if tool.get("type") == "function" else tool
+            if not isinstance(function, dict):
+                continue
+            declarations.append(
+                {
+                    "name": function.get("name"),
+                    "description": function.get("description") or "",
+                    "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+                }
+            )
+        return [{"function_declarations": declarations}] if declarations else None
+
+    def _extract_gemini_tool_calls_from_response(self, response: Any) -> List[Dict[str, Any]]:
+        tool_calls: List[Dict[str, Any]] = []
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return tool_calls
+        parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
+        for index, part in enumerate(parts, start=1):
+            function_call = getattr(part, "function_call", None)
+            if not function_call:
+                continue
+            args = getattr(function_call, "args", {}) or {}
+            tool_calls.append(
+                {
+                    "id": f"gemini-tool-call-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": getattr(function_call, "name", "") or "",
+                        "arguments": json.dumps(dict(args), ensure_ascii=False),
+                    },
+                }
+            )
+        return tool_calls
+
     def _convert_messages_to_gemini(self, messages: List[AIMessage]):
         """Convert AIMessage list to Gemini format, supporting multimodal content"""
         import google.generativeai as genai
@@ -1019,6 +1214,7 @@ class GoogleProvider(AIProvider):
     async def chat_completion(self, messages: List[AIMessage], **kwargs) -> AIResponse:
         """Generate chat completion using Google Gemini"""
         config = self._merge_config(**kwargs)
+        tools = config.pop("tools", None)
         base_url = config.get("base_url") or self.base_url
 
         # Use direct REST for mirrors/proxies to honor base_url.
@@ -1032,9 +1228,6 @@ class GoogleProvider(AIProvider):
                 "temperature": config.get("temperature", 0.7),
                 "topP": config.get("top_p", 1.0),
             }
-            max_output_tokens = config.get("max_output_tokens")
-            if max_output_tokens is not None:
-                generation_config["maxOutputTokens"] = max_output_tokens
 
             prompt_text = self._messages_to_plaintext_prompt(messages)
             data = await self._rest_generate_content(
@@ -1059,15 +1252,10 @@ class GoogleProvider(AIProvider):
 
         try:
             # Configure generation parameters
-            # 确保max_tokens不会太小，至少1000个token用于生成内容
             generation_config = {
                 "temperature": config.get("temperature", 0.7),
                 "top_p": config.get("top_p", 1.0),
             }
-            max_output_tokens = config.get("max_output_tokens")
-            if max_output_tokens is not None:
-                generation_config["max_output_tokens"] = max_output_tokens
-
             # 配置安全设置 - 设置为较宽松的安全级别以减少误拦截
             safety_settings = [
                 {
@@ -1093,6 +1281,7 @@ class GoogleProvider(AIProvider):
                 prompt,
                 generation_config,
                 safety_settings,
+                tools=self._convert_tools_to_gemini(tools),
                 timeout_seconds=_get_llm_timeout_seconds(config),
             )
             logger.debug(f"Google Gemini API response: {response}")
@@ -1150,6 +1339,7 @@ class GoogleProvider(AIProvider):
                     "total_tokens": response.usage_metadata.total_token_count if hasattr(response, 'usage_metadata') else 0
                 },
                 finish_reason=finish_reason,
+                tool_calls=self._extract_gemini_tool_calls_from_response(response),
                 metadata={"provider": "google"}
             )
 
@@ -1162,6 +1352,7 @@ class GoogleProvider(AIProvider):
         prompt,
         generation_config: Dict[str, Any],
         safety_settings=None,
+        tools=None,
         *,
         timeout_seconds: float = 600.0,
     ):
@@ -1175,6 +1366,8 @@ class GoogleProvider(AIProvider):
             }
             if safety_settings:
                 kwargs["safety_settings"] = safety_settings
+            if tools:
+                kwargs["tools"] = tools
 
             return self.model_instance.generate_content(
                 prompt,  # Can be string or list of parts
@@ -1209,13 +1402,19 @@ class OllamaProvider(AIProvider):
             raise RuntimeError("Ollama client not available")
         
         config = self._merge_config(**kwargs)
+        tools = config.pop("tools", None)
         
         # Convert messages to Ollama format with multimodal support
         ollama_messages = []
         for msg in messages:
             if isinstance(msg.content, str):
                 # Simple text message
-                ollama_messages.append({"role": msg.role.value, "content": msg.content})
+                message = {"role": msg.role.value, "content": msg.content}
+                if msg.tool_call_id:
+                    message["tool_call_id"] = msg.tool_call_id
+                if msg.tool_calls:
+                    message["tool_calls"] = msg.tool_calls
+                ollama_messages.append(message)
             elif isinstance(msg.content, list):
                 # Multimodal message - convert to text description for Ollama
                 content_parts = []
@@ -1242,29 +1441,30 @@ class OllamaProvider(AIProvider):
                 "temperature": config.get("temperature", 0.7),
                 "top_p": config.get("top_p", 1.0),
             }
-            max_output_tokens = config.get("max_output_tokens")
-            if max_output_tokens is not None:
-                options["num_predict"] = max_output_tokens
 
             response = await asyncio.wait_for(
                 self.client.chat(
                     model=config.get("model", self.model),
                     messages=ollama_messages,
+                    tools=tools,
                     options=options,
                 ),
                 timeout=_get_llm_timeout_seconds(config),
             )
             
-            content = response.get("message", {}).get("content", "")
+            response_message = response.get("message", {}) or {}
+            content = response_message.get("content", "") or ""
+            tool_calls = response_message.get("tool_calls") or []
             
             return AIResponse(
                 content=content,
                 model=config.get("model", self.model),
                 usage=self._calculate_usage(
-                    " ".join([msg.content for msg in messages]),
+                    " ".join([msg.content for msg in messages if isinstance(msg.content, str)]),
                     content
                 ),
                 finish_reason="stop",
+                tool_calls=tool_calls,
                 metadata={"provider": "ollama"}
             )
             
@@ -1292,8 +1492,26 @@ class AIProviderFactory:
         "landppt": OpenAIProvider,  # LandPPT Official uses OpenAI-compatible API
     }
 
+    _provider_cache: "OrderedDict[str, AIProvider]" = OrderedDict()
+    _provider_cache_lock = threading.RLock()
+    _max_cached_providers = 128
+
+    @staticmethod
+    def _config_fingerprint(config: Dict[str, Any]) -> str:
+        def _default(value: Any) -> str:
+            return repr(value)
+
+        payload = json.dumps(config, sort_keys=True, ensure_ascii=False, default=_default)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     @classmethod
-    def create_provider(cls, provider_name: str, config: Optional[Dict[str, Any]] = None) -> AIProvider:
+    def create_provider(
+        cls,
+        provider_name: str,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        use_cache: bool = True,
+    ) -> AIProvider:
         """Create an AI provider instance"""
         if config is None:
             config = ai_config.get_provider_config(provider_name)
@@ -1302,13 +1520,40 @@ class AIProviderFactory:
         if provider_name not in cls._providers:
             raise ValueError(f"Unknown provider: {provider_name}")
 
+        if use_cache:
+            cache_key = f"{provider_name}:{cls._config_fingerprint(config)}"
+            with cls._provider_cache_lock:
+                cached = cls._provider_cache.get(cache_key)
+                if cached is not None:
+                    cls._provider_cache.move_to_end(cache_key)
+                    return cached
+
         provider_class = cls._providers[provider_name]
-        return provider_class(config)
+        provider = provider_class(dict(config))
+
+        if use_cache:
+            with cls._provider_cache_lock:
+                cached = cls._provider_cache.get(cache_key)
+                if cached is not None:
+                    cls._provider_cache.move_to_end(cache_key)
+                    return cached
+                cls._provider_cache[cache_key] = provider
+                cls._provider_cache.move_to_end(cache_key)
+                while len(cls._provider_cache) > cls._max_cached_providers:
+                    cls._provider_cache.popitem(last=False)
+
+        return provider
     
     @classmethod
     def get_available_providers(cls) -> List[str]:
         """Get list of available providers"""
         return list(cls._providers.keys())
+
+    @classmethod
+    def clear_cache(cls):
+        """Clear cached provider instances."""
+        with cls._provider_cache_lock:
+            cls._provider_cache.clear()
 
 class AIProviderManager:
     """Manager for AI provider instances with caching and reloading"""
@@ -1348,6 +1593,7 @@ class AIProviderManager:
         """Clear provider cache to force reload"""
         self._provider_cache.clear()
         self._config_cache.clear()
+        AIProviderFactory.clear_cache()
 
     def reload_provider(self, provider_name: str):
         """Reload a specific provider"""

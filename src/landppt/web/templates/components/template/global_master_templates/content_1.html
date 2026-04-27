@@ -171,30 +171,31 @@
                                 </div>
                             </div>
 
-                            <!-- 图片上传 -->
+                            <!-- 图片上传（支持多张） -->
                             <div id="imageUploadArea" class="image-upload-area" style="display: none;">
                                 <div class="upload-dropzone" id="uploadDropzone">
                                     <div class="upload-content">
-                                        <div class="upload-icon"><i class="fas fa-image"></i></div>
+                                        <div class="upload-icon"><i class="fas fa-images"></i></div>
                                         <div class="upload-text">
                                             <p><strong>拖拽图片到此处</strong> 或 <button type="button" class="upload-btn" id="selectImageBtn">选择文件</button></p>
-                                            <p class="upload-hint">支持 JPG、PNG、WebP 格式，最大 10MB</p>
+                                            <p class="upload-hint">支持多张图片（封面、目录、内容、过渡页、结尾页等），JPG/PNG/WebP，单张最大 10MB</p>
                                         </div>
                                     </div>
-                                    <input type="file" id="imageFileInput" accept="image/jpeg,image/jpg,image/png,image/webp" style="display: none;">
+                                    <input type="file" id="imageFileInput" accept="image/jpeg,image/jpg,image/png,image/webp" multiple style="display: none;">
                                 </div>
 
                                 <div id="imagePreviewContainer" class="image-preview-container" style="display: none;">
                                     <div class="image-preview-header">
-                                        <h4><i class="fas fa-image"></i> 上传的参考图片</h4>
-                                        <button type="button" class="remove-image-btn" id="removeImageBtn" title="移除图片">✕</button>
-                                    </div>
-                                    <div class="image-preview-content">
-                                        <img id="imagePreview" class="image-preview" alt="参考图片预览">
-                                        <div class="image-info">
-                                            <div class="image-filename" id="imageFilename"></div>
-                                            <div class="image-size" id="imageSize"></div>
+                                        <h4><i class="fas fa-images"></i> 上传的参考图片 (<span id="imageCount">0</span>张)</h4>
+                                        <div style="display: flex; gap: 6px;">
+                                            <button type="button" class="upload-btn" id="addMoreImageBtn" title="继续添加" style="font-size: 12px; padding: 2px 8px;">+ 添加</button>
+                                            <button type="button" class="remove-image-btn" id="removeImageBtn" title="清空全部">✕ 清空</button>
                                         </div>
+                                    </div>
+                                    <div id="imagePreviewGrid" class="image-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; padding: 8px;">
+                                    </div>
+                                    <div class="image-info" style="padding: 4px 8px; font-size: 12px; color: #888;">
+                                        <span id="imageTotalInfo"></span>
                                     </div>
                                 </div>
                             </div>

@@ -454,8 +454,6 @@
                         use_responses_api: useResponsesApi,
                         enable_reasoning: enableReasoning,
                         reasoning_effort: reasoningEffort,
-                        // 测试时使用足够大的生成长度，避免空响应
-                        max_tokens: 500
                     })
                 });
 
@@ -667,7 +665,6 @@
                             }
                         ],
                         generationConfig: {
-                            maxOutputTokens: 1000,
                             temperature: 0
                         }
                     })
@@ -818,7 +815,6 @@
                         prompt: 'Say "Hello, I am working!" in exactly 5 words.',
                         stream: false,
                         options: {
-                            num_predict: 20,
                             temperature: 0
                         }
                     })
@@ -1276,19 +1272,99 @@
             }
         }
 
-        // 更新并行页数显示
+        // 更新并行页数显示（仅数字，单位由 HTML 提供）
         function updateParallelSlidesDisplay(value) {
             const displaySpan = document.getElementById('parallel_slides_display');
             if (displaySpan) {
-                displaySpan.textContent = value + ' 页';
+                displaySpan.textContent = value;
             }
+            const rangeEl = document.getElementById('parallel_slides_range');
+            if (rangeEl) updateRangeGradient(rangeEl);
         }
+
+        // 计算并应用现代化滑块的渐变填充（CSS 变量 --range-fill）
+        function updateRangeGradient(rangeEl) {
+            if (!rangeEl) return;
+            const min = parseFloat(rangeEl.min || 0);
+            const max = parseFloat(rangeEl.max || 100);
+            const val = parseFloat(rangeEl.value);
+            const pct = max > min ? ((val - min) / (max - min)) * 100 : 0;
+            rangeEl.style.setProperty('--range-fill', pct.toFixed(2) + '%');
+        }
+
+        // 格式化参数值徽章显示
+        function formatParamValueBadge(name, value) {
+            if (value === null || value === undefined || value === '') return value;
+            // 大数字加千位分隔
+            if (name === 'max_tokens' || name === 'research_max_content_length') {
+                const n = Number(value);
+                if (!isNaN(n)) return n.toLocaleString('en-US');
+            }
+            return value;
+        }
+
+        // 同步参数卡内的 range / number / badge
+        function bindParamCardSync() {
+            const tab = document.getElementById('generation-params');
+            if (!tab) return;
+
+            const ranges = tab.querySelectorAll('input[type="range"][data-range-for]');
+            ranges.forEach(range => {
+                const name = range.getAttribute('data-range-for');
+                const numberEl = tab.querySelector('input[type="number"][data-number-for="' + name + '"]');
+                const badgeEl = tab.querySelector('[data-value-for="' + name + '"]');
+
+                updateRangeGradient(range);
+                if (badgeEl) badgeEl.textContent = formatParamValueBadge(name, range.value);
+
+                range.addEventListener('input', () => {
+                    if (numberEl) numberEl.value = range.value;
+                    if (badgeEl) badgeEl.textContent = formatParamValueBadge(name, range.value);
+                    updateRangeGradient(range);
+                });
+
+                if (numberEl) {
+                    numberEl.addEventListener('input', () => {
+                        const v = numberEl.value;
+                        if (v === '' || isNaN(Number(v))) return;
+                        range.value = v;
+                        if (badgeEl) badgeEl.textContent = formatParamValueBadge(name, v);
+                        updateRangeGradient(range);
+                    });
+                }
+            });
+
+            // 并行生成滑块（id 形式，无 data-range-for）
+            const parallelRange = document.getElementById('parallel_slides_range');
+            if (parallelRange) updateRangeGradient(parallelRange);
+        }
+
+        // 切换 toggle-row 的激活态视觉（基于内部 checkbox 的 checked 状态）
+        function bindToggleRowState() {
+            document.querySelectorAll('.toggle-row').forEach(row => {
+                const cb = row.querySelector('input[type="checkbox"]');
+                if (!cb) return;
+                const sync = () => row.classList.toggle('is-active', cb.checked);
+                sync();
+                cb.addEventListener('change', sync);
+            });
+        }
+
+        // 页面加载完成后初始化生成参数 UI 同步
+        document.addEventListener('DOMContentLoaded', () => {
+            try {
+                bindParamCardSync();
+                bindToggleRowState();
+            } catch (e) {
+                console && console.warn && console.warn('gen-params init failed:', e);
+            }
+        });
 
         function populateGenerationParams() {
             const tab = document.getElementById('generation-params');
             if (!tab) return;
 
-            const inputs = tab.querySelectorAll('input, select');
+            const inputs = tab.querySelectorAll('input, select, textarea');
             inputs.forEach(input => {
                 const configKey = input.name;
                 const configValue = currentConfig[configKey];
@@ -1336,7 +1412,32 @@
                 if (countInput) {
                     updateParallelSlidesDisplay(countInput.value || countInput.getAttribute('value') || '0');
                 }
+                // 同步参数卡片的滑块/徽章状态
+                syncParamCardsFromInputs();
+                // 刷新 toggle-row 视觉态
+                document.querySelectorAll('.toggle-row').forEach(row => {
+                    const cb = row.querySelector('input[type="checkbox"]');
+                    if (cb) row.classList.toggle('is-active', cb.checked);
+                });
             }, 100);
+        }
+
+        // 在外部填充数字输入后，将 range 与 badge 同步到当前 number 值
+        function syncParamCardsFromInputs() {
+            const tab = document.getElementById('generation-params');
+            if (!tab) return;
+            const ranges = tab.querySelectorAll('input[type="range"][data-range-for]');
+            ranges.forEach(range => {
+                const name = range.getAttribute('data-range-for');
+                const numberEl = tab.querySelector('input[type="number"][data-number-for="' + name + '"]');
+                const badgeEl = tab.querySelector('[data-value-for="' + name + '"]');
+                // 数字输入优先；为空时回退到 range 自带默认值（不强制写回，避免覆盖"使用默认"语义）
+                const numVal = numberEl ? numberEl.value : '';
+                const src = numVal !== '' ? numVal : range.value;
+                range.value = src;
+                if (badgeEl) badgeEl.textContent = formatParamValueBadge(name, src);
+                updateRangeGradient(range);
+            });
         }
 
 
@@ -1539,6 +1640,43 @@
             textarea.value = DEFAULT_RESOLUTION_PRESETS;
         }
 
+        function getImageGenerationTestSize(provider) {
+            const textarea = document.querySelector('textarea[name="ai_image_resolution_presets"]');
+            const raw = textarea && textarea.value.trim() ? textarea.value.trim() : DEFAULT_RESOLUTION_PRESETS;
+            try {
+                const presets = JSON.parse(raw);
+                const sizes = presets && Array.isArray(presets[provider]) ? presets[provider] : null;
+                if (sizes && sizes.length > 0) {
+                    return String(sizes[0]);
+                }
+            } catch (error) {
+                console.warn('Invalid image resolution presets, using default size:', error);
+            }
+            return provider === 'dalle' ? '1792x1024' : '1024x1024';
+        }
+
+        function escapeImageTestText(value) {
+            return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[char]));
+        }
+
+        function normalizeImageTestUrl(imagePath) {
+            if (!imagePath) return '';
+            if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+                try {
+                    return new URL(imagePath).pathname;
+                } catch (_) {
+                    return imagePath;
+                }
+            }
+            return imagePath.startsWith('/') ? imagePath : `/images/${imagePath}`;
+        }
+
         // 设置默认提供者
         async function setDefaultProvider(provider) {
             try {
@@ -1738,7 +1876,7 @@
 
             const config = {};
             const tavilyDefaultBaseUrl = 'https://api.tavily.com';
-            const inputs = tab.querySelectorAll('input, select');
+            const inputs = tab.querySelectorAll('input, select, textarea');
 
             inputs.forEach(input => {
                 if (input.name) {
@@ -1841,7 +1979,7 @@
                 ['generation-params', 'app-config'].forEach(tabId => {
                     const tab = document.getElementById(tabId);
                     if (tab) {
-                        const inputs = tab.querySelectorAll('input, select');
+                        const inputs = tab.querySelectorAll('input, select, textarea');
                         inputs.forEach(input => {
                             if (input.name) {
                                 if (input.type === 'checkbox') {
@@ -2093,6 +2231,54 @@
             }
         }
 
+        async function testImageGeneration() {
+            const providerSelect = document.querySelector('select[name="default_ai_image_provider"]');
+            const qualitySelect = document.querySelector('select[name="ai_image_quality"]');
+            const provider = providerSelect && providerSelect.value ? providerSelect.value : 'dalle';
+            const size = getImageGenerationTestSize(provider);
+            const quality = qualitySelect && qualitySelect.value ? qualitySelect.value : undefined;
+
+            const modal = document.getElementById('testModal');
+            const resultsEl = document.getElementById('testResults');
+            if (resultsEl) {
+                resultsEl.innerHTML = `
+                    <div style="text-align: center; padding: 24px;">
+                        <div style="font-size: 2.4em; margin-bottom: 12px;">⏳</div>
+                        <h4 style="color: #111111;">正在生成测试图片...</h4>
+                        <p style="color: #6c757d; margin-top: 8px;">${escapeImageTestText(provider)} / ${escapeImageTestText(size)}</p>
+                    </div>
+                `;
+            }
+            if (modal) {
+                modal.style.display = 'block';
+            }
+
+            const startedAt = Date.now();
+            try {
+                const response = await fetch('/api/image/test-generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider,
+                        size,
+                        quality,
+                        prompt: 'A clean modern presentation test image, abstract business technology background, high quality'
+                    })
+                });
+
+                let result = {};
+                try {
+                    result = await response.json();
+                } catch (_) {
+                    result = { error: `HTTP ${response.status}` };
+                }
+                result.elapsed_seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+                showImageTestResult(result, response.ok && result.success === true);
+            } catch (error) {
+                showImageTestResult({ error: error.message || String(error) }, false);
+            }
+        }
+
         function showImageTestResult(result, success) {
             const statusIcon = success ? '✅' : '❌';
             const statusColor = success ? '#0f0f0f' : '#555555';
@@ -2108,32 +2294,54 @@
                 content += `
             <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
                 <p><strong>测试结果:</strong></p>
-                <ul style="margin-left: 20px;">
         `;
 
-                if (result.providers) {
-                    Object.entries(result.providers).forEach(([provider, status]) => {
-                        const icon = status.available ? '✅' : '❌';
-                        content += `<li>${icon} ${provider}: ${status.message}</li>`;
-                    });
+                if (result.image_path || result.image_id) {
+                    const imageUrl = normalizeImageTestUrl(result.image_path || '');
+                    content += `
+                <div style="text-align: center; margin: 16px 0 20px;">
+                    <img src="${escapeImageTestText(imageUrl)}" alt="测试生成图片"
+                        style="max-width: 100%; height: auto; max-height: 360px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.18);"
+                        onerror="this.onerror=null; this.src='/static/images/placeholder.svg'; this.alt='图片加载失败';">
+                </div>
+                <ul style="margin-left: 20px;">
+                    <li>提供者: ${escapeImageTestText(result.provider || '')}</li>
+                    <li>尺寸: ${escapeImageTestText(result.width || '')} × ${escapeImageTestText(result.height || '')}</li>
+                    <li>耗时: ${escapeImageTestText(result.elapsed_seconds ?? 0)} 秒</li>
+                    <li>图片ID: ${escapeImageTestText(result.image_id || '')}</li>
+                    <li>图片链接: <a href="${escapeImageTestText(imageUrl)}" target="_blank" rel="noopener">打开图片</a></li>
+                </ul>
+            `;
                 }
 
-                content += `
-                </ul>
-                <p style="margin-top: 15px;"><strong>缓存信息:</strong></p>
-                <ul style="margin-left: 20px;">
-                    <li>缓存目录: ${result.cache_info?.directory || 'temp/images_cache'}</li>
-                    <li>缓存大小: ${result.cache_info?.size || '0 MB'}</li>
-                    <li>文件数量: ${result.cache_info?.file_count || 0}</li>
-                </ul>
-            </div>
-        `;
+                if (result.providers) {
+                    content += '<ul style="margin-left: 20px;">';
+                    Object.entries(result.providers).forEach(([provider, status]) => {
+                        const icon = status.available ? '✅' : '❌';
+                        content += `<li>${icon} ${escapeImageTestText(provider)}: ${escapeImageTestText(status.message)}</li>`;
+                    });
+                    content += '</ul>';
+                }
+
+                if (result.cache_info) {
+                    content += `
+                    <p style="margin-top: 15px;"><strong>缓存信息:</strong></p>
+                    <ul style="margin-left: 20px;">
+                        <li>缓存目录: ${escapeImageTestText(result.cache_info.directory || 'temp/images_cache')}</li>
+                        <li>缓存大小: ${escapeImageTestText(result.cache_info.size || '0 MB')}</li>
+                        <li>文件数量: ${escapeImageTestText(result.cache_info.file_count || 0)}</li>
+                    </ul>
+                `;
+                }
+
+                content += '</div>';
             } else {
+                const errorMessage = result.detail || result.message || result.error || result.error_code || '未知错误';
                 content += `
             <div style="background: #f1f1f1; padding: 20px; border-radius: 8px; border-left: 4px solid #111111;">
                 <p><strong>错误信息:</strong></p>
                 <div style="background: rgba(0,0,0,0.1); padding: 10px; border-radius: 5px; font-family: monospace; font-size: 0.9em;">
-                    ${result.detail || result.error || '未知错误'}
+                    ${escapeImageTestText(errorMessage)}
                 </div>
             </div>
         `;

@@ -1,0 +1,296 @@
+# Default values for landppt.
+
+replicaCount: 1
+
+web:
+  replicaCount: 1
+  # Empty type selects Recreate with persistence and RollingUpdate otherwise.
+  # Set type to RollingUpdate only when the mounted storage supports concurrent Pods.
+  updateStrategy:
+    type: ""
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+  pdb:
+    enabled: false
+    minAvailable: 1
+
+worker:
+  enabled: true
+  replicaCount: 1
+  queue: default
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 75
+  pdb:
+    enabled: false
+    minAvailable: 1
+
+networkPolicy:
+  enabled: false
+
+observability:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+image:
+  repository: bradleylzh/landppt
+  tag: "0.3.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+app:
+  workers: 2
+  logLevel: info
+  # 应用配置（写入 ConfigMap，作为环境变量注入）
+  env:
+    LANDPPT_ENABLE_API_DOCS: "false"
+    LANDPPT_ALLOW_HEADER_SESSION_AUTH: "false"
+    ENABLE_CREDITS_SYSTEM: "true"
+    INVITE_CODE_REQUIRED_FOR_REGISTRATION: "false"
+    LANDPPT_BOOTSTRAP_ADMIN_ENABLED: "false"
+    LANDPPT_AUTO_MIGRATE_ON_STARTUP: "false"
+    # 控制 SQLAlchemy 连接池，避免多副本/HPA 时打满 PostgreSQL max_connections。
+    DB_POOL_SIZE: "10"
+    DB_MAX_OVERFLOW: "20"
+    DB_ASYNC_POOL_SIZE: "10"
+    DB_ASYNC_MAX_OVERFLOW: "20"
+    DB_POOL_RECYCLE: "1800"
+  # 敏感配置（写入 Secret）。生产环境必须改用 existingSecret。
+  secrets: {}
+  # 使用已有 Secret（key 即环境变量名）
+  existingSecret: ""
+
+migration:
+  enabled: false
+  hook: false
+  backoffLimit: 3
+  annotations: {}
+  resources: {}
+
+storage:
+  backend: s3
+  local:
+    root: /app/data/artifacts
+    publicBaseUrl: ""
+  s3:
+    # Used when minio.enabled=false. When minio.enabled=true, the in-chart MinIO service is used.
+    endpointUrl: ""
+    region: us-east-1
+    bucket: landppt
+    forcePathStyle: true
+    publicBaseUrl: ""
+    presignedUrlExpiresSeconds: 3600
+    # Optional secret containing S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.
+    existingSecret: ""
+    # Used only when existingSecret is empty and minio.enabled=false.
+    accessKeyId: ""
+    secretAccessKey: ""
+
+minio:
+  enabled: true
+  image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  mcImage: minio/mc:RELEASE.2025-04-16T18-13-26Z
+  auth:
+    existingSecret: ""
+    rootUser: landppt
+    # Required when minio.enabled=true and minio.auth.existingSecret is empty.
+    # Do not store real credentials in Git; use minio.auth.existingSecret for production/public repos.
+    rootPassword: ""
+  persistence:
+    storageClass: ""
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+service:
+  type: ClusterIP
+  port: 8000
+  # Optional fixed port when type is NodePort (valid range: 30000-32767).
+  nodePort: null
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: landppt.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# 持久化数据卷（对应 docker-compose 的 named volumes）
+persistence:
+  enabled: false
+  storageClass: ""
+  data:
+    size: 5Gi
+  uploads:
+    size: 10Gi
+  reports:
+    size: 5Gi
+  cache:
+    size: 5Gi
+  lib:
+    size: 1Gi
+
+# Ensure provisioned application volumes are writable by the non-root process.
+# This is needed for local/hostPath provisioners that do not honor fsGroup.
+volumePermissions:
+  enabled: true
+  image: busybox:1.36
+  imagePullPolicy: IfNotPresent
+  uid: 10001
+  gid: 10001
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+resources:
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Chromium 需要大于默认 64MB 的共享内存（compose 里 shm_size: 4gb）
+shmSize: 4Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 40
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# ---------- PostgreSQL ----------
+postgresql:
+  # true: 由本 chart 部署内置 PostgreSQL StatefulSet
+  enabled: true
+  image: postgres:16-alpine
+  auth:
+    username: landppt
+    # Required when postgresql.enabled=true and postgresql.auth.existingSecret is empty.
+    # Do not store real credentials in Git; use postgresql.auth.existingSecret for production/public repos.
+    password: ""
+    database: landppt
+    # Existing Secret containing the PostgreSQL password. When set, this chart will not render the password Secret.
+    existingSecret: ""
+    passwordKey: POSTGRES_PASSWORD
+  persistence:
+    storageClass: ""
+    size: 50Gi
+  # 适合中等生产负载的内置 PostgreSQL 基线；大规模生产仍建议使用云 RDS/托管数据库。
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  configuration:
+    max_connections: "300"
+    shared_buffers: "1GB"
+    effective_cache_size: "3GB"
+    maintenance_work_mem: "256MB"
+    work_mem: "8MB"
+    checkpoint_completion_target: "0.9"
+    wal_compression: "on"
+    max_wal_size: "2GB"
+    min_wal_size: "512MB"
+    random_page_cost: "1.1"
+    effective_io_concurrency: "200"
+
+# 使用外部数据库时：postgresql.enabled=false 并设置完整连接串
+externalDatabase:
+  # 例：postgresql://user:pass@host:5432/dbname
+  url: ""
+  # Optional existing Secret containing DATABASE_URL, recommended for production external DBs.
+  existingSecret: ""
+  urlKey: DATABASE_URL
+
+# ---------- Valkey (cache) ----------
+valkey:
+  enabled: true
+  image: valkey/valkey:8-alpine
+  persistence:
+    storageClass: ""
+    size: 10Gi
+  # AOF 用于队列/缓存持久化，maxmemory 需要小于容器 memory limit。
+  appendonly: true
+  maxmemory: 1536mb
+  maxmemoryPolicy: allkeys-lru
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# 使用外部 Valkey/Redis 时：valkey.enabled=false 并设置 URL
+externalValkey:
+  # 例：valkey://host:6379
+  url: ""

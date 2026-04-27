@@ -18,7 +18,7 @@ from typing import Iterator
 
 from ..core.config import app_config
 from .create_default_template import ensure_default_templates_exist
-from .database import init_db
+from .database import init_db, mask_database_url
 from .startup_migrations import run_startup_migrations
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ async def run_startup_initialization() -> bool:
 
         logger.info(
             "Startup initialization: initializing database (configured=%s)",
-            getattr(app_config, "database_url", ""),
+            mask_database_url(getattr(app_config, "database_url", "")),
         )
         await init_db()
         logger.info("Startup initialization: database initialized successfully")

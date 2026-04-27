@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..ai.base import AIMessage, MessageRole
-from ..ai.providers import get_ai_provider, get_role_provider
+from ..ai.providers import get_ai_provider, get_role_provider, strip_think_content
 from ..core.config import ai_config
 from ..api.models import PPTProject
 from .prompts.system_prompts import SystemPrompts
@@ -308,6 +308,10 @@ class SpeechScriptService:
             
             scripts = []
             total_duration_seconds = 0
+            existing_script_contexts = await self._load_existing_script_contexts(
+                project.project_id,
+                customization.language,
+            )
             
             for i, slide_index in enumerate(slide_indices):
                 if slide_index >= len(project.slides_data):
@@ -317,20 +321,36 @@ class SpeechScriptService:
                 
                 # Get context from previous slide in the sequence
                 previous_slide_context = ""
+                previous_script_slide_index = None
                 if i > 0:
                     prev_index = slide_indices[i - 1]
                     if prev_index < len(project.slides_data):
                         prev_slide = project.slides_data[prev_index]
                         previous_slide_context = self._extract_slide_context(prev_slide)
+                        previous_script_slide_index = prev_index
                 elif slide_index > 0:
                     # Use actual previous slide if this is the first in selection
                     prev_slide = project.slides_data[slide_index - 1]
                     previous_slide_context = self._extract_slide_context(prev_slide)
+                    previous_script_slide_index = slide_index - 1
+
+                previous_script_context = ""
+                if previous_script_slide_index is not None:
+                    for prev_script in reversed(scripts):
+                        if prev_script.slide_index == previous_script_slide_index:
+                            previous_script_context = self._trim_context_text(
+                                prev_script.script_content,
+                                max_chars=1200,
+                            )
+                            break
+                    previous_script_is_part_of_current_run = previous_script_slide_index in slide_indices[:i]
+                    if not previous_script_context and not previous_script_is_part_of_current_run:
+                        previous_script_context = existing_script_contexts.get(previous_script_slide_index, "")
                 
                 # Generate script
                 script_content = await self._generate_script_for_slide(
                     slide, slide_index, len(project.slides_data),
-                    project, previous_slide_context, customization
+                    project, previous_slide_context, customization, previous_script_context
                 )
                 
                 # Estimate duration
@@ -425,6 +445,10 @@ class SpeechScriptService:
             successful_scripts = []
             failed_slides = []
             skipped_slides = []
+            existing_script_contexts = await self._load_existing_script_contexts(
+                project.project_id,
+                customization.language,
+            )
 
             # Create progress tracking task
             if not task_id:
@@ -491,23 +515,37 @@ class SpeechScriptService:
 
                 for retry_count in range(max_retries):
                     try:
-                        # Get previous slide context for better coherence
+                        # Get previous slide and script context for better coherence.
                         previous_slide_context = ""
-                        if slide_index > 0 and successful_scripts:
-                            # Find the most recent successful script before this slide
+                        previous_script_slide_index = None
+                        if i > 0:
+                            prev_index = slide_indices[i - 1]
+                            if prev_index < len(project.slides_data):
+                                previous_slide_context = self._extract_slide_context(project.slides_data[prev_index])
+                                previous_script_slide_index = prev_index
+                        elif slide_index > 0:
+                            previous_slide_context = self._extract_slide_context(project.slides_data[slide_index - 1])
+                            previous_script_slide_index = slide_index - 1
+
+                        previous_script_context = ""
+                        if previous_script_slide_index is not None and successful_scripts:
+                            # Use only the actual previous page's generated script.
                             for prev_script in reversed(successful_scripts):
-                                if prev_script.slide_index < slide_index:
-                                    prev_content = prev_script.script_content
-                                    if len(prev_content) > 200:
-                                        previous_slide_context = prev_content[-200:]
-                                    else:
-                                        previous_slide_context = prev_content
+                                if prev_script.slide_index == previous_script_slide_index:
+                                    previous_script_context = self._trim_context_text(
+                                        prev_script.script_content,
+                                        max_chars=1200,
+                                    )
                                     break
+                        if previous_script_slide_index is not None and not previous_script_context:
+                            previous_script_is_part_of_current_run = previous_script_slide_index in slide_indices[:i]
+                            if not previous_script_is_part_of_current_run:
+                                previous_script_context = existing_script_contexts.get(previous_script_slide_index, "")
 
                         # Generate script
                         script_content = await self._generate_script_for_slide(
                             slide, slide_index, len(project.slides_data),
-                            project, previous_slide_context, customization
+                            project, previous_slide_context, customization, previous_script_context
                         )
 
                         # Estimate duration
@@ -647,7 +685,8 @@ class SpeechScriptService:
         total_slides: int,
         project: PPTProject,
         previous_slide_context: str,
-        customization: SpeechScriptCustomization
+        customization: SpeechScriptCustomization,
+        previous_script_context: str = ""
     ) -> str:
         """Generate speech script for a single slide using AI"""
         
@@ -658,7 +697,7 @@ class SpeechScriptService:
         # Create the prompt for speech script generation
         prompt = self._create_speech_script_prompt(
             slide, slide_index, total_slides, project,
-            previous_slide_context, customization
+            previous_slide_context, customization, previous_script_context
         )
         
         # Generate using AI
@@ -668,8 +707,10 @@ class SpeechScriptService:
                 temperature=0.7
             )
         )
-        
-        return response.content.strip()
+
+        # Safety net: strip any leaked model reasoning/think blocks. Not all providers
+        # (e.g. Ollama/Google) filter these, and reasoning must never enter the script.
+        return strip_think_content(response.content or "")
 
     async def humanize_script(
         self,
@@ -692,7 +733,7 @@ class SpeechScriptService:
                 temperature=0.55
             )
         )
-        return (response.content or "").strip()
+        return strip_think_content(response.content or "")
     
     def _create_speech_script_prompt(
         self,
@@ -701,15 +742,28 @@ class SpeechScriptService:
         total_slides: int,
         project: PPTProject,
         previous_slide_context: str,
-        customization: SpeechScriptCustomization
+        customization: SpeechScriptCustomization,
+        previous_script_context: str = ""
     ) -> str:
         """Create AI prompt for speech script generation"""
 
         from .prompts.speech_script_prompts import SpeechScriptPrompts
 
+        slides_data = project.slides_data or []
+        if not previous_slide_context and slide_index > 0 and slide_index - 1 < len(slides_data):
+            previous_slide_context = self._extract_slide_context(slides_data[slide_index - 1])
+
+        next_slide_context = ""
+        if slide_index + 1 < len(slides_data):
+            next_slide_context = self._extract_slide_context(slides_data[slide_index + 1])
+
         project_info = {
             'topic': project.topic,
-            'scenario': project.scenario
+            'scenario': project.scenario,
+            'slide_sequence': self._build_slide_sequence_context(slides_data, slide_index),
+            'previous_slide_context': previous_slide_context,
+            'previous_script_context': self._trim_context_text(previous_script_context, max_chars=1200),
+            'next_slide_context': next_slide_context
         }
 
         customization_dict = {
@@ -801,6 +855,64 @@ class SpeechScriptService:
             text_content = text_content[:200] + "..."
 
         return f"{title}: {text_content}"
+
+    def _build_slide_sequence_context(
+        self,
+        slides_data: List[Dict[str, Any]],
+        current_index: int,
+        window: int = 2,
+    ) -> str:
+        """Build a compact local outline around the current slide."""
+        if not slides_data:
+            return ""
+
+        start = max(0, current_index - window)
+        end = min(len(slides_data), current_index + window + 1)
+        parts = []
+        for index in range(start, end):
+            slide = slides_data[index] or {}
+            title = (slide.get("title") or f"第{index + 1}页").strip()
+            marker = "当前页" if index == current_index else f"第{index + 1}页"
+            parts.append(f"{marker}：{title}")
+        return "；".join(parts)
+
+    def _trim_context_text(self, text: str, max_chars: int = 1200) -> str:
+        """Trim adjacent script context while preserving its opening and ending."""
+        import re
+
+        normalized = re.sub(r'\s+', ' ', text or '').strip()
+        if not normalized or len(normalized) <= max_chars:
+            return normalized
+
+        head_chars = max_chars // 2
+        tail_chars = max_chars - head_chars
+        return f"{normalized[:head_chars]} ... {normalized[-tail_chars:]}"
+
+    async def _load_existing_script_contexts(self, project_id: str, language: str) -> Dict[int, str]:
+        """Load existing saved scripts for adjacent-context fallback."""
+        if not project_id:
+            return {}
+
+        repo = None
+        try:
+            from .speech_script_repository import SpeechScriptRepository
+
+            repo = SpeechScriptRepository()
+            scripts = await repo.get_current_speech_scripts_by_project(
+                project_id,
+                language=language or "zh",
+            )
+            return {
+                int(script.slide_index): self._trim_context_text(script.script_content, max_chars=1200)
+                for script in scripts
+                if getattr(script, "script_content", None)
+            }
+        except Exception as exc:
+            logger.warning(f"Failed to load existing speech scripts for context: {exc}")
+            return {}
+        finally:
+            if repo:
+                repo.close()
 
     def _estimate_speaking_duration(self, script_content: str) -> str:
         """Estimate speaking duration based on script length"""
@@ -929,7 +1041,7 @@ class SpeechScriptService:
             )
         )
 
-        return response.content.strip()
+        return strip_think_content(response.content or "")
 
     async def _generate_closing_remarks(
         self,
@@ -963,7 +1075,7 @@ class SpeechScriptService:
             )
         )
 
-        return response.content.strip()
+        return strip_think_content(response.content or "")
 
     def _build_request_kwargs(self, **kwargs) -> Dict[str, Any]:
         """Merge base kwargs with role-specific model override if configured."""

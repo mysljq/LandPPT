@@ -5,12 +5,13 @@ Main FastAPI application entry point
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, PlainTextResponse
 import uvicorn
 import asyncio
 import logging
 import os
 import sys
+import time
 from .api.openai_compat import router as openai_router
 from .api.landppt_api import router as landppt_router
 from .api.database_api import router as database_router
@@ -25,6 +26,7 @@ from .web.credits_routes import router as credits_router
 from .auth import auth_router, create_auth_middleware
 from .database.startup_initialization import run_startup_initialization
 from .core.config import app_config
+from .services.metrics import metrics_collector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -87,6 +89,26 @@ app.add_middleware(
 auth_middleware = create_auth_middleware()
 app.middleware("http")(auth_middleware)
 
+
+@app.middleware("http")
+async def metrics_middleware(request, call_next):
+    metrics_collector.start_request()
+    started_at = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or request.url.path
+        metrics_collector.finish_request(
+            request.method,
+            path,
+            status_code,
+            time.perf_counter() - started_at,
+        )
+
 # Include routers
 app.include_router(auth_router, prefix="", tags=["Authentication"])
 app.include_router(config_router, prefix="", tags=["Configuration Management"])
@@ -131,9 +153,11 @@ async def serve_font_asset(filename: str):
 
 # Mount temp directory for image cache
 temp_dir = os.path.join(os.getcwd(), "temp")
-if os.path.exists(temp_dir):
+if app_config.expose_temp_static_files and os.path.exists(temp_dir):
     app.mount("/temp", StaticFiles(directory=temp_dir), name="temp")
     logger.info(f"Mounted temp directory: {temp_dir}")
+elif not app_config.expose_temp_static_files:
+    logger.info("Temp static file mount disabled by configuration")
 else:
     logger.warning(f"Temp directory not found: {temp_dir}")
 
@@ -156,6 +180,12 @@ async def favicon():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "LandPPT API"}
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return PlainTextResponse(metrics_collector.render_prometheus(), media_type="text/plain; version=0.0.4")
 
 if __name__ == "__main__":
     uvicorn.run(

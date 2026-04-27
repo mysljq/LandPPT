@@ -91,27 +91,33 @@ check_environment() {
     fi
 }
 
-# Create necessary directories
+# Create and verify runtime directories as the application user.
 create_directories() {
-    log "Creating necessary directories..."
-    
+    log "Checking runtime directories..."
+
     local dirs=(
         "/app/data"
         "/app/uploads"
+        "/app/temp"
         "/app/temp/ai_responses_cache"
         "/app/temp/style_genes_cache"
         "/app/temp/summeryanyfile_cache"
         "/app/temp/templates_cache"
         "/app/research_reports"
+        "/app/lib"
         "/app/lib/Linux"
         "/app/lib/MacOS"
         "/app/lib/Windows"
     )
-    
+
     for dir in "${dirs[@]}"; do
-        if [ ! -d "$dir" ]; then
-            mkdir -p "$dir"
-            log "Created directory: $dir"
+        if ! mkdir -p "$dir" 2>/dev/null; then
+            error "Required path cannot be created: $dir"
+            return 1
+        fi
+        if [ ! -w "$dir" ] || [ ! -x "$dir" ]; then
+            error "Required path is not writable: $dir"
+            return 1
         fi
     done
 }
@@ -161,38 +167,38 @@ wait_for_dependencies() {
     fi
 }
 
-# Fix .env file permissions
-fix_env_permissions() {
+# Refuse to start with a privileged identity.
+check_runtime_identity() {
+    if [ "$(id -u)" -eq 0 ]; then
+        error "LandPPT must not run as root"
+        return 1
+    fi
+
+    info "Running as uid=$(id -u) gid=$(id -g)"
+}
+
+# Validate .env access without trying to mutate mounted host files.
+check_env_permissions() {
     log "Checking .env file permissions..."
 
-    if [ -f "/app/.env" ]; then
-        # Check if we can read the .env file
-        if [ ! -r "/app/.env" ]; then
-            warn "⚠️ .env file is not readable by current user"
-            info "Attempting to fix .env file permissions..."
-
-            # Running as root, so we can fix permissions directly
-            if chmod 644 "/app/.env" 2>/dev/null; then
-                log "✅ .env file permissions fixed"
-            else
-                warn "⚠️ Could not fix .env file permissions"
-                warn "   Creating a copy with correct permissions..."
-
-                # Create a copy with correct permissions
-                if cp "/app/.env" "/app/.env.tmp" 2>/dev/null && mv "/app/.env.tmp" "/app/.env" 2>/dev/null; then
-                    chmod 644 "/app/.env" 2>/dev/null
-                    log "✅ .env file copied with correct permissions"
-                else
-                    warn "⚠️ Could not create .env copy"
-                    warn "   Please check the mounted .env file"
-                fi
-            fi
-        else
-            log "✅ .env file is readable"
-        fi
-    else
-        warn "⚠️ .env file not found, using default configuration"
+    if [ ! -e "/app/.env" ]; then
+        warn ".env file not found, using process environment only"
+        return 0
     fi
+    if [ ! -f "/app/.env" ]; then
+        error "Required path is not a regular file: /app/.env"
+        return 1
+    fi
+    if [ ! -r "/app/.env" ]; then
+        error "Required path is not readable: /app/.env"
+        return 1
+    fi
+    if [ ! -w "/app/.env" ]; then
+        error "Required path is not writable: /app/.env"
+        return 1
+    fi
+
+    log ".env file is readable and writable"
 }
 
 # Main initialization
@@ -201,8 +207,9 @@ main() {
 
     log "Starting LandPPT initialization..."
 
+    check_runtime_identity
     check_environment
-    fix_env_permissions
+    check_env_permissions
     create_directories
     wait_for_dependencies
     import_templates

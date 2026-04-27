@@ -18,5 +18,5 @@ window.__LANDPPT_USER__ = {
     is_admin: {{ 'true' if user and user.is_admin else 'false' }}
 };
 </script>
-<script type="module" src="/static/js/pages/template/global_master/globalMasterTemplates.js"></script>
+<script type="module" src="/static/js/pages/template/global_master/globalMasterTemplates.js?v={{ range(100000, 999999) | random }}"></script>
 {% endblock %}

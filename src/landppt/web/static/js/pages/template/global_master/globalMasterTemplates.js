@@ -2,7 +2,7 @@ import { apiClient } from '../../../modules/apiClient.js';
 import { debounce, formatBytes } from '../../../modules/domUtils.js';
 import { emit } from '../../../modules/eventBus.js';
 import { ensureDomToPptxReady, sanitizeFileName, setButtonLoadingState, renderTemplateSampleHtml, loadHtmlIntoIframe, waitForIframeVisualReady } from './globalMasterTemplates.exportHelpers.js';
-import { createGlobalMasterTemplatesUpload } from './globalMasterTemplates.upload.js';
+import { createGlobalMasterTemplatesUpload } from './globalMasterTemplates.upload.js?v=2';
 
 const currentUser = window.__LANDPPT_USER__ || {};
 const isAdminUser = Boolean(currentUser.is_admin);
@@ -17,6 +17,7 @@ const state = {
     currentSearch: '',
     currentTag: '',
     uploadedImage: null,
+    uploadedImages: [],
     uploadedPptx: null,
     generatedTemplate: null,
     effectiveDefaultTemplateId: null,
@@ -524,11 +525,18 @@ async function handleAIGeneration(event) {
             return;
         }
         payload.reference_pptx = { ...state.uploadedPptx };
-    } else if (state.uploadedImage && payload.generation_mode !== 'text_only') {
-        payload.reference_image = { ...state.uploadedImage };
     } else if (payload.generation_mode !== 'text_only') {
-        alert('请上传参考图片后再生成');
-        return;
+        // Multi-image support: send reference_images array
+        const images = Array.isArray(state.uploadedImages) && state.uploadedImages.length > 0
+            ? state.uploadedImages
+            : (state.uploadedImage ? [state.uploadedImage] : []);
+        if (images.length === 0) {
+            alert('请上传参考图片后再生成');
+            return;
+        }
+        payload.reference_images = images.map(img => ({ ...img }));
+        // Backward compat: also set single reference_image
+        payload.reference_image = { ...images[0] };
     }
 
     try {

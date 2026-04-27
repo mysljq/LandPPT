@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>dom-to-pptx inline complex smoke</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #f4f6f8;
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    }
+
+    .pptx-slide {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      background: #ffffff;
+      color: #1b2733;
+    }
+
+    .panel {
+      position: absolute;
+      left: 92px;
+      top: 86px;
+      width: 720px;
+      padding: 34px 38px;
+      border: 1px solid rgba(20, 34, 48, 0.15);
+      border-radius: 18px;
+      background: #f8fafc;
+    }
+
+    .title {
+      margin: 0 0 20px;
+      font-size: 42px;
+      font-weight: 800;
+    }
+
+    .copy {
+      margin: 0 0 18px;
+      width: 620px;
+      font-size: 28px;
+    }
+
+    .complex-text {
+      width: 650px;
+      font-size: 26px;
+    }
+
+    .badge {
+      display: inline-block;
+      margin: 0 4px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #e4f2ff;
+      color: #0f5e9c;
+      font-weight: 700;
+    }
+
+    .side-note {
+      position: absolute;
+      right: 88px;
+      top: 132px;
+      width: 260px;
+      font-size: 24px;
+      color: #435466;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 34px;
+      font-size: 25px;
+    }
+  </style>
+</head>
+<body>
+  <section class="pptx-slide">
+    <div class="panel">
+      <h1 class="title">复杂文本导出排版</h1>
+      <p class="copy">
+        这段文字没有显式 line-height，浏览器会使用 normal 行高。导出到 PowerPoint 时必须写入等价行距，避免多行中文重新排版后上下挤压。
+      </p>
+      <div class="complex-text">
+        客户端导出需要保留可编辑文本，同时兼容内联
+        <span class="badge">标签样式</span>
+        和普通文本混排。这里故意让一段内容跨多行，以覆盖 Range 行盒和 PowerPoint 字体度量差异。
+      </div>
+    </div>
+    <div class="side-note">右侧说明文字同样不设置行高，用来验证默认行距兜底。</div>
+  </section>
+
+  <section class="pptx-slide">
+    <div class="panel">
+      <h1 class="title">列表行距场景</h1>
+      <ul>
+        <li>第一条项目包含较长中文说明，导出后不应出现文字重叠或行距过小。</li>
+        <li>第二条项目用于验证列表文本框在无背景时保留额外高度。</li>
+        <li>第三条项目检查项目符号和正文样式不会互相覆盖。</li>
+      </ul>
+    </div>
+  </section>
+
+  <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+  <script>
+    async function blobToBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
+    window.runComplexInlinePptxSmokeTest = async function () {
+      const slides = Array.from(document.querySelectorAll('.pptx-slide'));
+      const blob = await window.domToPptx.exportToPptx(slides, {
+        skipDownload: true,
+        autoEmbedFonts: false,
+        svgAsVector: false
+      });
+      return {
+        slideCount: slides.length,
+        patchVersion: window.domToPptx.__landpptPatchVersion,
+        blobSize: blob.size,
+        pptxBase64: await blobToBase64(blob)
+      };
+    };
+  </script>
+</body>
+</html>
