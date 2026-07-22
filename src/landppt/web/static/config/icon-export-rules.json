@@ -1,0 +1,70 @@
+{
+  "classTokenWhitelist": [
+    "fa",
+    "fas",
+    "far",
+    "fab",
+    "fal",
+    "fad",
+    "fat",
+    "fa-solid",
+    "fa-regular",
+    "fa-brands",
+    "fa-light",
+    "fa-duotone",
+    "fa-thin",
+    "bi",
+    "material-icons",
+    "material-symbols-outlined",
+    "material-symbols-rounded",
+    "material-symbols-sharp",
+    "iconify"
+  ],
+  "classPrefixWhitelist": [
+    "fa-",
+    "bi-",
+    "ri-",
+    "ti-",
+    "ph-",
+    "mdi-",
+    "icon-"
+  ],
+  "faStyleClassTokens": [
+    "fa",
+    "fas",
+    "far",
+    "fab",
+    "fal",
+    "fad",
+    "fat",
+    "fa-solid",
+    "fa-regular",
+    "fa-brands",
+    "fa-light",
+    "fa-duotone",
+    "fa-thin"
+  ],
+  "faStyleClassAliases": {
+    "fal": "fa-regular",
+    "fa-light": "fa-regular",
+    "fad": "fa-solid",
+    "fa-duotone": "fa-solid",
+    "fat": "fa-regular",
+    "fa-thin": "fa-regular"
+  },
+  "faClassFallbacks": {
+    "fa-magnifying-glass-chart": "fa-chart-line",
+    "fa-messages": "fa-comments",
+    "fa-message-lines": "fa-comment-dots",
+    "fa-user-group": "fa-users",
+    "fa-user-group-simple": "fa-users",
+    "fa-envelope-open-text": "fa-envelope-open",
+    "fa-chart-pie-simple": "fa-chart-pie",
+    "fa-square-poll-horizontal": "fa-chart-bar"
+  },
+  "faDefaultFallbackByStyle": {
+    "brand": "fa-github",
+    "regular": "fa-circle",
+    "solid": "fa-circle"
+  }
+}

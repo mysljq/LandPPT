@@ -1,0 +1,320 @@
+<!-- 页面头部美化 -->
+
+<div
+    style="background: var(--glass-bg); color: var(--text-primary); padding: 40px 0; margin: -20px -20px 30px -20px; text-align: center; position: relative; overflow: hidden; border-bottom: 1px solid var(--glass-border);">
+    <div style="position: relative; z-index: 1;">
+        <h2 style="font-size: 2em; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.01em;">{{ todo_board.title
+            }}</h2>
+        <p style="opacity: 0.9; font-size: 1em;">项目ID: <code
+                style="background: var(--surface); padding: 4px 10px; border-radius: 6px; font-family: 'Consolas', monospace; font-size: 0.9em; border: 1px solid var(--border-color);">{{ todo_board.task_id }}</code>
+        </p>
+    </div>
+</div>
+
+<!-- Requirements Confirmation Section -->
+{% set requirements_stage = todo_board.stages | selectattr('id', 'equalto', 'requirements_confirmation') | first %}
+{% if not requirements_stage or requirements_stage.status == 'pending' %}
+<div id="requirements-section" class="requirements-shell"
+    style="max-width: 900px; margin: 15px auto; background: var(--surface); border-radius: 16px; padding: 32px; box-shadow: var(--shadow-soft); border: 1px solid var(--glass-border);">
+    <div class="req-header">
+        <div class="req-header-badge">
+            <h3>需求确认</h3>
+        </div>
+        <p class="req-header-desc">请确认以下信息，AI 将根据您的需求生成定制化 PPT 内容</p>
+    </div>
+
+    <form id="requirements-form" class="requirements-form-grid" enctype="multipart/form-data">
+
+        <!-- 内容来源 -->
+        <div class="requirements-card req-field">
+            <label class="req-label">内容来源</label>
+            <div class="source-option-grid" id="source-option-grid-todo">
+                <label class="source-option-item is-active" data-source-option="manual">
+                    <input type="radio" name="content_source" value="manual" checked
+                        onchange="toggleContentSourceTodo()">
+                    <span>手动输入主题</span>
+                </label>
+                <label class="source-option-item" data-source-option="file">
+                    <input type="radio" name="content_source" value="file" onchange="toggleContentSourceTodo()">
+                    <span>从文件生成</span>
+                </label>
+                <label class="source-option-item" data-source-option="url">
+                    <input type="radio" name="content_source" value="url" onchange="toggleContentSourceTodo()">
+                    <span>从 URL 获取内容</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- URL 输入区 -->
+        <div id="url-input-section-todo" class="source-panel" style="display: none;">
+            <label class="req-label">URL 列表</label>
+            <textarea id="url_sources_todo" name="content_urls"
+                placeholder="https://example.com/article-1&#10;https://example.com/article-2"></textarea>
+            <small id="url-sources-helper-todo" class="req-hint">
+                支持网页 URL 和文件 URL（如 PDF/DOCX/TXT/MD/图片），每行一个或逗号分隔，最多 50 个
+            </small>
+        </div>
+
+        <!-- 文件上传区 -->
+        <div id="file-upload-section-todo" class="source-panel" style="display: none;">
+            <label class="req-label">上传文件<span class="req-label-desc">（支持多文件）</span></label>
+            <input type="file" id="file_upload_todo" name="file_upload" class="req-input"
+                accept=".pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.xlsx,.csv" multiple>
+            <small class="req-hint">
+                支持同时选择多个文件 | PDF、DOCX、TXT、MD 等格式 | 单个文件最大 100MB
+            </small>
+
+            <!-- 已选文件列表 -->
+            <div id="selected-files-list-todo" style="margin-top: 10px; display: none;">
+                <div class="req-file-list-wrap">
+                    <div class="req-file-list-header">
+                        <strong>已选择的文件：</strong>
+                        <button type="button" onclick="clearAllFiles()" class="req-file-clear-btn">清除所有</button>
+                    </div>
+                    <div id="files-list-container-todo" style="max-height: 200px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <!-- 文件处理选项 -->
+            <div id="file-processing-options-todo" class="req-file-options" style="display: none;">
+                <h6>文件处理选项</h6>
+                <div class="req-file-options-grid">
+                    <div id="pdf-processing-mode-todo" style="display: none;">
+                        <label>处理方式</label>
+                        <select name="file_processing_mode">
+                            <option value="markitdown">标准处理 (MarkItDown)</option>
+                            <option value="magic_pdf">高质量处理 (Mineru) [提取图片]</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>解析深度</label>
+                        <select name="content_analysis_depth">
+                            <option value="fast" selected>快速解析</option>
+                            <option value="standard">标准解析</option>
+                            <option value="deep">深度解析</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="req-divider"></div>
+
+        <!-- 主题 + 受众 -->
+        <div class="req-row req-field">
+            <div>
+                <label class="req-label" for="topic">主题</label>
+                <input type="text" id="topic" name="topic" class="req-input"
+                    value="{{ todo_board.title.split(' - ')[0] if ' - ' in todo_board.title else todo_board.title }}"
+                    required>
+                <small class="req-hint">文件上传时可留空，将自动从文件提取标题</small>
+            </div>
+            <div>
+                <label class="req-label" for="audience_type">目标受众</label>
+                <select id="audience_type" name="audience_type" class="req-select"
+                    onchange="toggleCustomAudience()" required>
+                    <option value="">请选择目标受众</option>
+                    <option value="企业管理层">企业管理层</option>
+                    <option value="技术团队">技术团队</option>
+                    <option value="销售团队">销售团队</option>
+                    <option value="学生群体">学生群体</option>
+                    <option value="学术研究者">学术研究者</option>
+                    <option value="投资人">投资人</option>
+                    <option value="客户群体">客户群体</option>
+                    <option value="培训学员">培训学员</option>
+                    <option value="项目团队">项目团队</option>
+                    <option value="行业专家">行业专家</option>
+                    <option value="普通大众">普通大众</option>
+                    <option value="自定义">自定义受众</option>
+                </select>
+                <div id="custom-audience-section" style="display: none; margin-top: 10px;">
+                    <input type="text" id="custom_audience" name="custom_audience" class="req-input"
+                        placeholder="请描述您的目标受众，例如：初级程序员、产品经理、高中生等...">
+                    <small class="req-hint">详细描述目标受众特征，AI 将据此调整内容深度和表达方式</small>
+                </div>
+            </div>
+        </div>
+
+        <div class="req-divider"></div>
+
+        <!-- 页数设置 -->
+        <div class="req-field">
+            <label class="req-label">页数设置<span class="req-label-desc">选择生成方式</span></label>
+            <div class="req-card-grid-2">
+                <div class="page-count-option req-select-card active" data-mode="ai_decide">
+                    <div class="req-select-card-title">AI 智能决定</div>
+                    <p class="req-select-card-desc">根据内容深度和逻辑结构自动决定最合适的页数</p>
+                </div>
+                <div class="page-count-option req-select-card" data-mode="custom_range">
+                    <div class="req-select-card-title">自定义范围</div>
+                    <p class="req-select-card-desc">在指定范围内生成 PPT 页数</p>
+                </div>
+            </div>
+            <input type="hidden" id="page_count_mode" name="page_count_mode" value="ai_decide">
+
+            <div id="custom-range-section" class="req-sub-panel" style="display: none;">
+                <div class="req-row">
+                    <div>
+                        <label class="req-label">最少页数</label>
+                        <input type="number" id="min_pages" name="min_pages" class="req-input" value="8" min="5" max="50">
+                    </div>
+                    <div>
+                        <label class="req-label">最多页数</label>
+                        <input type="number" id="max_pages" name="max_pages" class="req-input" value="15" min="5" max="50">
+                    </div>
+                </div>
+                <small class="req-hint" style="margin-top: 10px;">建议范围 5–50 页，AI 会在此范围内选择最合适的页数</small>
+            </div>
+        </div>
+
+        <!-- 章节过渡页 -->
+        <div class="req-checkbox-card req-field">
+            <label class="req-checkbox-label">
+                <input type="checkbox" id="include_transition_pages" name="include_transition_pages" value="true">
+                <span>
+                    <span class="req-checkbox-title">增加章节过渡页</span>
+                    <small class="req-checkbox-desc">
+                        开启后，大纲会在主要章节之间插入过渡页面，用于章节分隔和演示节奏控制
+                    </small>
+                </span>
+            </label>
+        </div>
+
+        <div class="req-divider"></div>
+
+        <!-- PPT 风格 -->
+        <div class="req-field">
+            <label class="req-label">PPT 风格<span class="req-label-desc">选择适合内容的风格</span></label>
+            <div class="req-card-grid-3">
+                <div class="style-option req-select-card" data-style="general">
+                    <div class="req-select-card-title">通用场景</div>
+                    <p class="req-select-card-desc">适用于商务汇报、学术演讲等通用场景</p>
+                </div>
+                <div class="style-option req-select-card" data-style="keynote">
+                    <div class="req-select-card-title">发布会</div>
+                    <p class="req-select-card-desc">Apple 风格发布会，卡片式布局，科技感强</p>
+                </div>
+                <div class="style-option req-select-card" data-style="custom">
+                    <div class="req-select-card-title">自定义风格</div>
+                    <p class="req-select-card-desc">使用自定义描述定制独特风格</p>
+                </div>
+            </div>
+            <input type="hidden" id="ppt_style" name="ppt_style" value="general" required>
+
+            <div id="custom-style-section" class="req-sub-panel" style="display: none;">
+                <label class="req-label">自定义风格描述</label>
+                <textarea id="custom_style_prompt" name="custom_style_prompt" class="req-textarea"
+                    style="min-height: 100px;"
+                    placeholder="请输入希望的 PPT 风格，如：极简科技蓝、商务卡片式、杂志风、圆角卡片+留白…"></textarea>
+                <small class="req-hint">请用中文描述预期风格和版式要点，AI 将按描述生成对应设计</small>
+            </div>
+        </div>
+
+        <!-- 提交 -->
+        <div class="req-submit-area">
+            <button type="submit" id="confirm-requirements-btn" class="btn btn-primary requirements-submit-btn">
+                开始生成大纲
+            </button>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+<!-- Project Actions -->
+<div style="text-align: center; margin-bottom: 40px;">
+    <div
+        style="display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; background: var(--surface); padding: 20px; border-radius: 16px; box-shadow: var(--shadow-soft);">
+        <a href="/projects/{{ todo_board.task_id }}"
+            style="background: var(--surface-contrast); color: var(--surface); text-decoration: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; transition: all 0.3s ease; display: flex; align-items: center; gap: 6px; font-size: 0.9em;"
+            onmouseover="this.style.transform='translateY(-2px)';" onmouseout="this.style.transform='translateY(0)';">
+            查看项目详情
+        </a>
+
+        {% if project and project.slides_data and project.slides_data|length > 0 %}
+        <a href="/projects/{{ todo_board.task_id }}/preview" target="_blank"
+            style="background: #1f2a37; color: var(--surface); text-decoration: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; transition: all 0.3s ease; display: flex; align-items: center; gap: 6px; font-size: 0.9em;"
+            onmouseover="this.style.transform='translateY(-2px)';" onmouseout="this.style.transform='translateY(0)';">
+            预览 PPT
+        </a>
+        <a href="/projects/{{ todo_board.task_id }}/edit" target="_blank"
+            style="background: #3f3f3f; color: var(--surface); text-decoration: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; transition: all 0.3s ease; display: flex; align-items: center; gap: 6px; font-size: 0.9em;"
+            onmouseover="this.style.transform='translateY(-2px)';" onmouseout="this.style.transform='translateY(0)';">
+            编辑 PPT
+        </a>
+        {% endif %}
+
+        <a href="/projects"
+            style="background: #2d2d2d; color: var(--surface); text-decoration: none; padding: 10px 20px; border-radius: 10px; font-weight: 600; transition: all 0.3s ease; display: flex; align-items: center; gap: 6px; font-size: 0.9em;"
+            onmouseover="this.style.transform='translateY(-2px)';" onmouseout="this.style.transform='translateY(0)';">
+            返回项目列表
+        </a>
+    </div>
+</div>
+
+<!-- Task execution is now handled directly in the stage cards -->
+
+<style>
+    @keyframes spin {
+        0% {
+            transform: rotate(0deg);
+        }
+
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+
+    @keyframes blink {
+
+        0%,
+        50% {
+            opacity: 1;
+        }
+
+        51%,
+        100% {
+            opacity: 0;
+        }
+    }
+
+    .todo-stage {
+        transition: all 0.3s ease;
+    }
+
+    .todo-stage:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    }
+
+    .btn {
+        transition: all 0.3s ease;
+    }
+
+    .btn:hover {
+        transform: translateY(-1px);
+    }
+
+    .btn-stream:hover {
+        background: var(--surface-contrast) !important;
+        color: var(--surface) !important;
+        transform: scale(1.05);
+    }
+
+    .task-item {
+        transition: all 0.3s ease;
+    }
+
+    .task-item.active {
+        background: var(--surface-subtle) !important;
+        border-left: 4px solid var(--surface-contrast);
+    }
+
+    .output-cursor {
+        display: inline-block;
+    }
+
+    .output-cursor.hidden {
+        display: none;
+    }
+
+</style>
