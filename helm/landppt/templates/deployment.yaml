@@ -1,0 +1,221 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "landppt.fullname" . }}
+  labels:
+    {{- include "landppt.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.web.autoscaling.enabled }}
+  replicas: {{ default .Values.replicaCount .Values.web.replicaCount }}
+  {{- end }}
+  {{- $strategyType := .Values.web.updateStrategy.type | default (ternary "Recreate" "RollingUpdate" .Values.persistence.enabled) }}
+  strategy:
+    type: {{ $strategyType }}
+    {{- if eq $strategyType "RollingUpdate" }}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.web.updateStrategy.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.web.updateStrategy.rollingUpdate.maxSurge }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "landppt.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "landppt.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or (and .Values.persistence.enabled .Values.volumePermissions.enabled) .Values.postgresql.enabled .Values.minio.enabled }}
+      initContainers:
+        {{- if and .Values.persistence.enabled .Values.volumePermissions.enabled }}
+        # Some local/hostPath provisioners do not apply fsGroup to newly-created
+        # volumes. Repair ownership before the non-root application starts.
+        - name: volume-permissions
+          image: {{ .Values.volumePermissions.image | quote }}
+          imagePullPolicy: {{ .Values.volumePermissions.imagePullPolicy }}
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              for path in /app/data /app/uploads /app/research_reports /app/temp /app/lib; do
+                chown -R {{ .Values.volumePermissions.uid }}:{{ .Values.volumePermissions.gid }} "$path"
+                chmod -R u+rwX "$path"
+              done
+          resources:
+            {{- toYaml .Values.volumePermissions.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: uploads
+              mountPath: /app/uploads
+            - name: reports
+              mountPath: /app/research_reports
+            - name: cache
+              mountPath: /app/temp
+            - name: lib
+              mountPath: /app/lib
+        {{- end }}
+        {{- if .Values.minio.enabled }}
+        - name: wait-for-minio
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "landppt.fullname" . }}-minio 9000; do
+                echo "waiting for minio..."; sleep 2;
+              done
+        - name: ensure-minio-bucket
+          image: {{ .Values.minio.mcImage }}
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "landppt.minioSecretName" . }}
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "landppt.minioSecretName" . }}
+                  key: MINIO_ROOT_PASSWORD
+            - name: S3_BUCKET
+              value: {{ .Values.storage.s3.bucket | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              until mc alias set local http://{{ include "landppt.fullname" . }}-minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
+                echo "waiting for minio..."; sleep 2;
+              done
+              mc mb -p "local/$S3_BUCKET" || true
+        {{- end }}
+        {{- if .Values.postgresql.enabled }}
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "landppt.fullname" . }}-postgresql 5432; do
+                echo "waiting for postgresql..."; sleep 2;
+              done
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: landppt
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "landppt.fullname" . }}
+            - secretRef:
+                name: {{ include "landppt.fullname" . }}
+            {{- if .Values.app.existingSecret }}
+            - secretRef:
+                name: {{ .Values.app.existingSecret }}
+            {{- end }}
+            {{- if .Values.storage.s3.existingSecret }}
+            - secretRef:
+                name: {{ .Values.storage.s3.existingSecret }}
+            {{- end }}
+          env:
+            {{- include "landppt.databaseEnv" . | nindent 12 }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # Chromium 需要大共享内存（对应 compose 的 shm_size）
+            - name: dshm
+              mountPath: /dev/shm
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: /app/data
+            - name: uploads
+              mountPath: /app/uploads
+            - name: reports
+              mountPath: /app/research_reports
+            - name: cache
+              mountPath: /app/temp
+            - name: lib
+              mountPath: /app/lib
+            {{- end }}
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.shmSize }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "landppt.fullname" . }}-data
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: {{ include "landppt.fullname" . }}-uploads
+        - name: reports
+          persistentVolumeClaim:
+            claimName: {{ include "landppt.fullname" . }}-reports
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ include "landppt.fullname" . }}-cache
+        - name: lib
+          persistentVolumeClaim:
+            claimName: {{ include "landppt.fullname" . }}-lib
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

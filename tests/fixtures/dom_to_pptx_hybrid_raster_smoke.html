@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>dom-to-pptx hybrid raster smoke</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #101214;
+      font-family: Arial, sans-serif;
+    }
+
+    .pptx-slide {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      color: #20242a;
+      background-color: #f7f8fa;
+    }
+
+    .title {
+      position: absolute;
+      left: 80px;
+      top: 72px;
+      margin: 0;
+      font-size: 54px;
+      font-weight: 800;
+    }
+
+    /* Hybrid trigger 1: clip-path decoration (no text) */
+    .clipped-badge {
+      position: absolute;
+      right: 96px;
+      top: 84px;
+      width: 160px;
+      height: 160px;
+      background: #2b66d9;
+      clip-path: polygon(50% 0, 100% 38%, 82% 100%, 18% 100%, 0 38%);
+    }
+
+    /* Hybrid trigger 2: conic gradient + text content -> raster decor + editable text */
+    .conic-card {
+      position: absolute;
+      left: 80px;
+      top: 240px;
+      width: 560px;
+      height: 300px;
+      padding: 36px;
+      box-sizing: border-box;
+      background: conic-gradient(from 45deg, #ffd9a0, #ff9db0, #a0c8ff, #ffd9a0);
+      border-radius: 24px;
+      font-size: 26px;
+      line-height: 1.5;
+      color: #1c2430;
+    }
+
+    /* Hybrid trigger 3: multi box-shadow container with text */
+    .multi-shadow-card {
+      position: absolute;
+      left: 700px;
+      top: 300px;
+      width: 460px;
+      height: 220px;
+      padding: 32px;
+      box-sizing: border-box;
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow:
+        0 4px 12px rgba(20, 28, 36, 0.18),
+        0 16px 40px rgba(43, 102, 217, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      font-size: 24px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <section class="pptx-slide">
+    <h1 class="title">Hybrid raster export</h1>
+    <div class="clipped-badge"></div>
+    <div class="conic-card">
+      Conic gradient backgrounds rasterize while this sentence stays editable text.
+    </div>
+    <div class="multi-shadow-card">
+      Multi layer shadows rasterize while this sentence stays editable text.
+    </div>
+  </section>
+
+  <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+  <script>
+    async function blobToBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
+    window.runHybridRasterPptxSmokeTest = async function () {
+      const slides = [document.body];
+      const blob = await window.domToPptx.exportToPptx(slides, {
+        skipDownload: true,
+        autoEmbedFonts: false,
+        svgAsVector: false
+      });
+      return {
+        slideCount: slides.length,
+        patchVersion: window.domToPptx.__landpptPatchVersion,
+        blobSize: blob.size,
+        pptxBase64: await blobToBase64(blob)
+      };
+    };
+  </script>
+</body>
+</html>

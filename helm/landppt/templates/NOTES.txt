@@ -1,0 +1,25 @@
+LandPPT 已部署！
+
+访问方式：
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/web
+{{- end }}
+{{- else if eq .Values.service.type "NodePort" }}
+  export NODE_PORT=$(kubectl get svc -n {{ .Release.Namespace }} {{ include "landppt.fullname" . }} -o jsonpath="{.spec.ports[0].nodePort}")
+  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT/web
+{{- else }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "landppt.fullname" . }} 8000:{{ .Values.service.port }}
+  然后打开 http://localhost:8000/web
+{{- end }}
+
+{{- if not .Values.app.existingSecret }}
+{{- if not (index .Values.app.secrets "SECRET_KEY") }}
+
+⚠️  未配置 SECRET_KEY。请通过 app.existingSecret 或 app.secrets.SECRET_KEY 注入密钥。
+{{- end }}
+{{- end }}
+
+提示：需要配置至少一个 AI 提供商的 API Key（如 OPENAI_API_KEY），
+可通过 app.secrets 或 app.existingSecret 注入。

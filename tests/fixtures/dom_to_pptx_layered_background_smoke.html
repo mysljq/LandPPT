@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>dom-to-pptx layered background smoke</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #101214;
+      font-family: Arial, sans-serif;
+    }
+
+    .pptx-slide {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      color: #20242a;
+      border: 1px solid #8a8f98;
+      background-color: #f2f2f2;
+      background-image:
+        radial-gradient(#ebebeb 1px, transparent 1px),
+        linear-gradient(to right, #ebebeb 1px, transparent 1px),
+        linear-gradient(#ebebeb 1px, transparent 1px);
+      background-size: 32px 32px, 32px 32px, 32px 32px;
+      background-position: 0 0, 0 0, 0 0;
+    }
+
+    .ruler {
+      position: absolute;
+      left: 76px;
+      top: 104px;
+      width: 4px;
+      height: 32px;
+      background: #2b66d9;
+    }
+
+    .eyebrow {
+      position: absolute;
+      left: 86px;
+      top: 114px;
+      width: 292px;
+      height: 30px;
+      background: rgba(43, 102, 217, 0.09);
+      color: #2b66d9;
+      font-size: 14px;
+      line-height: 30px;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .title {
+      position: absolute;
+      left: 80px;
+      top: 182px;
+      width: 720px;
+      margin: 0;
+      font-size: 60px;
+      line-height: 1.08;
+      font-weight: 800;
+    }
+
+    .card {
+      position: absolute;
+      left: 80px;
+      top: 426px;
+      width: 676px;
+      padding: 36px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(20, 28, 36, 0.2);
+      font-size: 22px;
+      line-height: 1.55;
+    }
+
+    .footer {
+      position: absolute;
+      left: 80px;
+      bottom: 32px;
+      width: 1160px;
+      height: 1px;
+      background: rgba(20, 28, 36, 0.72);
+    }
+  </style>
+</head>
+<body>
+  <section class="pptx-slide">
+    <div class="ruler"></div>
+    <div class="eyebrow">architectural intelligence</div>
+    <h1 class="title">Layered background export</h1>
+    <div class="card">
+      Root slide backgrounds with multiple CSS layers must survive the editable PPTX export.
+    </div>
+    <div class="footer"></div>
+  </section>
+
+  <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+  <script>
+    async function blobToBase64(blob) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+      }
+      return btoa(binary);
+    }
+
+    window.runLayeredBackgroundPptxSmokeTest = async function () {
+      const slides = [document.body];
+      const blob = await window.domToPptx.exportToPptx(slides, {
+        skipDownload: true,
+        autoEmbedFonts: false,
+        svgAsVector: false
+      });
+      return {
+        slideCount: slides.length,
+        patchVersion: window.domToPptx.__landpptPatchVersion,
+        blobSize: blob.size,
+        pptxBase64: await blobToBase64(blob)
+      };
+    };
+  </script>
+</body>
+</html>

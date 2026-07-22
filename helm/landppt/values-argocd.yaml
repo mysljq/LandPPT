@@ -1,0 +1,204 @@
+# Values used by Argo CD for the current production cluster.
+#
+# Deployment behavior:
+# - Changes under helm/landppt/** are applied by Argo CD directly.
+# - Changes under src/**, Dockerfile, pyproject.toml, uv.lock trigger GitHub Actions,
+#   which builds a new image and commits the new image tag back to this file.
+# - Argo CD then detects this file change and syncs the new image to Kubernetes.
+
+fullnameOverride: landppt
+
+image:
+  # Initial value keeps the current in-cluster local image working.
+  # GitHub Actions will update this to ghcr.io/<owner>/landppt on the next source change.
+  repository: ghcr.io/sligter/landppt
+  tag: git-0b9106f10b69679606bcacc4dc7b784a19337ad7
+  pullPolicy: IfNotPresent
+
+# If the GHCR package is private, create an imagePullSecret in namespace landppt
+# and uncomment/configure this section.
+# imagePullSecrets:
+#   - name: ghcr-pull-secret
+
+# OpenResty on the Kubernetes node proxies to this stable Service entry point.
+# Do not use kubectl port-forward for production traffic: it binds to one Pod
+# and exits when that Pod is replaced during a rolling update.
+service:
+  type: NodePort
+  port: 8000
+  nodePort: 30601
+
+app:
+  workers: 2
+  existingSecret: landppt-app-secrets
+  logLevel: info
+  env:
+    LANDPPT_ENABLE_API_DOCS: "false"
+    LANDPPT_ALLOW_HEADER_SESSION_AUTH: "false"
+    LANDPPT_API_KEY_USER: admin
+    LANDPPT_AUTO_MIGRATE_FAIL_FAST: "true"
+    LANDPPT_AUTO_MIGRATE_LOCK_STALE_SECONDS: "900"
+    LANDPPT_AUTO_MIGRATE_LOCK_TIMEOUT_SECONDS: "300"
+    LANDPPT_AUTO_MIGRATE_ON_STARTUP: "false"
+    LANDPPT_BOOTSTRAP_ADMIN_ENABLED: "false"
+    LANDPPT_EXPOSE_TEMP_STATIC_FILES: "true"
+    ENABLE_CREDITS_SYSTEM: "true"
+    INVITE_CODE_REQUIRED_FOR_REGISTRATION: "false"
+    UVICORN_TIMEOUT_WORKER_HEALTHCHECK: "180"
+    DB_POOL_SIZE: "5"
+    DB_MAX_OVERFLOW: "10"
+    DB_ASYNC_POOL_SIZE: "5"
+    DB_ASYNC_MAX_OVERFLOW: "10"
+    DB_POOL_RECYCLE: "1800"
+
+web:
+  # The current single-node local-path volumes can be mounted by multiple Pods
+  # on that same node. Keep the legacy PVCs until their data is migrated to S3,
+  # while allowing a second Web Pod to become ready before an old Pod is removed.
+  replicaCount: 2
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  autoscaling:
+    enabled: false
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# Leave enough allocatable capacity for the extra Pod created during a rollout.
+resources:
+  requests:
+    cpu: 400m
+    memory: 900Mi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+worker:
+  enabled: true
+  queue: default
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1500Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 80
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+migration:
+  # Keep disabled in Helm sync to avoid immutable Job upgrade failures.
+  # Run migrations explicitly from CI/CD when needed.
+  enabled: false
+  hook: false
+  backoffLimit: 3
+
+storage:
+  backend: s3
+  local:
+    root: /app/data/artifacts
+    publicBaseUrl: ""
+  s3:
+    bucket: landppt
+    region: us-east-1
+    forcePathStyle: true
+    publicBaseUrl: ""
+    presignedUrlExpiresSeconds: 3600
+    # Contains S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY. Do not store MinIO/S3 credentials in this public repository.
+    existingSecret: landppt-minio-auth
+
+persistence:
+  enabled: true
+  storageClass: ""
+  data:
+    size: 10Gi
+  uploads:
+    size: 20Gi
+  reports:
+    size: 10Gi
+  cache:
+    size: 10Gi
+  lib:
+    size: 5Gi
+
+postgresql:
+  enabled: true
+  auth:
+    username: landppt
+    database: landppt
+    # Secret is created manually in-cluster; real DB password is not stored in this public repository.
+    existingSecret: landppt-postgresql-auth
+    passwordKey: POSTGRES_PASSWORD
+  persistence:
+    storageClass: ""
+    # local-path does not allow online expansion in this cluster; keep existing size.
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1500Mi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  configuration:
+    max_connections: "300"
+    shared_buffers: "768MB"
+    effective_cache_size: "2GB"
+    maintenance_work_mem: "256MB"
+    work_mem: "8MB"
+    checkpoint_completion_target: "0.9"
+    wal_compression: "on"
+    max_wal_size: "2GB"
+    min_wal_size: "512MB"
+    random_page_cost: "1.1"
+    effective_io_concurrency: "200"
+
+valkey:
+  enabled: true
+  persistence:
+    storageClass: ""
+    size: 5Gi
+  appendonly: true
+  maxmemory: 768mb
+  maxmemoryPolicy: allkeys-lru
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+minio:
+  enabled: true
+  auth:
+    # Contains MINIO_ROOT_USER and MINIO_ROOT_PASSWORD. Do not store MinIO root credentials in this public repository.
+    existingSecret: landppt-minio-auth
+  persistence:
+    storageClass: ""
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+networkPolicy:
+  enabled: false
+
+observability:
+  serviceMonitor:
+    enabled: false
