@@ -47,7 +47,7 @@ class ProjectOutlineNormalizationService:
     }
     _TITLE_KEYWORDS = {
         "title": ("标题", "封面", "title", "cover"),
-        "agenda": ("目录", "大纲", "agenda", "catalog", "outline", "directory"),
+        "agenda": ("目录", "大纲", "agenda", "catalog", "outline", "direc6tory"),
         "transition": ("过渡", "转场", "transition", "section divider", "chapter divider"),
         "thankyou": ("谢谢", "感谢", "致谢", "thank", "q&a", "qa"),
         "conclusion": ("总结", "结论", "收尾", "summary", "conclusion"),
@@ -325,6 +325,41 @@ class ProjectOutlineNormalizationService:
             return "thankyou"
         return "content"
 
+    # ------------------------------------------------------------------
+    # Transition slide type correction heuristics
+    # ------------------------------------------------------------------
+    _TRANSITION_DESCRIPTION_KEYWORDS: List[str] = [
+        "章节过渡",
+        "转场",
+        "章节分隔",
+        "过渡页",
+        "transition",
+        "section divider",
+        "chapter divider",
+        "section transition",
+    ]
+
+    @classmethod
+    def _correct_transition_slide_types(cls, slides: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Heuristic correction: slides whose description clearly indicates a
+        transition page should have slide_type='transition' regardless of what
+        the LLM originally labelled them."""
+
+        for slide in slides:
+            current_type = str(slide.get("slide_type") or "").strip().lower()
+            if current_type != "content":
+                continue
+
+            description = str(slide.get("description") or "").strip().lower()
+            if not description:
+                continue
+
+            if any(keyword in description for keyword in cls._TRANSITION_DESCRIPTION_KEYWORDS):
+                slide["slide_type"] = "transition"
+                slide["type"] = "transition"
+
+        return slides
+
     @classmethod
     def _normalize_outline_root(cls, outline_data: Any) -> Dict[str, Any]:
         """兼容数组、嵌套 outline、pages 等多种根结构。"""
@@ -497,6 +532,9 @@ class ProjectOutlineNormalizationService:
                 standardized_slide["chart_config"] = slide["chart_config"]
 
             standardized_slides.append(standardized_slide)
+
+        # Apply transition type correction based on description heuristics
+        standardized_slides = self._correct_transition_slide_types(standardized_slides)
 
         standardized_outline = {
             "title": title,

@@ -255,6 +255,43 @@ async def get_project_slides_data(
         raise HTTPException(status_code=500, detail=f"获取幻灯片数据失败: {str(exc)}")
 
 
+@router.get("/api/projects/{project_id}/generation-status")
+async def get_project_generation_status(
+    project_id: str,
+    user: User = Depends(get_current_user_required),
+):
+    """轻量返回 PPT 生成实时状态：当前页/重试次数/重试阶段/已完成数。
+
+    前端在 PPT 生成期间通过该端点轮询（约 3s 一次），把"当前正在生成第 N 页、
+    本页已重试第 k 次（最多 R 次）、当前在结构/审美/溢出哪一道闸"实时显示出来。
+    """
+    try:
+        # 仅校验项目归属，不拉全量 project
+        await _get_owned_project_or_404(project_id, user)
+        stage = await ppt_service.project_manager.get_stage_status(project_id, "ppt_creation")
+        result = stage.get("result") if isinstance(stage, dict) else None
+        if not isinstance(result, dict):
+            result = {}
+        return {
+            "status": "success",
+            "stage_status": stage.get("status") if isinstance(stage, dict) else None,
+            "progress": stage.get("progress") if isinstance(stage, dict) else None,
+            "current_generating": result.get("current_generating"),
+            "total_pages": result.get("total_pages"),
+            "processed_slides": result.get("processed_slides"),
+            "slides_count": result.get("slides_count"),
+            "retry_attempt": result.get("retry_attempt"),
+            "retry_max": result.get("retry_max"),
+            "retry_stage": result.get("retry_stage"),
+            "retry_detail": result.get("retry_detail"),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error getting generation status: %s", exc)
+        raise HTTPException(status_code=500, detail=f"获取生成状态失败: {str(exc)}")
+
+
 @router.get("/test/slides-navigation", response_class=HTMLResponse)
 async def test_slides_navigation(
     request: Request,

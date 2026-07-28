@@ -133,10 +133,34 @@ class OutlinePrompts:
   "slides": [
     {{
       "page_number": 1,
-      "title": "页面标题",
+      "title": "封面标题",
+      "content_points": ["主标题", "副标题或作者信息"],
+      "slide_type": "title",
+      "type": "title",
+      "description": "封面页，展示主题与演讲者信息"
+    }},
+    {{
+      "page_number": 2,
+      "title": "目录",
+      "content_points": ["章节一标题", "章节二标题", "章节三标题"],
+      "slide_type": "agenda",
+      "type": "agenda",
+      "description": "目录页，列出后续章节导航"
+    }},
+    {{
+      "page_number": 3,
+      "title": "某章节标题",
+      "content_points": ["章节名称", "承上启下的转场语"],
+      "slide_type": "transition",
+      "type": "transition",
+      "description": "章节过渡页，用于章节分隔和节奏控制（仅在开启过渡页时插入于主要章节之间）"
+    }},
+    {{
+      "page_number": 4,
+      "title": "内容页标题",
       "content_points": ["要点1", "要点2", "要点3"],
-      "slide_type": "title|agenda|transition|content|conclusion|thankyou",
-      "type": "title|agenda|transition|content|conclusion|thankyou",
+      "slide_type": "content",
+      "type": "content",
       "description": "此页的简要说明与目的",
       "chart_config": {{
         "type": "bar",
@@ -159,6 +183,14 @@ class OutlinePrompts:
           "scales": {{"y": {{"beginAtZero": true}}}}
         }}
       }}
+    }},
+    {{
+      "page_number": {expected_page_count},
+      "title": "感谢聆听",
+      "content_points": ["核心结论总结", "致谢与联系方式"],
+      "slide_type": "thankyou",
+      "type": "thankyou",
+      "description": "结束页，总结与致谢"
     }}
   ],
   "metadata": {{
@@ -247,10 +279,34 @@ Please follow the exact JSON format below, and **wrap the result in a code block
   "slides": [
     {{
       "page_number": 1,
-      "title": "Slide Title",
+      "title": "Cover Title",
+      "content_points": ["Main Title", "Subtitle or Author Info"],
+      "slide_type": "title",
+      "type": "title",
+      "description": "Cover slide showing the topic and speaker"
+    }},
+    {{
+      "page_number": 2,
+      "title": "Agenda",
+      "content_points": ["Chapter One", "Chapter Two", "Chapter Three"],
+      "slide_type": "agenda",
+      "type": "agenda",
+      "description": "Agenda slide listing chapter navigation"
+    }},
+    {{
+      "page_number": 3,
+      "title": "Chapter Title",
+      "content_points": ["Chapter name", "Bridging phrase to next section"],
+      "slide_type": "transition",
+      "type": "transition",
+      "description": "Section transition slide for pacing and separation (insert between major chapters only when enabled)"
+    }},
+    {{
+      "page_number": 4,
+      "title": "Content Slide Title",
       "content_points": ["Point 1", "Point 2", "Point 3"],
-      "slide_type": "title|agenda|transition|content|conclusion|thankyou",
-      "type": "title|agenda|transition|content|conclusion|thankyou",
+      "slide_type": "content",
+      "type": "content",
       "description": "Brief description of this slide",
       "chart_config": {{
         "type": "bar",
@@ -273,6 +329,14 @@ Please follow the exact JSON format below, and **wrap the result in a code block
           "scales": {{"y": {{"beginAtZero": true}}}}
         }}
       }}
+    }},
+    {{
+      "page_number": {expected_page_count},
+      "title": "Thank You",
+      "content_points": ["Key takeaways summary", "Contact information"],
+      "slide_type": "thankyou",
+      "type": "thankyou",
+      "description": "Closing slide with summary and thanks"
     }}
   ],
   "metadata": {{
@@ -286,104 +350,6 @@ Please follow the exact JSON format below, and **wrap the result in a code block
 }}
 ```"""
 
-    @staticmethod
-    def get_streaming_outline_prompt(topic: str, target_audience: str, ppt_style: str,
-                                   page_count_instruction: str, research_section: str,
-                                   include_transition_pages: bool = False) -> str:
-        """获取流式大纲生成提示词"""
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        transition_page_instruction = OutlinePrompts._build_transition_page_instruction_zh(include_transition_pages)
-        return f"""作为专业的PPT大纲生成助手，请为以下项目生成详细的PPT大纲。
-
-项目信息：
-- 主题：{topic}
-- 目标受众：{target_audience}
-- PPT风格：{ppt_style}
-{page_count_instruction}{research_section}
-
-当前时间参考：
-{current_time_context}
-
-请严格按照以下JSON格式生成PPT大纲：
-
-{{
-    "title": "PPT标题",
-    "slides": [
-        {{
-            "page_number": 1,
-            "title": "页面标题",
-            "content_points": ["要点1", "要点2", "要点3"],
-            "slide_type": "title"
-        }},
-        {{
-            "page_number": 2,
-            "title": "页面标题",
-            "content_points": ["要点1", "要点2", "要点3"],
-            "slide_type": "content"
-        }}
-    ]
-}}
-
- slide_type可选值：
- - "title": 标题页/封面页
- - "content": 内容页
- - "agenda": 目录页
- - "transition": 章节过渡页（仅在开启时使用）
- - "conclusion": 总结/结论页
- - "thankyou": 结束页/感谢页
-
-要求：
-1. 必须返回有效的JSON格式
-2. 严格遵守页数要求
- 3. 第一页通常是标题页，最后一页通常是总结(conclusion)或感谢(thankyou)
-4. 第一页和最后一页要保持克制与聚焦，不要像普通内容页一样堆满要点
-5. {transition_page_instruction}
-6. 页面标题要简洁明确
-7. 内容要点要具体实用
-8. 根据重点内容和技术亮点安排页面内容
-9. 如果需要使用“当前 / 今年 / 本月 / 本季度 / 最近”等时间语义，请以上述当前时间为准；若输入信息已给出明确时间，以输入信息为准
-
-请只返回JSON，使用```json```代码块包裹，不要包含其他文字说明。
-
-示例格式：
-```json
-{{
-  "title": "PPT标题",
-  "slides": [
-    {{
-      "page_number": 1,
-      "title": "页面标题",
-      "content_points": ["要点1", "要点2"],
-      "slide_type": "title"
-    }}
-  ]
-}}
-```"""
-
-    @staticmethod
-    def get_outline_generation_context(topic: str, target_audience: str, ppt_style: str,
-                                     page_count_instruction: str, focus_content: List[str],
-                                     tech_highlights: List[str], description: str) -> str:
-        """获取大纲生成上下文提示词"""
-        focus_content_str = ', '.join(focus_content) if focus_content else '无'
-        tech_highlights_str = ', '.join(tech_highlights) if tech_highlights else '无'
-        current_time_context = OutlinePrompts._build_current_time_context_zh()
-        
-        return f"""请为以下项目生成详细的PPT大纲：
-
-项目信息：
-- 主题：{topic}
-- 目标受众：{target_audience}
-- PPT风格：{ppt_style}
-- 重点展示内容：{focus_content_str}
-- 技术亮点：{tech_highlights_str}
-- 其他说明：{description or '无'}
-{page_count_instruction}
-
-当前时间参考：
-{current_time_context}
-
-请生成结构化的PPT大纲，包含每页的标题、内容要点和页面类型。确保内容逻辑清晰，符合目标受众需求。"""
 
     @staticmethod
     def get_streaming_outline_prompt(topic: str, target_audience: str, ppt_style: str,
@@ -411,13 +377,25 @@ Please follow the exact JSON format below, and **wrap the result in a code block
     "slides": [
         {{
             "page_number": 1,
-            "title": "页面标题",
-            "content_points": ["要点1", "要点2", "要点3"],
+            "title": "封面标题",
+            "content_points": ["主标题", "副标题或作者信息"],
             "slide_type": "title"
         }},
         {{
             "page_number": 2,
-            "title": "页面标题",
+            "title": "目录",
+            "content_points": ["章节一", "章节二"],
+            "slide_type": "agenda"
+        }},
+        {{
+            "page_number": 3,
+            "title": "某章节标题",
+            "content_points": ["章节名称", "转场提示"],
+            "slide_type": "transition"
+        }},
+        {{
+            "page_number": 4,
+            "title": "内容页标题",
             "content_points": ["要点1", "要点2", "要点3"],
             "slide_type": "content"
         }}
@@ -452,9 +430,27 @@ Please follow the exact JSON format below, and **wrap the result in a code block
   "slides": [
     {{
       "page_number": 1,
-      "title": "页面标题",
-      "content_points": ["要点1", "要点2"],
+      "title": "封面标题",
+      "content_points": ["主标题", "副标题"],
       "slide_type": "title"
+    }},
+    {{
+      "page_number": 2,
+      "title": "目录",
+      "content_points": ["章节一", "章节二"],
+      "slide_type": "agenda"
+    }},
+    {{
+      "page_number": 3,
+      "title": "某章节标题",
+      "content_points": ["章节名称", "转场提示"],
+      "slide_type": "transition"
+    }},
+    {{
+      "page_number": 4,
+      "title": "内容页标题",
+      "content_points": ["要点1", "要点2"],
+      "slide_type": "content"
     }}
   ]
 }}

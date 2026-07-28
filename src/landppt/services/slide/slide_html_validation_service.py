@@ -37,6 +37,7 @@ from ...utils.thread_pool import run_blocking_io, to_thread
 logger = logging.getLogger(__name__)
 from .slide_html_inspection_service import SlideHtmlInspectionService
 from .slide_html_recovery_service import SlideHtmlRecoveryService
+from .aesthetic_preflight_checker import AestheticPreFlightChecker
 
 if TYPE_CHECKING:
     from .slide_html_service import SlideHtmlService
@@ -49,6 +50,7 @@ class SlideHtmlValidationService:
         self._service = service
         self._inspection_service = SlideHtmlInspectionService(self)
         self._recovery_service = SlideHtmlRecoveryService(self)
+        self._aesthetic_checker = AestheticPreFlightChecker()
 
     def __getattr__(self, name: str):
         return getattr(self._service, name)
@@ -67,6 +69,31 @@ class SlideHtmlValidationService:
 
     def _basic_html_syntax_check(self, html_content: str, validation_result: Dict[str, Any]) -> None:
         return self._inspection_service._basic_html_syntax_check(html_content, validation_result)
+
+    def _aesthetic_preflight_check(self, html_content: str, header_lock=None, footer_lock=None,
+                                    slide_data=None, page_number=None, total_pages=None):
+        """审美维度预检（机械正则），返回 (hard_fails, warnings)。
+
+        header_lock 可选：传入宪法 HEADER_LOCK 令牌字典时一并做页头跨页一致性校验，
+        非内容页（封面/尾页/目录/过渡）自动豁免不参与页头守恒比对。
+        footer_lock 可选：传入宪法 FOOTER_LOCK 令牌字典时一并做页脚页码一致性校验，
+        非内容页自动豁免。
+        """
+        return self._aesthetic_checker.check(
+            html_content, header_lock=header_lock, footer_lock=footer_lock,
+            slide_data=slide_data, page_number=page_number, total_pages=total_pages)
+
+    def _parse_header_lock(self, constitution: str):
+        """从宪法文本解析 ===HEADER_LOCK=== 令牌字典。"""
+        return self._aesthetic_checker.parse_header_lock(constitution)
+
+    def _parse_footer_lock(self, constitution: str):
+        """从宪法文本解析 ===FOOTER_LOCK=== 令牌字典。"""
+        return self._aesthetic_checker.parse_footer_lock(constitution)
+
+    async def _measure_overflow(self, html_content: str, page_number: int):
+        """用 Playwright 测量主内容区是否溢出固定画布。失败/关闭则返回 None。"""
+        return await self._recovery_service._measure_overflow(html_content, page_number)
 
     async def _generate_html_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any], page_number: int, total_pages: int, max_retries: int=3) -> str:
         return await self._recovery_service._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries)

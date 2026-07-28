@@ -85,6 +85,7 @@ class PPTGenerationRequest(BaseModel):
     scenario: str = Field(..., description="PPT scenario type")
     topic: str = Field(..., description="PPT topic/theme")
     requirements: Optional[str] = Field(None, description="Additional requirements")
+    notes: Optional[str] = Field(None, description="Project notes for display only, not used in PPT generation")
     network_mode: bool = Field(False, description="Whether to use network mode for enhanced generation")
     language: str = Field("zh", description="Language for the PPT content")
     uploaded_content: Optional[str] = Field(None, description="Content from uploaded files")
@@ -144,6 +145,7 @@ class PPTProject(BaseModel):
     scenario: str
     topic: str
     requirements: Optional[str] = None
+    notes: Optional[str] = None  # 备注信息，仅用于展示，不参与PPT生成逻辑
     status: Literal["draft", "in_progress", "completed", "archived"] = "draft"
     outline: Optional[Dict[str, Any]] = None  # Changed to Dict for flexibility
     slides_html: Optional[str] = None

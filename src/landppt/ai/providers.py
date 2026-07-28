@@ -65,6 +65,29 @@ def _build_httpx_timeout(config: Dict[str, Any]):
     return httpx.Timeout(total, connect=connect, read=total, write=write, pool=pool)
 
 
+def _build_isolated_httpx_client(config: Dict[str, Any]):
+    """构造一个不读取系统/注册表代理环境的 async httpx client。
+
+    为什么要这么做：Windows 注册表里若配了 socks4:// 代理（v2rayN/clash 等写入），
+    httpx 0.28 的 get_environment_proxies() 会读到它，但 httpx 不支持 socks4 scheme，
+    导致 SDK 自建 client 时 __init__ 抛 ValueError，进而 GC 时 __del__ 再抛
+    AttributeError("'AsyncHttpxClientWrapper' object has no attribute '_transport'")。
+    传入 trust_env=False 的 client 既绕开注册表代理、又携带统一 timeout，
+    同时让 SDK 复用我们传入的实例、不再自建造成资源泄漏的 wrapper。
+    返回 None 表示 httpx 不可用，调用方 fallback 到 SDK 默认行为。
+    """
+    try:
+        import httpx
+    except Exception:
+        return None
+    timeout = _build_httpx_timeout(config) or httpx.Timeout(600.0)
+    try:
+        return httpx.AsyncClient(trust_env=False, timeout=timeout)
+    except Exception as exc:  # 任何意外都退回 None，不阻塞 provider 初始化
+        logger.warning("构造隔离代理环境的 httpx client 失败，退回 SDK 默认: %s", exc)
+        return None
+
+
 class OpenAIProvider(AIProvider):
     """OpenAI API provider"""
 
@@ -78,13 +101,16 @@ class OpenAIProvider(AIProvider):
         try:
             import openai
             timeout = _build_httpx_timeout(config)
+            http_client = _build_isolated_httpx_client(config)
             try:
                 self.client = openai.AsyncOpenAI(
                     api_key=config.get("api_key"),
                     base_url=config.get("base_url"),
                     timeout=timeout,
+                    http_client=http_client,
                 )
             except TypeError:
+                # 老版本 SDK 不支持 http_client 形参时退回最简形式
                 self.client = openai.AsyncOpenAI(
                     api_key=config.get("api_key"),
                     base_url=config.get("base_url"),
@@ -515,6 +541,7 @@ class AnthropicProvider(AIProvider):
             base_url = base_url.strip() if isinstance(base_url, str) else None
 
             timeout = _get_llm_timeout_seconds(config)
+            http_client = _build_isolated_httpx_client(config)
 
             try:
                 if base_url:
@@ -522,11 +549,13 @@ class AnthropicProvider(AIProvider):
                         api_key=config.get("api_key"),
                         base_url=base_url,
                         timeout=timeout,
+                        http_client=http_client,
                     )
                 else:
                     self.client = anthropic.AsyncAnthropic(
                         api_key=config.get("api_key"),
                         timeout=timeout,
+                        http_client=http_client,
                     )
             except TypeError:
                 # Backwards compatibility with older anthropic SDK versions

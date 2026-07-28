@@ -93,6 +93,24 @@
             </div>
             {% endif %}
 
+            <!-- 备注 -->
+            <div class="card" style="background: var(--surface); border: 1px solid var(--glass-border);" id="notesCard">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--spacing-md);">
+                    <strong
+                        style="color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; font-size: 0.9rem;">备注</strong>
+                    <button onclick="editNotes()" class="action-btn" style="font-size: 0.8rem; padding: 4px 12px;" id="editNotesBtn">编辑</button>
+                </div>
+                <p style="color: var(--text-primary); margin: 0; line-height: 1.6; font-size: 1.05rem; white-space: pre-wrap;"
+                   id="notesDisplay">{{ project.notes or '暂无备注' }}</p>
+                <div id="notesEditArea" style="display: none;">
+                    <textarea id="notesTextarea" style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--glass-border); border-radius: 8px; font-size: 1rem; line-height: 1.6; resize: vertical; background: var(--surface); color: var(--text-primary);" rows="3">{{ project.notes or '' }}</textarea>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px;">
+                        <button onclick="cancelEditNotes()" class="action-btn" style="font-size: 0.85rem;">取消</button>
+                        <button onclick="saveNotes()" class="action-btn action-btn--primary" style="font-size: 0.85rem;">保存</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Project Actions -->
             <div class="action-group">
                 {% if project.status == 'in_progress' and todo_board %}

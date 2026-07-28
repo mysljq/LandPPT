@@ -670,23 +670,17 @@
                 // 检测是否是自由模板：多种检测方式
                 let isFreeTemplate = metadata.template_mode === 'free';
 
-                // 如果还不是，检查选中的模板是否是 AI 生成的自由模板
-                if (!isFreeTemplate) {
-                    try {
-                        const templateResp = await fetch(`/api/projects/{{ todo_board.task_id }}/selected-global-template`);
-                        if (templateResp.ok) {
-                            const templateData = await templateResp.json();
-                            if (templateData.template && (
-                                templateData.template.created_by === 'ai_free' ||
-                                (templateData.template.template_name && templateData.template.template_name.startsWith('自由模板'))
-                            )) {
-                                isFreeTemplate = true;
-                            }
-                        }
-                    } catch (e) {
-                        // Ignore errors
-                    }
+                // 额外：项目自身的自由模板 HTML 仍可作为判定依据（本项目曾生成过 free 模板）
+                if (!isFreeTemplate && metadata.free_template_html) {
+                    isFreeTemplate = true;
                 }
+
+                // 注：不再基于"已选中模板的名字/created_by"启发式判定为 free 模板。
+                // 之前这段逻辑会在用户把 AI 自由模板保存到全局库后、在新项目选中该模板时，
+                // 仅因模板名前缀"自由模板"/created_by='ai_free' 而误判当前项目处于 free 模式，
+                // 从而弹窗进入"AI 生成模板"界面并触发 /free-template/generate，
+                // 后端报错 "Project is not using free template mode"。
+                // 是否 free 模式只应看项目自身的 template_mode / free_template_html。
 
                 if (!isFreeTemplate) {
                     return true;
@@ -1066,6 +1060,9 @@
 
                 // 确保按钮可见
                 ensureGeneratingButtonsVisible();
+
+                // 启动单页重试计数徽标轮询（每 3s）
+                startRetryIndicatorPolling();
 
                 // 启动心跳检测
                 startHeartbeat();
@@ -1497,6 +1494,67 @@
                 default:
                     break;
             }
+        }
+
+        // ===== 单页重试计数实时徽标（轮询 /generation-status 端点）=====
+        // 后端把"当前页 / 重试第几次 / 最多几次 / 在哪道闸"写进 ppt_creation stage 的 result；
+        // 重试发生在单页 await 内部，无法通过 SSE yield，故这里每 3s 轮询一次以准实时展示。
+        let retryPollTimer = null;
+        const STAGE_LABELS = {
+            generating: '生成中',
+            structure_retry: '结构修复重试',
+            aesthetic_retry: '审美预检重试',
+            overflow_retry: '内容溢出重试',
+        };
+
+        function formatRetryIndicator(payload) {
+            const cur = payload.current_generating;
+            const total = payload.total_pages;
+            const attempt = payload.retry_attempt;
+            const max = payload.retry_max;
+            const stage = payload.retry_stage;
+            const detail = payload.retry_detail;
+            const parts = [];
+            if (cur && total) parts.push(`正在生成第 ${cur}/${total} 页`);
+            if (attempt && max) {
+                const stageLabel = STAGE_LABELS[stage] || '生成';
+                parts.push(`${stageLabel}（第 ${attempt}/${max} 次）`);
+            }
+            if (detail) parts.push(detail);
+            return parts.join(' · ');
+        }
+
+        async function pollRetryIndicator() {
+            // 只在 SSE 处于连接态（生成中）时更新；断开后清空徽标
+            if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+                const badge = document.getElementById('retryIndicator');
+                if (badge) { badge.style.display = 'none'; badge.innerHTML = ''; }
+                if (retryPollTimer) { clearInterval(retryPollTimer); retryPollTimer = null; }
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/projects/{{ todo_board.task_id }}/generation-status`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const badge = document.getElementById('retryIndicator');
+                if (!badge) return;
+                const text = formatRetryIndicator(data);
+                if (text) {
+                    badge.innerHTML = `<i class="fas fa-sync-alt"></i> ${text}`;
+                    badge.style.display = 'block';
+                } else {
+                    badge.style.display = 'none';
+                    badge.innerHTML = '';
+                }
+            } catch (err) {
+                // 轮询失败不必惊扰，下次重试
+            }
+        }
+
+        function startRetryIndicatorPolling() {
+            if (retryPollTimer) return;
+            retryPollTimer = setInterval(pollRetryIndicator, 3000);
+            pollRetryIndicator();
         }
 
         function updateStatus(message, type) {

@@ -82,6 +82,7 @@ async def web_shared_presentation(
             scenario=project_model.scenario,
             topic=project_model.topic,
             requirements=project_model.requirements,
+            notes=project_model.notes,
             status=project_model.status,
             outline=project_model.outline,
             slides_html=project_model.slides_html,

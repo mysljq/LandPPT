@@ -57,6 +57,10 @@
                 <div class="status-indicator" id="generationStatus" style="display: none;">
                     <h6><i class="fas fa-cogs"></i> 生成状态</h6>
                     <div id="statusMessage">准备开始生成...</div>
+                    <!-- 实时重试计数徽标：轮询 /generation-status 填充 -->
+                    <div id="retryIndicator"
+                         style="display:none; margin-top:6px; font-size:13px; color:var(--text-secondary);">
+                    </div>
                     <div class="progress mt-3">
                         <div class="progress-bar progress-bar-striped progress-bar-animated" id="generationProgress"
                             style="width: 0%"></div>

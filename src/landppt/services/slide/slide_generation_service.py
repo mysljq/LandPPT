@@ -279,6 +279,23 @@ class SlideGenerationService:
                         logger.warning(f"Failed to resolve slide_generation provider for credits: {provider_error}")
                         credits_should_bill = False
 
+                # 注册单页重试进度回调：实时写库 + 控制台打印重试次数
+                # 注：重试发生在单页 await 内部，无法在此把 yield 上推到 SSE 主生成器，
+                # 因此前端实时显示靠已有 stage 轮询 / SSE progress 读 result 字段。
+                async def _retry_progress(*, page_number, total_pages, attempt, max_retries, stage, detail=""):
+                    logger.info(f"🔁 slide {page_number}/{total_pages}: {stage} 第 {attempt}/{max_retries} 次 - {detail}")
+                    await sync_ppt_creation_progress({
+                        "current_generating": page_number,
+                        "total_pages": total_pages,
+                        "retry_attempt": attempt,
+                        "retry_max": max_retries,
+                        "retry_stage": stage,
+                        "retry_detail": detail,
+                    })
+
+                from .retry_progress import set_retry_progress_cb
+                set_retry_progress_cb(_retry_progress)
+
                 if credits_should_bill:
                     try:
                         from ..db_project_manager import DatabaseProjectManager

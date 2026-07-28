@@ -132,6 +132,15 @@ class DatabaseMigration:
             "down": self._migration_012_down,
         })
 
+        # Migration 013: Add notes column to projects table
+        self.migrations.append({
+            "version": "013",
+            "name": "add_notes_to_projects",
+            "description": "Add notes column to projects table for project remarks",
+            "up": self._migration_013_up,
+            "down": self._migration_013_down,
+        })
+
     @staticmethod
     def _dialect_name(session: AsyncSession) -> str:
         try:
@@ -1223,6 +1232,90 @@ class DatabaseMigration:
         except Exception as e:
             await session.rollback()
             logger.error(f"Migration 012 rollback failed: {e}")
+            raise
+
+    async def _migration_013_up(self, session: AsyncSession):
+        """Migration 013: Add notes column to projects table"""
+        try:
+            logger.info("Running migration 013: Adding notes column to projects table")
+
+            # Check if notes column already exists
+            if not await self._column_exists(session, "projects", "notes"):
+                # Add notes column to projects table
+                await session.execute(text("""
+                    ALTER TABLE projects
+                    ADD COLUMN notes TEXT
+                """))
+                logger.info("Added notes column to projects table")
+            else:
+                logger.info("notes column already exists in projects table")
+
+            await session.commit()
+            logger.info("Migration 013 completed successfully")
+
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Migration 013 failed: {e}")
+            raise
+
+    async def _migration_013_down(self, session: AsyncSession):
+        """Migration 013 rollback: Remove notes column from projects table"""
+        try:
+            logger.info("Rolling back migration 013: Removing notes column from projects table")
+
+            # SQLite doesn't support DROP COLUMN directly, so we need to recreate the table
+            await session.execute(text("""
+                CREATE TABLE projects_backup AS
+                SELECT id, project_id, user_id, title, scenario, topic, requirements, status,
+                       outline, slides_html, slides_data, confirmed_requirements,
+                       project_metadata, version, share_token, share_enabled,
+                       created_at, updated_at
+                FROM projects
+            """))
+
+            await session.execute(text("DROP TABLE projects"))
+
+            await session.execute(text("""
+                CREATE TABLE projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id VARCHAR(36) UNIQUE NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    scenario VARCHAR(100) NOT NULL,
+                    topic VARCHAR(255) NOT NULL,
+                    requirements TEXT,
+                    status VARCHAR(50) DEFAULT 'draft',
+                    outline JSON,
+                    slides_html TEXT,
+                    slides_data JSON,
+                    confirmed_requirements JSON,
+                    project_metadata JSON,
+                    version INTEGER DEFAULT 1,
+                    share_token VARCHAR(64) UNIQUE,
+                    share_enabled BOOLEAN DEFAULT 0,
+                    created_at FLOAT NOT NULL,
+                    updated_at FLOAT NOT NULL
+                )
+            """))
+
+            await session.execute(text("""
+                INSERT INTO projects
+                SELECT * FROM projects_backup
+            """))
+
+            await session.execute(text("DROP TABLE projects_backup"))
+
+            # Recreate indexes
+            await session.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)"))
+            await session.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_scenario ON projects(scenario)"))
+            await session.execute(text("CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at)"))
+
+            await session.commit()
+            logger.info("Migration 013 rollback completed")
+
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Migration 013 rollback failed: {e}")
             raise
 
     async def _create_migration_table(self, session: AsyncSession):

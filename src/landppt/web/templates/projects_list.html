@@ -293,7 +293,7 @@
 
 .projects-table-header {
     display: grid;
-    grid-template-columns: 140px 1fr 160px 190px 150px 140px;
+    grid-template-columns: 140px 1fr 160px 120px 190px 150px 140px;
     gap: var(--spacing-lg);
     padding: var(--spacing-lg) var(--spacing-xl);
     background: var(--surface-subtle);
@@ -316,7 +316,7 @@
 
 .project-list-item {
     display: grid;
-    grid-template-columns: 140px 1fr 160px 190px 150px 140px;
+    grid-template-columns: 140px 1fr 160px 120px 190px 150px 140px;
     gap: var(--spacing-lg);
     padding: var(--spacing-lg) var(--spacing-xl);
     border-bottom: 1px solid var(--border-color);
@@ -446,6 +446,7 @@
             <div>状态</div>
             <div>项目信息</div>
             <div>场景</div>
+            <div>备注</div>
             <div>进度</div>
             <div>更新时间</div>
             <div>操作</div>
@@ -479,6 +480,11 @@
                 <!-- Scenario -->
                 <div class="project-meta" style="display: flex; align-items: center;">
                     {{ project.scenario }}
+                </div>
+
+                <!-- Notes -->
+                <div class="project-notes" style="display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85rem; color: var(--text-secondary);">
+                    {{ project.notes or '—' }}
                 </div>
 
                 <!-- Progress -->

@@ -161,7 +161,7 @@ class PlaywrightPDFConverter:
                 return browser
 
             except Exception as playwright_error:
-                logger.warning(f"❌ Playwright Chromium launch failed: {playwright_error}")
+                logger.debug("Playwright Chromium launch failed: %s", playwright_error)
 
             # Method 2: Try system Chrome with enhanced error handling
             system_chrome_paths = [
@@ -256,26 +256,27 @@ class PlaywrightPDFConverter:
                 return browser
 
             except Exception as minimal_error:
-                logger.error(f"❌ Minimal launch also failed: {minimal_error}")
+                logger.debug("Minimal launch also failed: %s", minimal_error)
 
         except Exception as e:
-            logger.error(f"❌ All browser launch methods failed: {e}")
-
-            # Provide comprehensive error message with solutions
-            error_msg = (
-                f"无法启动浏览器: {e}\n\n"
-                "解决方案:\n"
-                "1. 确保已安装 Google Chrome 浏览器\n"
-                "2. 运行: pip install --upgrade playwright\n"
-                "3. 手动安装 Chromium: python -m playwright install chromium\n"
-                "4. 或者安装所有浏览器: python -m playwright install\n"
-                "5. 检查防火墙和杀毒软件是否阻止了浏览器启动"
+            # 首次启动失败即标记不可用，后续调用不再重试，避免重复打印堆栈
+            self._browser_unavailable = True
+            logger.warning(
+                "⚠️ Playwright 浏览器不可用（%s），溢出测量/截图将跳过，不影响 PPT 生成主流程。"
+                "如需启用，请安装 Chromium：python -m playwright install chromium",
+                str(e).split('\n')[0]  # 只取第一行简要原因
             )
-            raise ImportError(error_msg)
+            raise RuntimeError(f"Browser unavailable: {e}")
 
     async def _get_or_create_browser(self) -> Browser:
-        """Get existing browser or create a new one (with thread safety)."""
+        """Get existing browser or create a new one (with thread safety).
+
+        若首次启动失败，记录 _browser_unavailable 标记，后续调用直接抛 RuntimeError
+        避免每次重复尝试并打印完整堆栈。
+        """
         async with self._browser_lock:
+            if getattr(self, '_browser_unavailable', False):
+                raise RuntimeError("Browser unavailable, previous launch attempt failed")
             if self.browser is None:
                 self.browser = await self._launch_browser()
                 # Create a browser context for better isolation
@@ -2491,8 +2492,6 @@ class PlaywrightPDFConverter:
 
         except Exception as error:
             logger.error(f"❌ Error during batch PDF conversion: {error}")
-            import traceback
-            traceback.print_exc()
             return pdf_files  # Return any successfully converted files
         finally:
             if browser:
@@ -2786,9 +2785,109 @@ class PlaywrightPDFConverter:
 
         except Exception as e:
             logger.error(f"❌ Screenshot failed: {e}")
-            import traceback
-            traceback.print_exc()
+            # 不打印完整堆栈——浏览器不可用已在 _launch_browser 处一行警告说明，
+            # 且溢出测量等处已有优雅降级，堆栈噪音对排查无益
             return False
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("Page already closed or closing failed, ignoring.")
+
+    async def measure_content_overflow(
+        self,
+        html_file_path: str,
+        width: int = 1280,
+        height: int = 720,
+        optimize_for_static: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """轻量测量主内容区是否溢出固定画布。
+
+        只取页面尺寸/scrollHeight，不截图、不调用视觉模型。
+        返回 dict：{container_h, content_h, overflow_px, overflow_ratio, detail}；
+        overflow_px<=0 表示不溢出。失败返回 None（不抛错，不阻塞生成）。
+        “主内容区”按启发式选取：优先 [class*=main]/[data-content-layer]/[role=main]/<main>，
+        回退到 body。容器高取该主区域的 rect 高度（受画布上限），内容高取其 scrollHeight。
+        """
+        logger.info(f"📏 Measuring content overflow: {html_file_path}")
+        if not os.path.exists(html_file_path):
+            logger.warning(f"measure_content_overflow: HTML file not found: {html_file_path}")
+            return None
+        page = None
+        try:
+            await self._get_or_create_browser()
+            ctx: Optional[BrowserContext] = self.context
+            if ctx is None:
+                raise RuntimeError("Playwright context is not initialized")
+            page = await ctx.new_page()
+            await page.set_viewport_size({'width': width, 'height': height})
+            absolute_html_path = Path(html_file_path).resolve()
+            navigation_wait_until = 'domcontentloaded' if optimize_for_static else 'networkidle'
+            navigation_timeout = 20000 if optimize_for_static else 60000
+            await page.goto(f"file://{absolute_html_path}",
+                            wait_until=navigation_wait_until,
+                            timeout=navigation_timeout)
+            if optimize_for_static:
+                try:
+                    await page.wait_for_load_state('load', timeout=5000)
+                except Exception:
+                    pass
+            else:
+                loaded = await self._wait_for_page_fully_loaded(page)
+                if not loaded:
+                    logger.warning("measure: page load had timeouts, continuing best-effort")
+            await self._wait_for_fonts_and_resources(page, max_wait_time=8000)
+
+            result = await page.evaluate(
+                """
+                () => {
+                  const pick = () => {
+                    const sels = ['main', '[role="main"]', '[data-content-layer]',
+                                  '[class*="main-content"]', '[class*="content-layer"]',
+                                  '[class*="slide-root"]', 'body > div'];
+                    for (const s of sels) {
+                      const el = document.querySelector(s);
+                      if (el) return el;
+                    }
+                    return document.body;
+                  };
+                  const el = pick();
+                  if (!el) return null;
+                  const rect = el.getBoundingClientRect();
+                  const container_h = Math.max(0, Math.round(rect.height));
+                  const container_w = Math.max(0, Math.round(rect.width));
+                  const content_h = Math.round(el.scrollHeight || 0);
+                  const content_w = Math.round(el.scrollWidth || 0);
+                  const overflow_px = Math.max(0, content_h - container_h);
+                  const overflow_x_px = Math.max(0, content_w - container_w);
+                  const overflow_ratio = container_h > 0 ? overflow_px / container_h : 0;
+                  const overflow_x_ratio = container_w > 0 ? overflow_x_px / container_w : 0;
+                  // 纵向溢出子元素摘要
+                  const overflows = [];
+                  const overflows_x = [];
+                  const kids = el.querySelectorAll ? el.querySelectorAll(':scope > *') : [];
+                  for (const k of kids) {
+                    const kr = k.getBoundingClientRect();
+                    const ks = k.scrollHeight || 0;
+                    const kw = k.scrollWidth || 0;
+                    const cls = (k.className && k.className.toString) ? k.className.toString().slice(0, 60) : '';
+                    if (ks > kr.height + 1 && ks - kr.height > 4 && overflows.length < 5) {
+                      overflows.push({ tag: k.tagName.toLowerCase(), cls, item_h: Math.round(ks), box_h: Math.round(kr.height) });
+                    }
+                    if (kw > kr.width + 1 && kw - kr.width > 4 && overflows_x.length < 5) {
+                      overflows_x.push({ tag: k.tagName.toLowerCase(), cls, item_w: Math.round(kw), box_w: Math.round(kr.width) });
+                    }
+                  }
+                  return { container_h, container_w, content_h, content_w, overflow_px, overflow_x_px, overflow_ratio, overflow_x_ratio, overflows, overflows_x };
+                }
+                """
+            )
+            logger.info(f"📏 measure result: {result}")
+            return result
+        except Exception as e:
+            logger.warning(f"measure_content_overflow failed (non-fatal): {e}")
+            return None
         finally:
             if page:
                 try:

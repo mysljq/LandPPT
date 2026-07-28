@@ -644,6 +644,32 @@ async def archive_project(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error archiving project: {str(e)}")
 
+@router.put("/projects/{project_id}/notes")
+async def update_project_notes(
+    project_id: str,
+    request: Request,
+    user: User = Depends(get_current_user_required)
+):
+    """Update project notes - enforces user ownership"""
+    try:
+        body = await request.json()
+        notes = body.get("notes", "")
+
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        success = await user_ppt_service.project_manager.update_project_data(
+            project_id,
+            {"notes": notes},
+            user_id=user.id
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return {"status": "success", "notes": notes}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating project notes: {str(e)}")
+
 # File Upload Endpoints
 
 @router.post("/upload", response_model=FileUploadResponse)
@@ -699,6 +725,7 @@ async def create_project_from_upload(
     topic: Optional[str] = Form(None),
     scenario: Optional[str] = Form(None),
     requirements: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
     language: str = Form("zh"),
     user: User = Depends(get_current_user_required)
 ):
@@ -735,6 +762,8 @@ async def create_project_from_upload(
                 ppt_data['scenario'] = scenario
             if requirements:
                 ppt_data['requirements'] = requirements
+            if notes:
+                ppt_data['notes'] = notes
 
             # Create project request with user_id
             project_request = PPTGenerationRequest(**ppt_data)

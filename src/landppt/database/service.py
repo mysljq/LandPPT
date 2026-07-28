@@ -209,6 +209,7 @@ class DatabaseService:
             scenario=db_project.scenario,
             topic=db_project.topic,
             requirements=db_project.requirements,
+            notes=db_project.notes,
             status=project_status,
             outline=db_project.outline,
             slides_html=db_project.slides_html,
@@ -241,6 +242,7 @@ class DatabaseService:
             "scenario": request.scenario,
             "topic": request.topic,
             "requirements": request.requirements,
+            "notes": request.notes,
             "status": "draft",
             "project_metadata": {
                 "network_mode": request.network_mode,

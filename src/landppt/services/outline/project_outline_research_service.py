@@ -251,6 +251,9 @@ class ProjectOutlineResearchService:
                 if 'chart_config' in slide and slide['chart_config']:
                     standardized_slide['chart_config'] = slide['chart_config']
                 standardized_slides.append(standardized_slide)
+            # Apply transition type correction based on description heuristics
+            from .project_outline_normalization_service import ProjectOutlineNormalizationService
+            standardized_slides = ProjectOutlineNormalizationService._correct_transition_slide_types(standardized_slides)
             standardized_metadata = {'generated_with_summeryfile': True, 'page_count_settings': {'mode': metadata.get('page_count_mode', 'ai_decide'), 'min_pages': None, 'max_pages': None, 'fixed_pages': None}, 'actual_page_count': len(standardized_slides), 'generated_at': time.time(), 'original_metadata': metadata}
             if 'total_pages' in metadata:
                 standardized_metadata['page_count_settings']['expected_pages'] = metadata['total_pages']

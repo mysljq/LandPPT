@@ -83,6 +83,7 @@ class ProjectOutlineStreamingService:
                 json_str = content
 
             structured_outline = json.loads(json_str)
+            structured_outline = self._standardize_outline_format(structured_outline)
             structured_outline = await self._validate_and_repair_outline_json(structured_outline, confirmed_requirements)
             return structured_outline, False
         except Exception as parse_error:

@@ -180,6 +180,7 @@ class Project(Base):
     scenario: Mapped[str] = mapped_column(String(100), nullable=False)
     topic: Mapped[str] = mapped_column(String(255), nullable=False)
     requirements: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 备注信息，仅用于展示，不参与PPT生成逻辑
     status: Mapped[str] = mapped_column(String(50), default="draft")
     outline: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     slides_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

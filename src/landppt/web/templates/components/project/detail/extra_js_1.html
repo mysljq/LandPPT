@@ -2,6 +2,50 @@
         const projectOutline = {{ project.outline | tojson if project.outline else 'null' }};
         const projectSlides = {{ project.outline.get('slides', []) | tojson if project.outline else '[]' }};
 
+        // 备注编辑相关
+        let originalNotes = '{{ project.notes or '' }}';
+
+        function editNotes() {
+            document.getElementById('notesDisplay').style.display = 'none';
+            document.getElementById('editNotesBtn').style.display = 'none';
+            document.getElementById('notesEditArea').style.display = 'block';
+            document.getElementById('notesTextarea').focus();
+        }
+
+        function cancelEditNotes() {
+            document.getElementById('notesDisplay').style.display = '';
+            document.getElementById('editNotesBtn').style.display = '';
+            document.getElementById('notesEditArea').style.display = 'none';
+            document.getElementById('notesTextarea').value = originalNotes;
+        }
+
+        async function saveNotes() {
+            const notes = document.getElementById('notesTextarea').value;
+            try {
+                const response = await fetch(`/api/projects/${projectId}/notes`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ notes: notes }),
+                });
+
+                if (response.ok) {
+                    originalNotes = notes;
+                    document.getElementById('notesDisplay').textContent = notes || '暂无备注';
+                    document.getElementById('notesDisplay').style.display = '';
+                    document.getElementById('editNotesBtn').style.display = '';
+                    document.getElementById('notesEditArea').style.display = 'none';
+                } else {
+                    const err = await response.json();
+                    alert('保存失败: ' + (err.detail || '未知错误'));
+                }
+            } catch (error) {
+                console.error('Error saving notes:', error);
+                alert('保存失败: ' + error.message);
+            }
+        }
+
         async function archiveProject() {
             if (confirm('确定要归档这个项目吗？归档后项目将不会显示在活跃项目列表中。')) {
                 try {

@@ -53,6 +53,7 @@ class ProjectManager:
             scenario=request.scenario,
             topic=request.topic,
             requirements=request.requirements,
+            notes=request.notes,
             status="draft",
             todo_board=todo_board
         )
