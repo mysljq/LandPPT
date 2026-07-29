@@ -116,6 +116,9 @@ class SlideHtmlService:
     def _clean_html_response(self, raw_content: str) -> str:
         return self._cleanup_service._clean_html_response(raw_content)
 
+    def _strip_transform_scale(self, html_content: str) -> str:
+        return self._cleanup_service._strip_transform_scale(html_content)
+
     def _validate_html_completeness(self, html_content: str) -> Dict[str, Any]:
         return self._validation_service._validate_html_completeness(html_content)
 
