@@ -4,7 +4,7 @@ PPT设计基因和视觉指导相关提示词
 
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 import logging
 
 from .system_prompts import SystemPrompts
@@ -940,5 +940,202 @@ color: <页码文字色 #hex，全册普通页统一>
 ===END_DESIGN_GUIDE===
 
 不要输出其他说明。
+
+{resource_perf}"""
+
+    # ================================================================
+    # 九、页型骨架（Page-Type Skeletons）与内容片段注入
+    # ================================================================
+
+    # 页型骨架的占位符约定（机械替换，绝不交给 LLM）
+    _SKELETON_PLACEHOLDERS = (
+        "{{MAIN_CONTENT}}",       # 内容页主内容区：AI 生成的 HTML 片段注入此
+        "{{PAGE_TITLE}}",         # 内容页页头标题
+        "{{PAGE_NUMBER}}",        # 当前页页码
+        "{{TOTAL_PAGES}}",        # 总页数
+        "{{TITLE}}",              # 封面/结尾主标题
+        "{{SUBTITLE}}",           # 封面/结尾副标题
+        "{{CHAPTER_NAME}}",       # 过渡页章节名
+        "{{CHAPTER_HINT}}",       # 过渡页转场语/下一部分方向
+        "{{AGENDA_ITEMS}}",       # 目录页章节条目 HTML 列表
+        "{{ENDING_HINT}}",        # 结尾页结语/感谢语
+    )
+
+    @staticmethod
+    def get_page_type_skeletons_prompt(template_html: str,
+                                       confirmed_requirements: Dict[str, Any],
+                                       total_pages: int,
+                                       all_slides: List[Dict[str, Any]]) -> str:
+        """一次性生成整套按页型分型的固化 HTML 骨架。
+
+        返回的每一套骨架都是自包含的完整 HTML 文档（含 <style>），用结构化标记
+        分段输出供机械解析。封面/目录/过渡/结尾骨架固化整页结构、仅暴露具名占位符；
+        内容页骨架固化页头与页脚，主体区留 {{MAIN_CONTENT}} 占位符待片段注入。
+        """
+        project_brief = DesignPrompts._build_project_brief(confirmed_requirements)
+        template_context = DesignPrompts._build_template_html_context(template_html)
+        resource_perf = DesignPrompts._build_resource_performance_context()
+
+        # 大纲概览：告知各页型对应的真实页面，避免模型凭空设计
+        page_type_overview = DesignPrompts._build_page_type_guidance_overview(all_slides, total_pages)
+
+        return f"""请基于参考模板，生成一套"按页型分型的固化 HTML 骨架"。这五套骨架将分别给全册封面、目录、过渡、内容、结尾页使用，要求跨页视觉高度一致。
+
+**项目简报**
+{project_brief}
+
+**参考模板 HTML 原文**
+{template_context}
+
+**总页数**：{total_pages} 页
+**页面类型概览**
+{page_type_overview}
+
+{DesignPrompts._build_template_guidance_context()}
+
+{DesignPrompts._build_content_quality_context()}
+
+{DesignPrompts._build_fixed_canvas_html_guardrails()}
+
+{DesignPrompts._build_layout_mastery_context()}
+
+**核心要求（一致性优先，硬性）**
+- 每套骨架都是自包含完整 HTML：以 `<!DOCTYPE html>` 开始、`</html>` 结束，含 `html/head/body` 与内联或 `<style>` 样式；根容器固定 1280×720，`overflow:hidden`。
+- 模板继承：配色、字体、字体栈、圆角、材质、装饰气质须全部继承参考模板，全册五套骨架共用同一套设计系统。
+- 页头页脚逐字固化：内容页骨架的页头标题区与页脚页码区一经确定即全册唯一，不得在不同内容页间产生任何差异（字体栈、字号、字重、文字色、背景、内边距、是否带图标与图标规格、页码位置全部锁死）。封面/目录/过渡/结尾页可不带页码、不必沿用页头槽位，但需在视觉气质上与内容页同源。
+- 占位符约定（机械替换，必须保留原文占位符，不得改名、不得删除、不得擅自赋值）：
+  - 内容页骨架含 `{{{{MAIN_CONTENT}}}}`（主体区，待片段注入）、`{{{{PAGE_TITLE}}}}`（页头标题）、`{{{{PAGE_NUMBER}}}}`（当前页码）、`{{{{TOTAL_PAGES}}}}`（总页数）。其中页码以 `{{{{PAGE_NUMBER}}}}/{{{{TOTAL_PAGES}}}}` 形式出现在页脚。
+  - 封面骨架含 `{{{{TITLE}}}}`、`{{{{SUBTITLE}}}}`。
+  - 目录骨架含 `{{{{TITLE}}}}`、`{{{{AGENDA_ITEMS}}}}`（章节条目 HTML 列表，由调用方逐项填入）。
+  - 过渡骨架含 `{{{{CHAPTER_NAME}}}}`、`{{{{CHAPTER_HINT}}}}`。
+  - 结尾骨架含 `{{{{TITLE}}}}`、`{{{{ENDING_HINT}}}}`。
+- 内容页骨架的页头标题仍用 `{{{{PAGE_TITLE}}}}` 占位而非具体文字，保证每页标题区样式雷同、仅文字不同。
+- 禁用 `@media`、`transform: scale()`（任何形式），禁用纯黑纯白、em-dash/en-dash，全册锁定唯一 accent 色。
+
+**全册页头页脚令牌（供跨页一致性校验，必须输出）**
+在五套骨架之后，附加全册唯一的页头/页脚令牌块，取值与本套骨架内容页的页头页脚逐字一致：
+
+```
+===HEADER_LOCK===
+font_family: <标题字体栈>
+font_size: <标题字号>
+font_weight: <字重>
+color: <标题文字色 #hex>
+background: <标题区背景>
+padding: <标题区内边距>
+icon: <none 或 svg-inline,尺寸>
+===FOOTER_LOCK===
+font_family: <页码字体栈>
+font_size: <页码字号>
+font_weight: <页码字重>
+color: <页码文字色 #hex>
+```
+
+**输出格式（严格，便于机械解析）**
+按以下标记分段输出五套骨架，每个 `===SKELETON:<type>===` 与下一个标记之间是该页型的完整 HTML：
+
+```
+===SKELETON:cover===
+（封面完整 HTML，含 {{TITLE}} {{SUBTITLE}}）
+===SKELETON:agenda===
+（目录完整 HTML，含 {{TITLE}} {{AGENDA_ITEMS}}）
+===SKELETON:transition===
+（过渡完整 HTML，含 {{CHAPTER_NAME}} {{CHAPTER_HINT}}）
+===SKELETON:content===
+（内容页完整 HTML，含 {{PAGE_TITLE}} {{MAIN_CONTENT}} {{PAGE_NUMBER}}/{{TOTAL_PAGES}}）
+===SKELETON:ending===
+（结尾完整 HTML，含 {{TITLE}} {{ENDING_HINT}}）
+===HEADER_LOCK===
+...
+===FOOTER_LOCK===
+...
+```
+
+只输出上述结构，不附加解释。
+
+{resource_perf}"""
+
+    @staticmethod
+    def get_slide_content_fragment_prompt(slide_data: Dict[str, Any],
+                                          confirmed_requirements: Dict[str, Any],
+                                          page_number: int, total_pages: int,
+                                          context_info: str,
+                                          style_genes: str,
+                                          skeleton_html: str,
+                                          global_constitution: str = "",
+                                          current_page_brief: str = "") -> str:
+        """内容页主内容片段生成提示词：只生成主体区 HTML 片段，不生成整页。
+
+        片段将被机械注入到内容页骨架的 {{MAIN_CONTENT}} 占位符。骨架已固化页头页脚，
+        故片段内不要再现页头、页脚、页码、`<!DOCTYPE>`、`<html>`、`<head>`、`<body>`、`<style>`。
+        """
+        slide_type = slide_data.get("slide_type", "content") if isinstance(slide_data, dict) else "content"
+        slide_title = slide_data.get("title", "") if isinstance(slide_data, dict) else ""
+        images_info = ""
+        if _is_image_service_enabled() and 'images_summary' in slide_data:
+            images_info = "\n\n" + DesignPrompts._build_image_usage_context()
+        resource_perf = DesignPrompts._build_resource_performance_context()
+
+        # 主体区可用空间：从骨架中扣除页头页脚后的主体容器尺寸提示
+        skeleton_hint = (
+            "下方是内容页骨架（页头/页脚已固化，仅 {{MAIN_CONTENT}} 待你填充）。"
+            "你的片段会被放入主体容器，不要自带外层 1280×720、不要重组页头页脚。"
+        )
+
+        constitution_block = f"**全局设计规则**\n{global_constitution}" if global_constitution else ""
+        brief_block = f"**当前页面指导**\n{current_page_brief}" if current_page_brief else ""
+
+        return f"""为第{page_number}页生成主内容区的 HTML 片段（不是整页）。
+
+**核心目标**
+骨架已经固化了页头标题区和页脚页码区，跨页一致性由骨架机械保证。你只需围绕当前页使命，把主内容区组织成一段可直接放入主体容器的 HTML 片段。
+
+**页面信息**
+- 标题：{slide_title}
+- 类型：{slide_type}
+- 第 {page_number} 页 / 共 {total_pages} 页
+
+**页面数据**
+{slide_data}
+{images_info}
+
+**项目信息**
+- 主题：{confirmed_requirements.get('topic', '')}
+- 受众：{confirmed_requirements.get('target_audience', '')}
+- 补充：{confirmed_requirements.get('description', '无')}
+
+{skeleton_hint}
+
+**内容页骨架原文（只读参考，供你校准主体容器尺寸与可视空间）**
+{skeleton_html}
+
+{DesignPrompts._build_content_quality_context()}
+
+{DesignPrompts._build_creative_intent_context()}
+
+**设计基因**
+{style_genes}
+
+{constitution_block}
+
+{brief_block}
+
+{DesignPrompts._build_fixed_canvas_html_guardrails()}
+
+{DesignPrompts._build_layout_priority_context()}
+
+{context_info}
+
+{DesignPrompts._build_slide_generation_principles_context()}
+
+{DesignPrompts._build_generation_self_check_context()}
+
+**片段输出格式（硬性）**
+- 只返回主体区的 HTML 片段：以一个或多个 `<div>...</div>` 等容器标签构成，可直接塞进主体容器。
+- 严禁包含：`<!DOCTYPE>`、`<html>`、`<head>`、`<body>`、`<style>`、页头/页脚/页码结构。
+- 严禁出现 `{{MAIN_CONTENT}}`、`{{PAGE_TITLE}}` 等占位符本身。
+- 主体区可用高度通常仅 540~600px：片段自然高度之和务必 ≤ 可用高度，宁可减少内容也不让总高超出容器被裁切；卡片类用 `min-height` 而非固定 `height`。
+- 宽度自然宽度之和 ≤ 主体容器宽度，横向不可溢出：长文本 `word-wrap:break-word`，图片 `max-width:100%`。
+- 直接输出 HTML 片段，不要 markdown 代码块包裹、不要解释。
 
 {resource_perf}"""

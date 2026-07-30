@@ -148,6 +148,14 @@ class PPTPromptsManager:
         """获取幻灯片上下文提示词（特殊页面设计要求）"""
         return self.design.get_slide_context_prompt(slide_data, page_number, total_pages)
 
+    def get_page_type_skeletons_prompt(self, *args, **kwargs) -> str:
+        """获取整套页型骨架生成提示词（封面/目录/过渡/内容/结尾分型固化骨架）"""
+        return self.design.get_page_type_skeletons_prompt(*args, **kwargs)
+
+    def get_slide_content_fragment_prompt(self, *args, **kwargs) -> str:
+        """获取内容页主内容片段生成提示词（仅生成主体区 HTML 片段）"""
+        return self.design.get_slide_content_fragment_prompt(*args, **kwargs)
+
 
 # 创建默认实例
 prompts_manager = PPTPromptsManager()

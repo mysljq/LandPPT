@@ -153,6 +153,11 @@ class AIConfig(BaseSettings):
     enable_local_models: bool = Field(default=False, env="ENABLE_LOCAL_MODELS")
     enable_streaming: bool = Field(default=True, env="ENABLE_STREAMING")
     enable_auto_layout_repair: bool = Field(default=False, env="ENABLE_AUTO_LAYOUT_REPAIR")
+
+    # 启用页型骨架 + 内容片段注入：选定模板后预生成按页型分型的固化骨架，
+    # 特殊页(封面/目录/过渡/结尾)填命名变量、内容页仅生成主内容片段并机械拼回骨架，
+    # 使页头页脚跨页逐字节一致。关闭则退回原有整页生成链路。
+    enable_page_type_skeletons: bool = Field(default=True, env="ENABLE_PAGE_TYPE_SKELETONS")
     
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
@@ -509,6 +514,7 @@ def reload_ai_config():
     ai_config.parallel_slides_count = int(os.environ.get('PARALLEL_SLIDES_COUNT', str(ai_config.parallel_slides_count)))
     ai_config.enable_auto_layout_repair = os.environ.get('ENABLE_AUTO_LAYOUT_REPAIR', str(ai_config.enable_auto_layout_repair)).lower() == 'true'
     ai_config.enable_apryse_pptx_export = os.environ.get('ENABLE_APRYSE_PPTX_EXPORT', str(ai_config.enable_apryse_pptx_export)).lower() == 'true'
+    ai_config.enable_page_type_skeletons = os.environ.get('ENABLE_PAGE_TYPE_SKELETONS', str(ai_config.enable_page_type_skeletons)).lower() == 'true'
 
     # Update Tavily configuration
     ai_config.tavily_api_key = os.environ.get('TAVILY_API_KEY', ai_config.tavily_api_key)

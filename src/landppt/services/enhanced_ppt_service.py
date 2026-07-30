@@ -25,6 +25,7 @@ from ..ai.base import TextContent, ImageContent
 from ..core.config import ai_config, app_config
 from .runtime.ai_execution import ExecutionContext
 from .slide.creative_design_service import CreativeDesignService
+from .slide.page_skeleton_service import PageSkeletonService
 from .outline.outline_workflow_service import OutlineWorkflowService
 from .ppt_service import PPTService
 from .db_project_manager import DatabaseProjectManager
@@ -118,6 +119,7 @@ class EnhancedPPTService(PPTService):
         self.runtime_support._initialize_image_service()
         self.outline_workflow = OutlineWorkflowService(self)
         self.creative_design = CreativeDesignService(self)
+        self.page_skeleton = PageSkeletonService(self)
         self.template_selection = TemplateSelectionService(self)
         self.slide_generation = SlideGenerationService(self)
         self.layout_repair = LayoutRepairService(self)
@@ -510,6 +512,13 @@ class EnhancedPPTService(PPTService):
     async def _generate_html_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any],
                                       page_number: int, total_pages: int, max_retries: int = 3) -> str:
         return await self.slide_authoring._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries)
+
+    async def _generate_content_fragment_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any],
+                                                     page_number: int, total_pages: int, max_retries: int = 3) -> str:
+        return await self.slide_authoring._generate_content_fragment_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries)
+
+    def _clean_html_fragment_response(self, raw_content: str) -> str:
+        return self.slide_authoring._clean_html_fragment_response(raw_content)
 
     @staticmethod
     def _strip_think_tags(raw_content: Optional[str]) -> str:

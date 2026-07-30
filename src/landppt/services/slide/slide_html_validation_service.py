@@ -98,5 +98,11 @@ class SlideHtmlValidationService:
     async def _generate_html_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any], page_number: int, total_pages: int, max_retries: int=3) -> str:
         return await self._recovery_service._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries)
 
+    async def _generate_content_fragment_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any], page_number: int, total_pages: int, max_retries: int=3) -> str:
+        return await self._recovery_service._generate_content_fragment_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries)
+
+    def _clean_html_fragment_response(self, raw_content: str) -> str:
+        return self._recovery_service._clean_html_fragment_response(raw_content)
+
     def _fix_incomplete_html(self, html_content: str, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
         return self._recovery_service._fix_incomplete_html(html_content, slide_data, page_number, total_pages)

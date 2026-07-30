@@ -65,6 +65,40 @@ class SlideMediaService:
             if selected_template:
                 return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id)
             template_html = selected_template.get('html_template', '') if selected_template else ''
+
+            # 页型骨架速通道（非模板主路兜底）：已预生成骨架时优先走骨架注入
+            if project_id and self.page_skeleton.is_enabled():
+                try:
+                    (
+                        style_genes,
+                        global_constitution,
+                        current_page_brief,
+                    ) = await self._get_creative_design_inputs(
+                        project_id, template_html, slide_data, page_number, total_pages,
+                        confirmed_requirements=confirmed_requirements, all_slides=all_slides,
+                    )
+                    skeleton_html = self.page_skeleton.render_slide_from_skeleton_or_none(
+                        project_id=project_id,
+                        slide_data=slide_data,
+                        page_number=page_number,
+                        total_pages=total_pages,
+                        system_prompt=system_prompt,
+                        style_genes=style_genes,
+                        global_constitution=global_constitution,
+                        current_page_brief=current_page_brief,
+                        confirmed_requirements=confirmed_requirements,
+                        all_slides=all_slides,
+                        template_html=template_html,
+                    )
+                except Exception as exc:
+                    logger.warning("页型骨架分发异常（非模板主路，slide %s）: %s", page_number, exc)
+                    skeleton_html = None
+                if skeleton_html is not None:
+                    if skeleton_html:
+                        logger.info("成功使用页型骨架生成第%s页（非模板主路）", page_number)
+                        return skeleton_html
+                    logger.info("页型骨架不适用第%s页，回退整页生成（非模板主路）", page_number)
+
             await self._ensure_slide_images_context(slide_data, confirmed_requirements, page_number, total_pages, template_html)
             (
                 style_genes,

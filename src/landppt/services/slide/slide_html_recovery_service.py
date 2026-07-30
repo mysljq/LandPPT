@@ -271,6 +271,108 @@ class SlideHtmlRecoveryService:
         fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
         return await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
 
+    async def _generate_content_fragment_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any], page_number: int, total_pages: int, max_retries: int = 3) -> str:
+        """生成内容页的主体区 HTML 片段（页头页脚已由骨架固化，不在此生成）。
+
+        与 _generate_html_with_retry 的差异：
+        - 跳过整页完整性校验/修复（片段不含 <!DOCTYPE>/<html>/<head>/<body>，会被误判为不完整）；
+        - 只做主体相关审美预检（不传 header_lock/footer_lock，页头页脚一致性由骨架机械保证）；
+        - 失败重试反馈沿用相同反馈注入方式；
+        - 返回纯片段，由调用方拼装为整页后再做溢出测量/布局修复。
+        """
+        from .retry_progress import notify_retry_progress
+        last_fragment = ""
+        for attempt in range(max_retries):
+            try:
+                logger.info(f'Generating content fragment for slide {page_number}, attempt {attempt + 1}/{max_retries}')
+                await notify_retry_progress(
+                    page_number=page_number, total_pages=total_pages,
+                    attempt=attempt + 1, max_retries=max_retries,
+                    stage="generating",
+                    detail=f"第 {page_number}/{total_pages} 页：正在生成主体片段（第 {attempt + 1}/{max_retries} 次）",
+                )
+                retry_context = context
+                if attempt > 0:
+                    retry_context += (
+                        f'\n\n    **重要提醒（第{attempt + 1}次尝试）：**\n    '
+                        '- 只返回主体区 HTML 片段（一个或多个 <div> 等容器），不要 <!DOCTYPE>/<html>/<head>/<body>/<style>。\n    '
+                        '- 不要再现页头、页脚、页码结构。\n    '
+                    )
+                response = await self._text_completion_for_role('slide_generation', prompt=retry_context, system_prompt=system_prompt, temperature=max(0.1, ai_config.temperature))
+                fragment = self._clean_html_fragment_response(response.content)
+                if not fragment or len(fragment.strip()) < 20:
+                    logger.warning(f'AI 返回空或过短的内容片段（slide {page_number}）')
+                    continue
+                # 片段级审美预检：仅主体相关项，不比对页头页脚令牌
+                hard_fails, warns = self._aesthetic_preflight_check(
+                    fragment, slide_data=slide_data, page_number=page_number, total_pages=total_pages)
+                if warns:
+                    for w in warns:
+                        logger.info(f'🎨 片段审美预警 (slide {page_number}): {w}')
+                if hard_fails:
+                    hard_summary = '；'.join(hard_fails)
+                    logger.info(f'🎨 片段审美 hard fail (slide {page_number}, attempt {attempt + 1}): {hard_summary}')
+                    if attempt < max_retries - 1:
+                        await notify_retry_progress(
+                            page_number=page_number, total_pages=total_pages,
+                            attempt=attempt + 2, max_retries=max_retries,
+                            stage="aesthetic_retry",
+                            detail=f"第 {page_number} 页片段审美预检不过，重试（{attempt + 2}/{max_retries}）：{'；'.join(hard_fails)}",
+                        )
+                        context = context + (
+                            f'\n\n    **上一轮片段审美预检未通过，请修正：**\n    '
+                            + '\n    '.join(f'- {h}' for h in hard_fails)
+                            + '\n    请确保本轮输出避开这些 AI 套路指纹。\n    '
+                        )
+                        continue
+                    else:
+                        logger.warning(f'⚠️ 片段审美未达标但已用尽重试次数，交付当前片段 slide {page_number}')
+                last_fragment = fragment
+                logger.info(f'✅ 成功生成内容片段 slide {page_number}, attempt {attempt + 1}')
+                return fragment
+            except Exception as exc:
+                logger.error(f'生成内容片段出错 (slide {page_number}, attempt {attempt + 1}): {exc}')
+                if attempt == max_retries - 1:
+                    break
+                await asyncio.sleep(1)
+        return last_fragment
+
+    def _clean_html_fragment_response(self, raw_content: str) -> str:
+        """清洗 AI 返回为纯主体 HTML 片段。
+
+        - 剥离 markdown ```html``` 代码块包裹；
+        - 若模型误将整页/骨架回吐（含 <!DOCTYPE>/<html>/<head>/<body>/<style>），抽主体片段：
+          优先取 <body> 内部；否则剥离整页结构性标签与 <style> 块；
+        - 移除残留的占位符令牌与外层冗余换行。
+        """
+        import re
+        if not raw_content or not raw_content.strip():
+            return ""
+        content = raw_content.strip()
+
+        # 去除 markdown 代码块
+        fence = re.search(r'```(?:html|HTML)?\s*\n?(.*?)```', content, re.DOTALL)
+        if fence:
+            content = fence.group(1).strip()
+
+        # 若误吐整页：取 <body> 内部主体
+        if re.search(r'<!doctype|<html|<body', content, re.IGNORECASE):
+            body_m = re.search(r'<body[^>]*>(.*?)</body>', content, re.IGNORECASE | re.DOTALL)
+            if body_m:
+                content = body_m.group(1).strip()
+            else:
+                # 没有明确 body，则剥离结构性标签与 style 块
+                content = re.sub(r'<!doctype[^>]*>', '', content, flags=re.IGNORECASE)
+                content = re.sub(r'</?html[^>]*>', '', content, flags=re.IGNORECASE)
+                content = re.sub(r'</?head[^>]*>', '', content, flags=re.IGNORECASE)
+                content = re.sub(r'</?body[^>]*>', '', content, flags=re.IGNORECASE)
+            # 去掉 <style>...</style>，避免片段自带样式污染骨架样式系统
+            content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.IGNORECASE | re.DOTALL)
+
+        # 移除骨架占位符令牌，避免片段回注时形成死循环
+        content = re.sub(r'\{\{(?:MAIN_CONTENT|PAGE_TITLE|PAGE_NUMBER|TOTAL_PAGES|TITLE|SUBTITLE|CHAPTER_NAME|CHAPTER_HINT|AGENDA_ITEMS|ENDING_HINT)\}\}', '', content)
+        return content.strip()
+
     def _fix_incomplete_html(self, html_content: str, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:
         """Try to fix incomplete HTML by adding missing elements"""
         import re

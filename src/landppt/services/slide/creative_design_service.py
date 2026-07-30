@@ -30,6 +30,9 @@ class CreativeDesignService:
         "_page_creative_brief_ready_events",
         "_slide_creative_guide_ready_events",
         "_slide_guide_prewarm_tasks",
+        # 页型骨架缓存（PageSkeletonService 写到 owner，模板切换时一并清理）
+        "_cached_page_type_skeletons",
+        "_page_type_skeletons_ready_events",
     }
 
     def __init__(self, service: "EnhancedPPTService"):
@@ -112,6 +115,41 @@ class CreativeDesignService:
             template_html = template["html_template"]
             template_name = template.get("template_name", "未知模板")
             logger.info("使用模板 %s 作为风格参考生成第%s页", template_name, page_number)
+
+            # 页型骨架速通道：若已预生成分型骨架，先尝试机械注入；不适用则回退原整页生成链路
+            if project_id and self.page_skeleton.is_enabled():
+                try:
+                    (
+                        style_genes,
+                        global_constitution,
+                        current_page_brief,
+                    ) = await self._get_creative_design_inputs(
+                        project_id, template_html, slide_data, page_number, total_pages,
+                        confirmed_requirements=confirmed_requirements, all_slides=all_slides,
+                    )
+                    skeleton_html = self.page_skeleton.render_slide_from_skeleton_or_none(
+                        project_id=project_id,
+                        slide_data=slide_data,
+                        page_number=page_number,
+                        total_pages=total_pages,
+                        system_prompt=self._load_prompts_md_system_prompt(),
+                        style_genes=style_genes,
+                        global_constitution=global_constitution,
+                        current_page_brief=current_page_brief,
+                        confirmed_requirements=confirmed_requirements,
+                        all_slides=all_slides,
+                        template_html=template_html,
+                    )
+                except Exception as exc:
+                    logger.warning("页型骨架分发异常，回退整页生成（slide %s）: %s", page_number, exc)
+                    skeleton_html = None
+
+                if skeleton_html is not None:
+                    if skeleton_html:
+                        logger.info("成功使用页型骨架生成第%s页", page_number)
+                        return skeleton_html
+                    # 返回空字符串表示占位符缺失等"不适用"，回退原链路继续
+                    logger.info("页型骨架不适用第%s页，回退整页生成", page_number)
 
             context = await self._build_creative_template_context(
                 slide_data,
@@ -1344,6 +1382,7 @@ class CreativeDesignService:
             "_cached_global_constitutions",
             "_cached_page_creative_briefs",
             "_cached_slide_creative_guides",
+            "_cached_page_type_skeletons",
         )
         event_attrs = (
             "_style_genes_ready_events",
@@ -1352,6 +1391,7 @@ class CreativeDesignService:
             "_page_creative_brief_ready_events",
             "_slide_creative_guide_ready_events",
             "_slide_guide_prewarm_tasks",
+            "_page_type_skeletons_ready_events",
         )
 
         def _get_project_scoped_keys(mapping: Any) -> List[Any]:
@@ -1391,6 +1431,7 @@ class CreativeDesignService:
                     f"{project_id}_page_type_guidance.json",
                     f"{project_id}_page_creative_briefs.json",
                     f"{project_id}_page_plan.json",
+                    f"{project_id}_page_type_skeletons.json",
                 ):
                     try:
                         cache_file = self.cache_dirs["style_genes"] / filename
@@ -1423,6 +1464,7 @@ class CreativeDesignService:
                 "*_combined_genes_guide.json",
                 "*_creative_guide.json",
                 "*_slide_*_creative_guide.json",
+                "*_page_type_skeletons.json",
             ):
                 try:
                     for cache_file in self.cache_dirs["style_genes"].glob(pattern):

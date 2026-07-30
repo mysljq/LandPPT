@@ -483,6 +483,21 @@ class SlideGenerationService:
 
                     if slides_to_generate:
                         if not design_context_prepared:
+                            # 预生成页型骨架：选定模板后一次性产出分型固化骨架，供分发时机械注入
+                            if self.page_skeleton.is_enabled():
+                                try:
+                                    selected_template = await self._ensure_global_master_template_selected(project_id)
+                                    template_html = (selected_template or {}).get('html_template', '') or ''
+                                    if template_html:
+                                        await self.page_skeleton._get_or_generate_page_type_skeletons(
+                                            project_id=project_id,
+                                            template_html=template_html,
+                                            confirmed_requirements=confirmed_requirements,
+                                            all_slides=slides,
+                                            total_pages=len(slides),
+                                        )
+                                except Exception as exc:
+                                    logger.warning("预生成页型骨架失败（项目 %s），将回退整页生成: %s", project_id, exc)
                             # logger.info(
                             #     "仅预热共享创意缓存后立即开始PPT生成，剩余单页创意指导转后台异步预热"
                             # )
