@@ -48,6 +48,38 @@ class SlideHtmlRecoveryService:
     def __getattr__(self, name: str):
         return getattr(self._service, name)
 
+    @staticmethod
+    def _extract_suite_locked_colors(context: str) -> Optional[set]:
+        """从生成上下文提取模板套件"页头页脚强约束"块中锁定区的既定配色。
+
+        套件模式下，prompt 上下文会包含 `**页头页脚强约束**` 及其 ```html``` 片段
+        （套件 header_footer 原文）。这些颜色是设计既定值，审美预检应跳过，
+        避免把套件自身的页头红/页脚黄误判为 LLM 的多 accent 套路。
+        解析失败返回 None（等价于不排除任何颜色）。
+        """
+        if not context or "页头页脚强约束" not in context:
+            return None
+        try:
+            import re as _re
+            # 提取页头页脚强约束代码块
+            match = _re.search(
+                r"页头页脚强约束.*?```html\s*(.*?)```",
+                context,
+                flags=_re.DOTALL,
+            )
+            if not match:
+                return None
+            fragment = match.group(1)
+            colors: set = set()
+            for m in _re.finditer(r"#([0-9a-fA-F]{3,8})\b", fragment):
+                h = m.group(1).upper()
+                if len(h) == 3:
+                    h = "".join(ch * 2 for ch in h)
+                colors.add("#" + h)
+            return colors or None
+        except Exception:
+            return None
+
     async def _measure_overflow(self, html_content: str, page_number: int):
         """按需用 Playwright 测量主内容区是否溢出 1280×720。
 
@@ -96,6 +128,9 @@ class SlideHtmlRecoveryService:
             footer_lock = self._parse_footer_lock(context)
         except Exception:
             footer_lock = None
+        # 若上下文含"页头页脚强约束"（模板套件模式），提取其锁定配色，
+        # 供审美预检跳过套件自身的既定颜色（避免误判为 LLM 套路指纹）。
+        excluded_colors = self._extract_suite_locked_colors(context)
         lock_repr = ', '.join(f'{k}={v}' for k, v in (header_lock or {}).items()) or '无'
         logger.info(f'页头令牌 (slide {page_number}): {lock_repr}')
         from .retry_progress import notify_retry_progress
@@ -131,7 +166,8 @@ class SlideHtmlRecoveryService:
                     # 审美维度预检（结构合法之后的第二道闸），传入页头/页脚令牌做跨页一致性守恒
                     # 非内容页（封面/尾页/目录/过渡）由预检器按 slide_data 自动豁免页头/页脚比对
                     aesthetic_hard, aesthetic_warn = self._aesthetic_preflight_check(
-                        html_content, header_lock, footer_lock, slide_data, page_number, total_pages)
+                        html_content, header_lock, footer_lock, slide_data, page_number, total_pages,
+                        excluded_colors=excluded_colors)
                     if aesthetic_warn:
                         for w in aesthetic_warn:
                             logger.info(f'🎨 审美预警 (slide {page_number}): {w}')

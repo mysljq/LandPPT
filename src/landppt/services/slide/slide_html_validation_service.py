@@ -71,17 +71,21 @@ class SlideHtmlValidationService:
         return self._inspection_service._basic_html_syntax_check(html_content, validation_result)
 
     def _aesthetic_preflight_check(self, html_content: str, header_lock=None, footer_lock=None,
-                                    slide_data=None, page_number=None, total_pages=None):
+                                    slide_data=None, page_number=None, total_pages=None,
+                                    excluded_colors=None):
         """审美维度预检（机械正则），返回 (hard_fails, warnings)。
 
         header_lock 可选：传入宪法 HEADER_LOCK 令牌字典时一并做页头跨页一致性校验，
         非内容页（封面/尾页/目录/过渡）自动豁免不参与页头守恒比对。
         footer_lock 可选：传入宪法 FOOTER_LOCK 令牌字典时一并做页脚页码一致性校验，
         非内容页自动豁免。
+        excluded_colors 可选：套件页头页脚等锁定区的既定配色集合，纯黑纯白/多 accent
+        检查会跳过这些颜色，避免误判套件自身设计为 LLM 套路指纹。
         """
         return self._aesthetic_checker.check(
             html_content, header_lock=header_lock, footer_lock=footer_lock,
-            slide_data=slide_data, page_number=page_number, total_pages=total_pages)
+            slide_data=slide_data, page_number=page_number, total_pages=total_pages,
+            excluded_colors=excluded_colors)
 
     def _parse_header_lock(self, constitution: str):
         """从宪法文本解析 ===HEADER_LOCK=== 令牌字典。"""

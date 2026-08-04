@@ -269,7 +269,7 @@ async def _do_batch_regenerate(
 
         # Prepare generation context once.
         system_prompt = user_ppt_service._load_prompts_md_system_prompt()
-        selected_template = await user_ppt_service._ensure_global_master_template_selected(project_id)
+        await user_ppt_service._ensure_global_master_template_selected(project_id)
 
         if project.slides_data is None:
             project.slides_data = []
@@ -293,25 +293,17 @@ async def _do_batch_regenerate(
             slide_number = slide_index + 1  # 1-based for prompts/templates
             slide_outline = outline_slides[slide_index]
             try:
-                if selected_template:
-                    new_html_content = await user_ppt_service._generate_slide_with_template(
-                        slide_outline,
-                        selected_template,
-                        slide_number,
-                        total_slides,
-                        project.confirmed_requirements
-                    )
-                else:
-                    new_html_content = await user_ppt_service._generate_single_slide_html_with_prompts(
-                        slide_outline,
-                        project.confirmed_requirements,
-                        system_prompt,
-                        slide_number,
-                        total_slides,
-                        outline_slides,
-                        project.slides_data,
-                        project_id=project_id
-                    )
+                # 优先走单页生成统一入口，使其自动应用模板套件（封面/过渡填充、内容页页头页脚约束）。
+                new_html_content = await user_ppt_service._generate_single_slide_html_with_prompts(
+                    slide_outline,
+                    project.confirmed_requirements,
+                    system_prompt,
+                    slide_number,
+                    total_slides,
+                    outline_slides,
+                    project.slides_data,
+                    project_id=project_id
+                )
 
                 existing_slide = project.slides_data[slide_index] if slide_index < len(project.slides_data) else {}
                 updated_slide = {

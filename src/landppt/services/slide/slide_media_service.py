@@ -62,8 +62,25 @@ class SlideMediaService:
                         logger.info(f"为第{page_number}页使用全局母版: {selected_template['template_name']}")
                 except Exception as e:
                     logger.warning(f'获取全局母版失败，使用默认生成方式: {e}')
+
+            # 模板套件：封面/过渡页优先用套件模板填充槽位；内容页注入页头页脚强约束。
+            suite_constraint = ""
+            if project_id:
+                try:
+                    suite = await self.template_suite.get_suite(project_id)
+                except Exception as e:
+                    logger.warning(f'获取模板套件失败，按现状生成: {e}')
+                    suite = None
+                if suite:
+                    filled = await self._try_fill_suite_slide(
+                        suite, slide_data, page_number, total_pages, system_prompt
+                    )
+                    if filled:
+                        return filled
+                    suite_constraint = self._build_content_suite_constraint(suite)
+
             if selected_template:
-                return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id)
+                return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id, content_suite_constraint=suite_constraint)
             template_html = selected_template.get('html_template', '') if selected_template else ''
             await self._ensure_slide_images_context(slide_data, confirmed_requirements, page_number, total_pages, template_html)
             (
@@ -83,6 +100,7 @@ class SlideMediaService:
                 context_info, style_genes, template_html,
                 global_constitution=global_constitution,
                 current_page_brief=current_page_brief,
+                content_suite_constraint=suite_constraint,
             )
             html_content = await self._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries=5)
             return html_content
@@ -91,6 +109,166 @@ class SlideMediaService:
             fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
         repaired_fallback = await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
         return repaired_fallback
+
+    # ------------------------------------------------------------------
+    # 模板套件辅助
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_content_suite_constraint(suite: Dict[str, Any]) -> str:
+        """Build the strong header/footer constraint text for content pages."""
+        header_footer = str(suite.get("header_footer") or "").strip()
+        if not header_footer:
+            return ""
+        tokens = str(suite.get("design_tokens") or "").strip()
+        lines = [
+            "**页头页脚强约束（必须逐字保留以下 HTML 片段，仅替换其中槽位，不得改写其结构与样式）**",
+            "```html",
+            header_footer,
+            "```",
+        ]
+        if tokens:
+            lines.append(f"\n**设计令牌（内容页全局对齐）**\n{tokens}")
+        return "\n".join(lines)
+
+    async def _try_fill_suite_slide(
+        self,
+        suite: Dict[str, Any],
+        slide_data: Dict[str, Any],
+        page_number: int,
+        total_pages: int,
+        system_prompt: str,
+    ) -> Optional[str]:
+        """Fill a cover/transition slide from the suite template.
+
+        Returns the completed HTML, or None when this page type is not covered by
+        the suite (caller falls through). Leftover optional slots (e.g.
+        {{ cover_extra }}) are filled with an LLM that understands the page's
+        meaning; if the LLM pass fails, a smart deterministic fallback is used —
+        the suite still renders, and never falls back to the generic path.
+        """
+        from ..template.template_suite_renderer import TemplateSuiteRenderer
+
+        filled = TemplateSuiteRenderer.apply_suite_to_slide(
+            suite, slide_data, page_number, total_pages
+        )
+        if not filled:
+            return None
+
+        # Fill leftover optional slots: LLM-first (semantic), deterministic fallback.
+        remaining = TemplateSuiteRenderer.find_unfilled_slots(filled)
+        if remaining:
+            slot_values = await self._resolve_remaining_slots(
+                filled, remaining, slide_data, page_number, total_pages, system_prompt
+            )
+            filled = TemplateSuiteRenderer.fill_suite_template(filled, slot_values)
+        logger.info("第%s页使用模板套件渲染（封面/过渡）", page_number)
+        return filled
+
+    async def _resolve_remaining_slots(
+        self,
+        html: str,
+        remaining_slots: list,
+        slide_data: Dict[str, Any],
+        page_number: int,
+        total_pages: int,
+        system_prompt: str,
+    ) -> Dict[str, str]:
+        """Resolve leftover optional slot values.
+
+        Tries one LLM call that understands the slide's meaning and fills the
+        slots; on any failure, falls back to deterministic values derived from
+        real content (never from the page-type description, so "PPT封面页" /
+        "章节过渡页" labels never leak into the rendered slide).
+        """
+        # Deterministic fallback first (always safe).
+        fallback = {
+            name: self._default_slot_text(name, slide_data, page_number)
+            for name in remaining_slots
+        }
+
+        try:
+            slots_text = "、".join(f"{{{{{s}}}}}" for s in remaining_slots)
+            title = str(slide_data.get("title") or "").strip() or f"第{page_number}页"
+            description = str(slide_data.get("description") or "").strip()
+            content_points = slide_data.get("content_points") or []
+            if isinstance(content_points, list):
+                points_text = "；".join(str(p).strip() for p in content_points[:4] if str(p).strip())
+            else:
+                points_text = str(content_points).strip()
+
+            context = (
+                f"请为以下 {page_number}/{total_pages} 页的封面/章节过渡页，补充其额外文案槽位"
+                f"（{slots_text}），使其成为自然、专业的演示文案。\n\n"
+                f"**页面标题**：{title}\n"
+                f"**页面定位**：{description or '（未提供，请按标题自行推断）'}\n"
+                f"**内容要点**：{points_text or '（无）'}\n\n"
+                "**要求**：\n"
+                "- 只输出各槽位的填充文案，用 JSON 对象，键为槽位名，值为一句/短语文案。\n"
+                "- 文案要贴合页面定位与内容，不要出现『PPT封面页』『章节过渡页』『标题页』这类对页面类型的描述性称呼。\n"
+                "- 若某个槽位不适用，值给空字符串即可。\n"
+                "- 只输出 JSON，不要附加解释。"
+            )
+            response = await self._text_completion_for_role(
+                "creative", prompt=context, temperature=0.6, max_tokens=300
+            )
+            raw = self._strip_think_tags((response.content or "").strip())
+            import json as _json
+            parsed = _json.loads(self._extract_json_object(raw))
+            result: Dict[str, str] = {}
+            for name in remaining_slots:
+                value = str(parsed.get(name) or "").strip()
+                result[name] = value or fallback[name]
+            return result
+        except Exception as exc:
+            logger.warning(
+                "第%s页套件槽位 LLM 补全失败，使用确定性兜底: %s", page_number, exc
+            )
+            return fallback
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str:
+        """Best-effort extraction of a JSON object from a model response."""
+        if not text:
+            return "{}"
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return text[start:end + 1]
+        return text
+
+    @staticmethod
+    def _default_slot_text(name: str, slide_data: Dict[str, Any], page_number: int) -> str:
+        """Smart deterministic fallback for an unfilled optional slot.
+
+        Deliberately derives from real content (content_points) and never from
+        the page-type description, so labels like "PPT封面页" / "章节过渡页"
+        never leak into the rendered slide.
+        """
+        slide_data = slide_data or {}
+
+        def _first_content_point() -> str:
+            content_points = slide_data.get("content_points") or slide_data.get("content") or []
+            if isinstance(content_points, list):
+                for p in content_points:
+                    p = str(p).strip()
+                    if p:
+                        return p
+            elif isinstance(content_points, str) and content_points.strip():
+                return content_points.strip()
+            return ""
+
+        def _title() -> str:
+            return str(slide_data.get("title") or "").strip() or f"第{page_number}页"
+
+        if name == "cover_extra":
+            point = _first_content_point()
+            if point:
+                return point
+            return f"—— {_title()} ——"
+        if name == "transition_extra":
+            return ""
+        return f"[{name}]"
 
     async def _process_slide_image(self, slide_data: Dict[str, Any], confirmed_requirements: Dict[str, Any], page_number: int, total_pages: int, template_html: str=''):
         """使用图片处理器处理幻灯片多图片"""

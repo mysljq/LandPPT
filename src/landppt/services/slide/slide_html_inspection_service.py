@@ -135,6 +135,15 @@ class SlideHtmlInspectionService:
                     Uses lxml's strict parser to check if the HTML is well-formed.
                     This is the definitive check for syntax errors like unclosed tags.
                     Modifies the validation_result dictionary in place.
+
+                    Known limitation: lxml's HTMLParser(recover=False) rejects some
+                    valid HTML5 semantic elements (e.g. <header>, <footer>, <nav>,
+                    <section>) with "Tag ... invalid". To avoid falsely rejecting
+                    LLM-generated HTML that uses semantic tags, when strict parsing
+                    fails with a "Tag X invalid" error we fall back to an independent
+                    tag-balance check via the stdlib html.parser: if tags balance,
+                    the "invalid tag" is an lxml HTML5 false positive and is not
+                    treated as a hard error; real unclosed/mismatched tags still fail.
                     """
         try:
             from lxml import etree
@@ -145,7 +154,65 @@ class SlideHtmlInspectionService:
             logger.warning('lxml not available, using basic HTML validation')
             self._basic_html_syntax_check(html_content, validation_result)
         except Exception as e:
-            validation_result['errors'].append(f'HTML语法错误: {str(e)}')
+            error_msg = str(e)
+            # Only treat "Tag X invalid" as a possible HTML5 false positive.
+            is_tag_invalid = bool(re.match(r'Tag \w+ invalid', error_msg))
+            if is_tag_invalid and self._tags_balanced(html_content):
+                logger.debug(
+                    "lxml strict rejected HTML but tag balance is fine; "
+                    "treating as well-formed (HTML5 semantic-tag false positive): %s",
+                    error_msg,
+                )
+            else:
+                validation_result['errors'].append(f'HTML语法错误: {error_msg}')
+
+    @staticmethod
+    def _tags_balanced(html_content: str) -> bool:
+        """Independent tag-balance check using the stdlib html.parser.
+
+        Returns True when all non-void tags are properly nested/closed. This is
+        used to tell real structural breakage apart from lxml's HTML5
+        semantic-tag false positives (e.g. "Tag header invalid").
+        """
+        from html.parser import HTMLParser
+
+        void_tags = {
+            'meta', 'link', 'img', 'br', 'hr', 'input', 'area', 'base', 'col',
+            'embed', 'source', 'track', 'wbr', 'path', 'circle', 'rect', 'line',
+            'polyline', 'polygon', 'ellipse', 'stop',
+        }
+
+        class _Balance(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self._stack: List[str] = []
+                self._errors: List[str] = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag not in void_tags:
+                    self._stack.append(tag)
+
+            def handle_endtag(self, tag):
+                if tag in void_tags:
+                    return
+                if self._stack and self._stack[-1] == tag:
+                    self._stack.pop()
+                elif tag in self._stack:
+                    while self._stack and self._stack[-1] != tag:
+                        self._errors.append(f'unclosed <{self._stack.pop()}>')
+                    if self._stack:
+                        self._stack.pop()
+                else:
+                    self._errors.append(f'stray </{tag}>')
+
+        try:
+            parser = _Balance()
+            parser.feed(html_content or '')
+            parser.close()
+            return not parser._errors and not parser._stack
+        except Exception:
+            # If the balance check itself fails, fall back to trusting lxml's error.
+            return False
 
     def _auto_fix_html_with_parser(self, html_content: str) -> str:
         """

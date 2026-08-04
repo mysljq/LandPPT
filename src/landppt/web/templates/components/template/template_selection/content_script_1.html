@@ -39,6 +39,7 @@
         loadTemplates(1);
         setupEventListeners();
         setupSearchListeners();
+        refreshSuiteStatus();
     });
 
     function setupEventListeners() {
@@ -317,6 +318,9 @@
             showSelectedTemplateInfo(template);
         }
 
+        // 全局模板支持生成一致性套件
+        showTemplateSuiteSection();
+
         // Enable start button
         document.getElementById('startGenerationBtn').disabled = false;
     }
@@ -353,7 +357,344 @@
             tags: ['AI自动', '按大纲', '专属风格']
         });
 
+        // 自由模板使用项目专属流程，禁用一致性套件
+        showTemplateSuiteSection();
+
         document.getElementById('startGenerationBtn').disabled = false;
+    }
+
+    // ============================================================
+    // 一致性套件（封面/过渡/内容页头页脚）
+    // ============================================================
+
+    function showTemplateSuiteSection() {
+        // 套件区域常驻显示；仅根据当前选择刷新按钮可用性。
+        refreshSuiteStatus();
+    }
+
+    async function refreshSuiteStatus() {
+        const btn = document.getElementById('generateSuiteBtn');
+        const previewBtn = document.getElementById('previewSuiteBtn');
+        const status = document.getElementById('suiteStatusText');
+        if (!btn || !status) return;
+
+        // 未选择全局模板时禁用按钮并提示
+        if (selectedTemplateMode !== 'global' || !selectedTemplateId) {
+            btn.disabled = true;
+            if (previewBtn) previewBtn.disabled = true;
+            status.textContent = '请先选择一个全局模板';
+            return;
+        }
+
+        btn.disabled = false;
+        if (previewBtn) previewBtn.disabled = true;
+        status.textContent = '为封面/过渡/内容页生成一致性页头页脚';
+
+        try {
+            const resp = await fetch(`/api/projects/${projectId}/template-suite`);
+            const data = await resp.json();
+            if (resp.ok && data?.success && data?.status === 'ready') {
+                status.textContent = `已有套件（${data.template_name || '当前模板'}）· 点击可重新生成`;
+                if (previewBtn) previewBtn.disabled = false;
+            }
+        } catch (_) {
+            // 状态查询失败不阻塞按钮
+        }
+    }
+
+    // 套件预览
+    let suitePreviewData = null;
+    let currentSuiteTab = 'cover';
+
+    async function previewTemplateSuite() {
+        const previewBtn = document.getElementById('previewSuiteBtn');
+        if (!previewBtn || previewBtn.disabled) return;
+
+        const modal = document.getElementById('suitePreviewModal');
+        const loading = document.getElementById('suitePreviewLoading');
+        if (!modal) return;
+
+        modal.style.display = 'flex';
+        if (loading) loading.style.display = 'block';
+
+        try {
+            const resp = await fetch(`/api/projects/${projectId}/template-suite/preview`);
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data?.detail || data?.message || '预览加载失败');
+            }
+            const data = await resp.json();
+            if (!data?.success || !data?.preview) {
+                throw new Error(data?.error || '套件数据为空');
+            }
+            suitePreviewData = data.preview;
+            if (data.template_name) {
+                document.getElementById('suitePreviewTitle').textContent = `套件预览 - ${data.template_name}`;
+            }
+            showSuiteTab(currentSuiteTab);
+        } catch (error) {
+            console.error('Suite preview error:', error);
+            alert(`预览失败：${error.message}`);
+            closeSuitePreviewModal();
+        } finally {
+            if (loading) loading.style.display = 'none';
+        }
+    }
+
+    function showSuiteTab(tab) {
+        currentSuiteTab = tab;
+        const frame = document.getElementById('suitePreviewFrame');
+        const loading = document.getElementById('suitePreviewLoading');
+        if (!frame || !suitePreviewData) return;
+
+        document.querySelectorAll('.suite-tab-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.suiteTab === tab);
+        });
+        if (loading) loading.style.display = 'block';
+
+        // 显示"重新生成此类型"按钮
+        const regenBtn = document.getElementById('regenerateSuitePartBtn');
+        if (regenBtn) regenBtn.style.display = 'inline-flex';
+        const regenInput = document.getElementById('regenerateSuitePartInput');
+        if (regenInput) regenInput.style.display = 'none';
+
+        const html = suitePreviewData[tab] || '';
+        const blob = new Blob([html], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        frame.onload = function () {
+            if (loading) loading.style.display = 'none';
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        };
+        frame.src = url;
+    }
+
+    // 套件单类型重新生成（封面/过渡/内容页页头页脚）
+    function _suitePartFromTab() {
+        return currentSuiteTab === 'cover' ? 'cover'
+            : currentSuiteTab === 'transition' ? 'transition'
+            : 'header_footer';
+    }
+
+    function regenerateSuitePart() {
+        const input = document.getElementById('regenerateSuitePartInput');
+        const feedback = document.getElementById('regenerateSuitePartFeedback');
+        const status = document.getElementById('regenerateSuitePartStatus');
+        if (!input) return;
+        input.style.display = 'flex';
+        if (feedback) feedback.value = '';
+        if (status) status.textContent = '';
+        feedback?.focus();
+    }
+
+    function cancelRegenerateSuitePart() {
+        const input = document.getElementById('regenerateSuitePartInput');
+        if (input) input.style.display = 'none';
+    }
+
+    async function submitRegenerateSuitePart() {
+        const part = _suitePartFromTab();
+        const feedback = document.getElementById('regenerateSuitePartFeedback')?.value?.trim() || '';
+        const status = document.getElementById('regenerateSuitePartStatus');
+        const regenBtn = document.getElementById('regenerateSuitePartBtn');
+        const confirmBtn = document.querySelector('#regenerateSuitePartInput .btn-primary');
+        if (!status || !regenBtn) return;
+
+        regenBtn.disabled = true;
+        if (confirmBtn) confirmBtn.disabled = true;
+        status.textContent = '正在重新生成（只重做此类型，其余保留）...';
+
+        try {
+            const resp = await fetch(`/api/projects/${projectId}/template-suite/regenerate-part`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ part, feedback, stream: true })
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data?.detail || data?.message || '重新生成请求失败');
+            }
+
+            if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                let done = false;
+                while (!done) {
+                    const { value, done: isDone } = await reader.read();
+                    done = isDone;
+                    buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let event;
+                        try {
+                            event = JSON.parse(line.slice(6));
+                        } catch (_) {
+                            continue;
+                        }
+                        if (event?.type === 'status' && status) {
+                            status.textContent = event.message || status.textContent;
+                        }
+                        if (event?.type === 'complete') {
+                            if (event?.suite) {
+                                suitePreviewData = null; // 强制重新拉取预览
+                            }
+                            status.textContent = event.message || '重新生成完成！';
+                            const input = document.getElementById('regenerateSuitePartInput');
+                            if (input) input.style.display = 'none';
+                            alert(`✅ ${event.message || '重新生成完成'}，可继续查看预览。`);
+                            await previewTemplateSuite(); // 重新加载预览
+                            return;
+                        }
+                        if (event?.type === 'error') {
+                            throw new Error(event.message || '重新生成失败');
+                        }
+                    }
+                }
+                throw new Error('重新生成未返回完成事件');
+            }
+
+            const data = await resp.json();
+            if (!data?.success) {
+                throw new Error(data?.error || data?.message || '重新生成失败');
+            }
+            status.textContent = '重新生成完成！';
+            const input = document.getElementById('regenerateSuitePartInput');
+            if (input) input.style.display = 'none';
+            alert('✅ 重新生成完成！');
+            await previewTemplateSuite();
+        } catch (error) {
+            console.error('Suite part regeneration error:', error);
+            status.textContent = `重新生成失败：${error.message}`;
+            alert(`❌ 重新生成失败：${error.message}`);
+        } finally {
+            regenBtn.disabled = false;
+            if (confirmBtn) confirmBtn.disabled = false;
+        }
+    }
+
+    function closeSuitePreviewModal() {
+        const modal = document.getElementById('suitePreviewModal');
+        if (modal) modal.style.display = 'none';
+        suitePreviewData = null;
+    }
+
+    async function generateTemplateSuite() {
+        const btn = document.getElementById('generateSuiteBtn');
+        const status = document.getElementById('suiteStatusText');
+        if (!btn) return;
+
+        if (selectedTemplateMode !== 'global' || !selectedTemplateId) {
+            alert('请先选择一个全局模板，再生成一致性套件');
+            return;
+        }
+
+        btn.disabled = true;
+        if (status) {
+            status.textContent = '正在应用所选模板...';
+        }
+
+        // 生成套件前先把所选模板持久化到项目（否则后端 get_selected_global_template 读不到）。
+        try {
+            const persistResp = await fetch(`/api/projects/${projectId}/select-template`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    project_id: projectId,
+                    selected_template_id: selectedTemplateId,
+                    template_mode: 'global'
+                })
+            });
+            if (!persistResp.ok) {
+                const err = await persistResp.json().catch(() => ({}));
+                throw new Error(err?.detail || err?.message || '应用模板失败');
+            }
+        } catch (persistError) {
+            console.error('Persist selected template error:', persistError);
+            if (status) {
+                status.textContent = `应用模板失败：${persistError.message}`;
+            }
+            alert(`❌ 应用模板失败：${persistError.message}`);
+            btn.disabled = false;
+            return;
+        }
+
+        if (status) {
+            status.textContent = '正在生成套件（封面/过渡/内容页头页脚）...';
+        }
+
+        try {
+            const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force: true, stream: true })
+            });
+
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data?.detail || data?.message || '套件生成请求失败');
+            }
+
+            if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                let done = false;
+                while (!done) {
+                    const { value, done: isDone } = await reader.read();
+                    done = isDone;
+                    buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let event;
+                        try {
+                            event = JSON.parse(line.slice(6));
+                        } catch (_) {
+                            continue;
+                        }
+                        if (event?.type === 'status' && status) {
+                            status.textContent = event.message || status.textContent;
+                        }
+                        if (event?.type === 'complete') {
+                            if (status) {
+                                status.textContent = event.message || '模板套件生成完成！';
+                            }
+                            alert('✅ 模板套件生成完成！可点击「预览套件」查看效果，然后开始生成 PPT。');
+                            const pBtn = document.getElementById('previewSuiteBtn');
+                            if (pBtn) pBtn.disabled = false;
+                            btn.disabled = false;
+                            return;
+                        }
+                        if (event?.type === 'error') {
+                            throw new Error(event.message || '套件生成失败');
+                        }
+                    }
+                }
+                throw new Error('套件生成未返回完成事件');
+            }
+
+            const data = await resp.json();
+            if (!data?.success) {
+                throw new Error(data?.error || data?.message || '套件生成失败');
+            }
+            if (status) {
+                status.textContent = '模板套件生成完成！';
+            }
+            alert('✅ 模板套件生成完成！可点击「预览套件」查看效果，然后开始生成 PPT。');
+            const pBtn = document.getElementById('previewSuiteBtn');
+            if (pBtn) pBtn.disabled = false;
+        } catch (error) {
+            console.error('Template suite generation error:', error);
+            if (status) {
+                status.textContent = `套件生成失败：${error.message}`;
+            }
+            alert(`❌ 套件生成失败：${error.message}`);
+        } finally {
+            btn.disabled = false;
+        }
     }
 
     function selectFreeAndStart() {

@@ -106,6 +106,7 @@ class CreativeDesignService:
         confirmed_requirements: Dict[str, Any],
         all_slides: List[Dict[str, Any]] = None,
         project_id: str = None,
+        content_suite_constraint: str = "",
     ) -> str:
         """Generate slide HTML from the selected template style."""
         try:
@@ -122,6 +123,7 @@ class CreativeDesignService:
                 confirmed_requirements,
                 all_slides=all_slides,
                 project_id=project_id,
+                content_suite_constraint=content_suite_constraint,
             )
 
             system_prompt = self._load_prompts_md_system_prompt()
@@ -156,6 +158,7 @@ class CreativeDesignService:
         confirmed_requirements: Dict[str, Any],
         all_slides: List[Dict[str, Any]] = None,
         project_id: str = None,
+        content_suite_constraint: str = "",
     ) -> str:
         """Build slide-generation prompt context with consistent style guidance."""
         del template_name
@@ -217,6 +220,7 @@ class CreativeDesignService:
             project_style=confirmed_requirements.get("ppt_style", "general"),
             global_constitution=global_constitution,
             current_page_brief=current_page_brief,
+            content_suite_constraint=content_suite_constraint,
         )
 
     async def _extract_style_genes(self, template_html: str) -> str:

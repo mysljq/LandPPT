@@ -393,3 +393,305 @@ async def adjust_project_free_template(
     except Exception as exc:  # noqa: BLE001
         logger.error("Error adjusting free template for project %s: %s", project_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/projects/{project_id}/template-suite")
+async def get_project_template_suite(
+    project_id: str,
+    user: User = Depends(get_current_user_required),
+):
+    """Return the template-suite status for the project's currently selected template."""
+    try:
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        status = await user_ppt_service.template_suite.get_suite_status(project_id)
+        return {"success": True, **status}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error getting template suite for project %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/api/projects/{project_id}/template-suite/preview")
+async def get_project_template_suite_preview(
+    project_id: str,
+    user: User = Depends(get_current_user_required),
+):
+    """Return rendered preview HTML for the project's template suite.
+
+    Produces three standalone 1280x720 documents: cover, transition, and a
+    content page (header/footer composed with sample body) so the user can see
+    the actual suite effect before generating the PPT.
+    """
+    try:
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        suite = await user_ppt_service.template_suite.get_suite(project_id)
+        if not suite:
+            raise HTTPException(status_code=404, detail="模板套件尚未生成，请先点击「生成一致性套件」")
+
+        preview = user_ppt_service.template_suite.build_preview_html(suite)
+        return {
+            "success": True,
+            "template_name": suite.get("template_name"),
+            "preview": preview,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error getting template suite preview for project %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/projects/{project_id}/template-suite/generate")
+async def generate_project_template_suite(
+    project_id: str,
+    request: Request,
+    user: User = Depends(get_current_user_required),
+):
+    """Generate (or regenerate) the template suite for the project's selected template.
+
+    Streams SSE events; persists the suite on success and consumes one
+    template-generation credit (only billable for the LandPPT provider).
+    """
+    try:
+        payload = {}
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        force = bool(payload.get("force", False))
+        want_stream = True if payload.get("stream") is None else bool(payload.get("stream"))
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/event-stream" not in accept and payload.get("stream") is None:
+            want_stream = False
+
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        will_generate = True
+        if not force:
+            suite = await user_ppt_service.template_suite.get_suite(project_id)
+            will_generate = suite is None
+
+        template_provider_name = None
+        if will_generate:
+            _, template_settings = await user_ppt_service.global_template_service._get_template_role_provider_async()
+            template_provider_name = template_settings.get("provider")
+            has_credits, required, balance = await check_credits_for_operation(
+                user.id,
+                "template_generation",
+                1,
+                provider_name=template_provider_name,
+            )
+            if not has_credits:
+                message = f"Insufficient credits, need {required}, current {balance}"
+                if want_stream:
+                    async def _credit_error_stream():
+                        yield f"data: {json.dumps({'type': 'error', 'message': message, 'required': required, 'balance': balance}, ensure_ascii=False)}\n\n"
+
+                    return StreamingResponse(
+                        _credit_error_stream(),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                    )
+                return {"success": False, "error": message}
+
+        if want_stream:
+            async def event_stream():
+                credits_consumed = False
+                try:
+                    async for event in user_ppt_service.template_suite.stream_suite_generation(
+                        project_id,
+                        user_id=user.id,
+                        force=force,
+                    ):
+                        if (
+                            will_generate
+                            and not credits_consumed
+                            and (event or {}).get("type") == "complete"
+                        ):
+                            await consume_credits_for_operation(
+                                user.id,
+                                "template_generation",
+                                1,
+                                description="Template suite generation",
+                                reference_id=project_id,
+                                provider_name=template_provider_name,
+                            )
+                            credits_consumed = True
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except HTTPException as exc:
+                    yield f"data: {json.dumps({'type': 'error', 'message': exc.detail}, ensure_ascii=False)}\n\n"
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Error generating template suite for project %s: %s", project_id, exc)
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
+        suite = None
+        async for event in user_ppt_service.template_suite.stream_suite_generation(
+            project_id,
+            user_id=user.id,
+            force=force,
+        ):
+            if (event or {}).get("type") == "complete":
+                suite = (event or {}).get("suite")
+                break
+            if (event or {}).get("type") == "error":
+                raise HTTPException(status_code=500, detail=(event or {}).get("message") or "Failed to generate template suite")
+
+        if not suite:
+            raise HTTPException(status_code=500, detail="Failed to generate template suite")
+
+        if will_generate:
+            await consume_credits_for_operation(
+                user.id,
+                "template_generation",
+                1,
+                description="Template suite generation",
+                reference_id=project_id,
+                provider_name=template_provider_name,
+            )
+
+        return {"success": True, "suite": suite}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error generating template suite for project %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/api/projects/{project_id}/template-suite/regenerate-part")
+async def regenerate_project_template_suite_part(
+    project_id: str,
+    request: Request,
+    user: User = Depends(get_current_user_required),
+):
+    """Regenerate a single part of the template suite (cover/transition/header_footer).
+
+    Streams SSE events; only the chosen part is regenerated while every other part
+    and design_tokens stay intact. Consumes one template-generation credit.
+    """
+    try:
+        payload = {}
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        part = (payload.get("part") or "").strip()
+        user_feedback = (payload.get("feedback") or "").strip()
+        if part not in ("cover", "transition", "header_footer"):
+            raise HTTPException(status_code=400, detail="part 必须是 cover / transition / header_footer")
+
+        want_stream = True if payload.get("stream") is None else bool(payload.get("stream"))
+        accept = (request.headers.get("accept") or "").lower()
+        if "application/json" in accept and "text/event-stream" not in accept and payload.get("stream") is None:
+            want_stream = False
+
+        user_ppt_service = get_ppt_service_for_user(user.id)
+        project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        suite = await user_ppt_service.template_suite.get_suite(project_id)
+        if not suite:
+            raise HTTPException(status_code=400, detail="项目暂无已生成的套件，请先生成套件")
+
+        _, template_settings = await user_ppt_service.global_template_service._get_template_role_provider_async()
+        template_provider_name = template_settings.get("provider")
+        has_credits, required, balance = await check_credits_for_operation(
+            user.id,
+            "template_generation",
+            1,
+            provider_name=template_provider_name,
+        )
+        if not has_credits:
+            message = f"Insufficient credits, need {required}, current {balance}"
+            if want_stream:
+                async def _credit_error_stream():
+                    yield f"data: {json.dumps({'type': 'error', 'message': message, 'required': required, 'balance': balance}, ensure_ascii=False)}\n\n"
+                return StreamingResponse(
+                    _credit_error_stream(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                )
+            return {"success": False, "error": message}
+
+        if want_stream:
+            async def event_stream():
+                credits_consumed = False
+                try:
+                    async for event in user_ppt_service.template_suite.stream_suite_part_regeneration(
+                        project_id,
+                        part,
+                        user_feedback=user_feedback,
+                        user_id=user.id,
+                    ):
+                        if not credits_consumed and (event or {}).get("type") == "complete":
+                            await consume_credits_for_operation(
+                                user.id,
+                                "template_generation",
+                                1,
+                                description=f"Template suite {part} regeneration",
+                                reference_id=project_id,
+                                provider_name=template_provider_name,
+                            )
+                            credits_consumed = True
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except HTTPException as exc:
+                    yield f"data: {json.dumps({'type': 'error', 'message': exc.detail}, ensure_ascii=False)}\n\n"
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Error regenerating suite part for project %s: %s", project_id, exc)
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
+        updated = None
+        async for event in user_ppt_service.template_suite.stream_suite_part_regeneration(
+            project_id,
+            part,
+            user_feedback=user_feedback,
+            user_id=user.id,
+        ):
+            if (event or {}).get("type") == "complete":
+                updated = (event or {}).get("suite")
+                break
+            if (event or {}).get("type") == "error":
+                raise HTTPException(status_code=500, detail=(event or {}).get("message") or "Failed to regenerate suite part")
+
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to regenerate suite part")
+
+        await consume_credits_for_operation(
+            user.id,
+            "template_generation",
+            1,
+            description=f"Template suite {part} regeneration",
+            reference_id=project_id,
+            provider_name=template_provider_name,
+        )
+
+        return {"success": True, "part": part, "suite": updated}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error regenerating suite part for project %s: %s", project_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))

@@ -128,6 +128,12 @@ async function showChangeTemplateDialog() {
                     <div class="tpl-preview-info" id="tplPreviewInfo" style="display:none;">
                         <span class="tpl-preview-name" id="tplPreviewName"></span>
                         <span class="tpl-preview-desc" id="tplPreviewDesc"></span>
+                        <div class="tpl-suite-group">
+                            <button class="tpl-suite-btn" id="tplSuiteBtn" onclick="_tplGenerateSuite()" disabled>
+                                <i class="fas fa-layer-group"></i> 生成套件
+                            </button>
+                            <div class="tpl-suite-status" id="tplSuiteStatus" style="display:none;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -411,6 +417,8 @@ async function _tplSelectCard(templateKey) {
             document.getElementById('tplPreviewName').textContent = detail.template_name || '未命名';
             document.getElementById('tplPreviewDesc').textContent = detail.description || '已为当前模板生成示意预览';
         }
+
+        _tplRefreshSuiteButton(detail);
     } catch (error) {
         _tplSelectedData = null;
         _tplRenderPreviewFallback(previewArea, 'detail', '预览加载失败');
@@ -418,6 +426,132 @@ async function _tplSelectCard(templateKey) {
             previewInfo.style.display = 'none';
         }
         console.error('Template preview error:', error);
+    }
+}
+
+async function _tplRefreshSuiteButton(selectedTemplate) {
+    const suiteBtn = document.getElementById('tplSuiteBtn');
+    const suiteStatus = document.getElementById('tplSuiteStatus');
+    if (!suiteBtn) {
+        return;
+    }
+
+    const projectId = _tplGetProjectId();
+    if (!projectId) {
+        suiteBtn.disabled = true;
+        return;
+    }
+
+    // 自由模板不生成套件（沿用现有自由模板生成流程）。
+    if (selectedTemplate && (selectedTemplate.is_project_free_template || selectedTemplate.template_mode === 'free')) {
+        suiteBtn.disabled = true;
+        if (suiteStatus) {
+            suiteStatus.style.display = 'block';
+            suiteStatus.textContent = '自由模板使用项目专属流程，无需生成套件';
+        }
+        return;
+    }
+
+    suiteBtn.disabled = false;
+    if (suiteStatus) {
+        suiteStatus.style.display = 'block';
+        suiteStatus.textContent = '为封面/过渡/内容页生成一致性套件';
+    }
+
+    try {
+        const resp = await fetch(`/api/projects/${projectId}/template-suite`);
+        const data = await resp.json();
+        if (resp.ok && data?.success && data?.status === 'ready') {
+            if (suiteStatus) {
+                suiteStatus.textContent = `已有套件（${data.template_name || '当前模板'}）· 点击可重新生成`;
+            }
+        }
+    } catch (_) {
+        // 状态查询失败不阻塞按钮，仍允许手动生成。
+    }
+}
+
+async function _tplGenerateSuite() {
+    const projectId = _tplGetProjectId();
+    const suiteBtn = document.getElementById('tplSuiteBtn');
+    const suiteStatus = document.getElementById('tplSuiteStatus');
+    if (!projectId || !suiteBtn) {
+        return;
+    }
+
+    suiteBtn.disabled = true;
+    if (suiteStatus) {
+        suiteStatus.style.display = 'block';
+        suiteStatus.textContent = '正在生成套件（封面/过渡/内容页头页脚）...';
+    }
+
+    try {
+        const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true, stream: true })
+        });
+
+        if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data?.detail || data?.message || '套件生成请求失败');
+        }
+
+        if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let done = false;
+            while (!done) {
+                const { value, done: isDone } = await reader.read();
+                done = isDone;
+                buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) {
+                        continue;
+                    }
+                    let event;
+                    try {
+                        event = JSON.parse(line.slice(6));
+                    } catch (_) {
+                        continue;
+                    }
+                    if (event?.type === 'status' && suiteStatus) {
+                        suiteStatus.textContent = event.message || suiteStatus.textContent;
+                    }
+                    if (event?.type === 'complete') {
+                        if (suiteStatus) {
+                            suiteStatus.textContent = event.message || '模板套件生成完成！';
+                        }
+                        showNotification('模板套件生成完成，重新生成 PPT 时将应用一致性页头页脚', 'success');
+                        return;
+                    }
+                    if (event?.type === 'error') {
+                        throw new Error(event.message || '套件生成失败');
+                    }
+                }
+            }
+            throw new Error('套件生成未返回完成事件');
+        }
+
+        const data = await resp.json();
+        if (!data?.success) {
+            throw new Error(data?.error || data?.message || '套件生成失败');
+        }
+        if (suiteStatus) {
+            suiteStatus.textContent = '模板套件生成完成！';
+        }
+        showNotification('模板套件生成完成，重新生成 PPT 时将应用一致性页头页脚', 'success');
+    } catch (error) {
+        console.error('Template suite generation error:', error);
+        if (suiteStatus) {
+            suiteStatus.textContent = `套件生成失败：${error.message}`;
+        }
+        showNotification(`套件生成失败：${error.message}`, 'error');
+    } finally {
+        suiteBtn.disabled = false;
     }
 }
 

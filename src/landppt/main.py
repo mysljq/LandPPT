@@ -11,6 +11,16 @@ import asyncio
 import logging
 import os
 import sys
+
+# Windows: 强制 Proactor 事件循环，保证 Playwright（Chromium 子进程）、
+# subprocess 等能力可用。SelectorEventLoop 在 Windows 上不支持
+# create_subprocess_exec，会导致 Playwright 启动时报 NotImplementedError。
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 from .api.openai_compat import router as openai_router
 from .api.landppt_api import router as landppt_router
 from .api.database_api import router as database_router

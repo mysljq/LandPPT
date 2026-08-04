@@ -33,6 +33,7 @@ from .slide.layout_repair_service import LayoutRepairService
 from .outline.project_outline_workflow_service import ProjectOutlineWorkflowService
 from .prompts import prompts_manager
 from .template.template_selection_service import TemplateSelectionService
+from .template.template_suite_service import TemplateSuiteService
 from .slide.slide_generation_service import SlideGenerationService
 from .runtime.runtime_support_service import RuntimeSupportService
 from .slide.slide_authoring_service import SlideAuthoringService
@@ -119,6 +120,7 @@ class EnhancedPPTService(PPTService):
         self.outline_workflow = OutlineWorkflowService(self)
         self.creative_design = CreativeDesignService(self)
         self.template_selection = TemplateSelectionService(self)
+        self.template_suite = TemplateSuiteService(self)
         self.slide_generation = SlideGenerationService(self)
         self.layout_repair = LayoutRepairService(self)
         self.project_outline_workflow = ProjectOutlineWorkflowService(self)
@@ -126,6 +128,9 @@ class EnhancedPPTService(PPTService):
 
         # Per-project lock to avoid duplicate free-template generation under parallel slide generation
         self._free_template_generation_locks: Dict[str, asyncio.Lock] = {}
+
+        # Per-project lock to avoid duplicate template-suite generation
+        self._template_suite_locks: Dict[str, asyncio.Lock] = {}
         
         # Per-project lock and tracking to prevent duplicate slide generation
         self._slide_generation_locks: Dict[str, asyncio.Lock] = {}
@@ -405,7 +410,8 @@ class EnhancedPPTService(PPTService):
     async def _generate_slide_with_template(self, slide_data: Dict[str, Any], template: Dict[str, Any],
                                           page_number: int, total_pages: int,
                                           confirmed_requirements: Dict[str, Any], all_slides: List[Dict[str, Any]] = None,
-                                          project_id: str = None) -> str:
+                                          project_id: str = None,
+                                          content_suite_constraint: str = "") -> str:
         return await self.creative_design._generate_slide_with_template(
             slide_data,
             template,
@@ -414,6 +420,7 @@ class EnhancedPPTService(PPTService):
             confirmed_requirements,
             all_slides=all_slides,
             project_id=project_id,
+            content_suite_constraint=content_suite_constraint,
         )
 
     async def _build_creative_template_context(self, slide_data: Dict[str, Any], template_html: str,

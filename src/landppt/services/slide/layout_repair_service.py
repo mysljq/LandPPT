@@ -118,7 +118,7 @@ class LayoutRepairService:
       [class*="slide-root"],
       #canvas,
       body > div {
-        /* 不覆盖——保持原有 overflow 行为 */
+        /* 不覆盖，保持原有 overflow 行为 */
       }
     </style>
     """

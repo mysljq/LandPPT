@@ -4,6 +4,34 @@
         100% { transform: rotate(360deg); }
     }
 
+    /* ── 套件预览 tab ── */
+    .suite-tab-btn {
+        padding: 6px 14px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        border: 1px solid var(--border-color, #e5e7eb);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+    .suite-tab-btn:hover:not(.active) {
+        border-color: #94a3b8;
+        color: var(--text-primary);
+    }
+    .suite-tab-btn.active {
+        background: #111;
+        border-color: #111;
+        color: #fff;
+    }
+    @media (max-width: 768px) {
+        #suitePreviewFrame {
+            transform: scale(0.5) !important;
+            transform-origin: top left !important;
+        }
+    }
+
     /* ── 模态框 ── */
     .modal {
         position: fixed;

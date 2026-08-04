@@ -105,7 +105,62 @@
                 ⏭️ 使用默认模板
             </button>
         </div>
+
+        <!-- 一致性套件：始终显示，选中模板后启用 -->
+        <div id="templateSuiteSection" style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color, #e5e7eb);">
+            <div style="display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
+                <button id="generateSuiteBtn" class="btn btn-outline-primary" disabled
+                    onclick="generateTemplateSuite()">
+                    <i class="fas fa-layer-group"></i> 生成一致性套件
+                </button>
+                <button id="previewSuiteBtn" class="btn btn-outline-primary" disabled
+                    onclick="previewTemplateSuite()">
+                    <i class="fas fa-eye"></i> 预览套件
+                </button>
+                <span id="suiteStatusText" style="font-size: 0.8rem; color: var(--text-secondary);"></span>
+            </div>
+            <div style="margin-top: 8px; font-size: 0.78rem; color: #64748b; line-height: 1.6;">
+                💡 选中模板后生成套件，包含<b>封面模板</b>、<b>过渡页模板</b>与<b>内容页规范页头页脚</b>，
+                让整份 PPT 的页头页脚与过渡页结构保持一致。<br>
+                可选步骤：不生成也能正常出 PPT（封面/过渡页会由 AI 自由发挥）。
+            </div>
+        </div>
     </div>
+
+<!-- 套件预览 Modal -->
+<div id="suitePreviewModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 96%; width: 96%; max-height: 95vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+            <h2 id="suitePreviewTitle">套件预览</h2>
+            <span class="close" onclick="closeSuitePreviewModal()">&times;</span>
+        </div>
+        <div style="padding: 12px 24px; border-bottom: 1px solid var(--border-color, #e5e7eb); display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button class="btn btn-sm suite-tab-btn active" data-suite-tab="cover" onclick="showSuiteTab('cover')">📄 封面</button>
+            <button class="btn btn-sm suite-tab-btn" data-suite-tab="transition" onclick="showSuiteTab('transition')">🔀 过渡页</button>
+            <button class="btn btn-sm suite-tab-btn" data-suite-tab="content" onclick="showSuiteTab('content')">📑 内容页（页头页脚）</button>
+            <span style="flex: 1;"></span>
+            <button class="btn btn-sm btn-outline-primary" id="regenerateSuitePartBtn" onclick="regenerateSuitePart()" style="display:none;">
+                <i class="fas fa-redo"></i> 重新生成此类型
+            </button>
+        </div>
+        <div style="padding: 8px 24px; border-bottom: 1px solid var(--border-color, #e5e7eb); display: none; gap: 8px; align-items: center; flex-wrap: wrap;" id="regenerateSuitePartInput">
+            <input type="text" id="regenerateSuitePartFeedback" placeholder="可选：填写调整要求，如「换成更简洁的构图」「加强仪式感」" style="flex: 1; min-width: 200px; padding: 7px 12px; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; font-size: 0.8rem;">
+            <button class="btn btn-sm btn-primary" onclick="submitRegenerateSuitePart()">确认重新生成</button>
+            <button class="btn btn-sm btn-secondary" onclick="cancelRegenerateSuitePart()">取消</button>
+            <span id="regenerateSuitePartStatus" style="font-size: 0.78rem; color: var(--text-secondary);"></span>
+        </div>
+        <div class="modal-body" style="text-align: center; flex: 1; overflow: auto;">
+            <div id="suitePreviewLoading" style="padding: 40px; color: var(--text-secondary); display: none;">
+                <i class="fas fa-spinner fa-spin"></i> 正在加载套件预览...
+            </div>
+            <iframe id="suitePreviewFrame"
+                style="width: 1280px; height: 720px; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; transform: scale(0.8); transform-origin: top left; margin: 0 auto; max-width: 100%;"></iframe>
+        </div>
+        <div style="padding: 10px 24px; border-top: 1px solid var(--border-color, #e5e7eb); font-size: 0.78rem; color: #64748b; text-align: center;">
+            预览展示的是套件模板效果（已填入示例文字），实际生成 PPT 时会替换为你的真实标题与内容。
+        </div>
+    </div>
+</div>
 
     <!-- 已选模板信息 -->
     <div id="selectedTemplateInfo"

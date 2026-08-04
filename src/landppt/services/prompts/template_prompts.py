@@ -314,3 +314,215 @@ class TemplatePrompts:
 
 直接输出完整 HTML 模板，使用```html```代码块返回，不要附加解释。
 """.strip()
+
+    @staticmethod
+    def build_template_suite_prompt(
+        project: Any = None,
+        outline: Dict[str, Any] = None,
+        confirmed: Dict[str, Any] = None,
+        template_html: str = "",
+        extracted_header_footer: Dict[str, str] = None,
+    ) -> str:
+        """组装"模板套件"生成提示词。
+
+        基于已选母版的设计风格，一次生成：
+        - 封面模板（{{cover_title}}/{{cover_subtitle}}/{{cover_extra}} 槽位）
+        - 过渡页模板（{{transition_title}}/{{transition_subtitle}}/{{transition_extra}} 槽位）
+        - 内容页规范页头页脚（{{page_title}}/{{current_page_number}}/{{total_page_count}} 槽位）
+        - design_tokens 一行设计令牌
+        输出固定 JSON 结构，供机械解析。
+        """
+        outline = outline or {}
+        confirmed = confirmed or {}
+        slides = outline.get("slides", []) if isinstance(outline, dict) else []
+
+        topic = getattr(project, "topic", "") or outline.get("title") or ""
+        scenario = getattr(project, "scenario", "") or confirmed.get("scenario", "")
+        target_audience = confirmed.get("target_audience") or ""
+        ppt_style = confirmed.get("ppt_style") or ""
+        custom_style_prompt = confirmed.get("custom_style_prompt") or ""
+
+        # 大纲全貌（每页一行）
+        outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
+        type_dist = TemplatePrompts._build_slide_type_distribution(slides)
+        arc = TemplatePrompts._build_narrative_arc_summary(slides)
+
+        # 确定性提取的母版页头/页脚（作为内容页页头页脚的强约束来源）
+        hf = extracted_header_footer or {}
+        header_block = (hf.get("header_html") or "") + "\n" + (hf.get("header_css") or "")
+        footer_block = (hf.get("footer_html") or "") + "\n" + (hf.get("footer_css") or "")
+        hf_section = ""
+        if header_block.strip() or footer_block.strip():
+            hf_section = f"""
+**母版页头原文（内容页页头必须与此同源，可沿用其字节/样式）**
+{header_block.strip() or "(未能提取到明确页头)"}
+
+**母版页脚原文（内容页页脚必须与此同源，可沿用其字节/样式）**
+{footer_block.strip() or "(未能提取到明确页脚)"}
+"""
+
+        return f"""
+请基于已选母版的设计风格与主题色，为这套 PPT 生成"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
+
+**项目信息**
+- 主题：{topic}
+- 场景：{scenario}
+- 受众：{target_audience}
+- 风格偏好：{ppt_style}
+- 自定义风格补充：{custom_style_prompt}
+
+**大纲全貌**
+- 总页数：{len(slides)}
+- 页面类型分布：{type_dist}
+{f"- 叙事弧线：{arc}" if arc else ""}
+{outline_lines}
+
+**母版 HTML 原文**
+{template_html or "(无母版原文，请按项目风格自行设计一套)"}
+
+{hf_section}
+
+{TemplatePrompts.get_template_resource_performance_prompt_text()}
+
+**任务与输出约束**
+1. `cover`：一个完整的封面 HTML（1280×720，无滚动条，设计丰富有仪式感），预留槽位 `{{{{ cover_title }}}}`（主标题）、`{{{{ cover_subtitle }}}}`（副标题）、`{{{{ cover_extra }}}}`（可选补充文案）。
+2. `transition`：一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 `{{{{ transition_title }}}}`（章节标题）、`{{{{ transition_subtitle }}}}`（简短引导语）、`{{{{ transition_extra }}}}`（可选补充）。
+3. `header_footer`：内容页的**自包含骨架片段**（不是完整页面，但包含内容页的全部视觉骨架）。必须包含：
+   - 模板的背景装饰层（如 `bg-paper`/`bg-grid`/边框装饰/印章等，从母版同源继承），保证内容页有背景和装饰；
+   - 页头 `{{{{ page_title }}}}`（页头标题）；
+   - 一个正文占位容器 `{{{{ page_content }}}}`（供后续填充正文）；
+   - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）。
+   样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
+4. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
+5. 三块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面与过渡页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
+6. 封面/过渡页的视觉语言必须与母版一致（配色、字体、材质、几何语言），但允许更丰富的编排；不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
+
+**输出格式（严格 JSON，不要附加任何解释）**
+```json
+{{
+  "cover": "<完整封面HTML>",
+  "transition": "<完整过渡页HTML>",
+  "header_footer": "<规范页头页脚HTML片段>",
+  "design_tokens": "字体栈：...；强调色：...；页头背景：...；页码样式：..."
+}}
+```
+""".strip()
+
+    # 套件单类型重新生成：只重生 cover / transition / header_footer 中的一种，
+    # 其余部分和设计令牌保留，避免整套重生成浪费 token。
+    _SUITE_PART_META = {
+        "cover": {
+            "key": "cover",
+            "label": "封面模板",
+            "desc": "一个完整的封面 HTML（1280×720，无滚动条），预留槽位 {{cover_title}}（主标题）、{{cover_subtitle}}（副标题）、{{cover_extra}}（可选补充文案）。",
+        },
+        "transition": {
+            "key": "transition",
+            "label": "过渡页模板",
+            "desc": "一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 {{transition_title}}（章节标题）、{{transition_subtitle}}（简短引导语）、{{transition_extra}}（可选补充）。",
+        },
+        "header_footer": {
+            "key": "header_footer",
+            "label": "内容页页头页脚",
+            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。",
+        },
+    }
+
+    @staticmethod
+    def build_template_suite_part_prompt(
+        part: str,
+        project: Any = None,
+        outline: Dict[str, Any] = None,
+        confirmed: Dict[str, Any] = None,
+        template_html: str = "",
+        extracted_header_footer: Dict[str, str] = None,
+        existing_suite: Dict[str, Any] = None,
+        user_feedback: str = "",
+    ) -> str:
+        """组装"模板套件单类型重新生成"提示词。
+
+        只重新生成 part（cover/transition/header_footer）这一种，其余套件部分
+        与 design_tokens 作为风格参考保留，从而节省 token、保持整体一致。
+        """
+        meta = TemplatePrompts._SUITE_PART_META.get(part)
+        if not meta:
+            raise ValueError(f"不支持的套件类型: {part}")
+
+        outline = outline or {}
+        confirmed = confirmed or {}
+        slides = outline.get("slides", []) if isinstance(outline, dict) else []
+        existing_suite = existing_suite or {}
+
+        topic = getattr(project, "topic", "") or outline.get("title") or ""
+        scenario = getattr(project, "scenario", "") or confirmed.get("scenario", "")
+        target_audience = confirmed.get("target_audience") or ""
+        ppt_style = confirmed.get("ppt_style") or ""
+        custom_style_prompt = confirmed.get("custom_style_prompt") or ""
+
+        outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
+        type_dist = TemplatePrompts._build_slide_type_distribution(slides)
+
+        hf = extracted_header_footer or {}
+        header_block = (hf.get("header_html") or "") + "\n" + (hf.get("header_css") or "")
+        footer_block = (hf.get("footer_html") or "") + "\n" + (hf.get("footer_css") or "")
+        hf_section = ""
+        if header_block.strip() or footer_block.strip():
+            hf_section = (
+                "**母版页头原文（内容页页头必须与此同源）**\n"
+                f"{header_block.strip() or '(未能提取到明确页头)'}\n\n"
+                "**母版页脚原文（内容页页脚必须与此同源）**\n"
+                f"{footer_block.strip() or '(未能提取到明确页脚)'}"
+            )
+
+        # 作为风格参考：现有 design_tokens + 现有其他套件部分（截断展示即可，避免重复灌入全文）
+        existing_ref_lines = []
+        existing_tokens = str(existing_suite.get("design_tokens") or "").strip()
+        if existing_tokens:
+            existing_ref_lines.append(f"- design_tokens：{existing_tokens}")
+        for ref_key, ref_label in (("cover", "封面"), ("transition", "过渡页"), ("header_footer", "内容页页头页脚")):
+            if ref_key == part:
+                continue
+            ref_html = str(existing_suite.get(ref_key) or "").strip()
+            if ref_html:
+                existing_ref_lines.append(
+                    f"- 现有{ref_label}（仅作风格参考，保持同源）前 600 字：\n```html\n{ref_html[:600]}\n```"
+                )
+        existing_ref = "\n".join(existing_ref_lines) if existing_ref_lines else "- （无）"
+
+        feedback_section = f"\n**本次调整需求（务必满足）**\n{user_feedback.strip()}\n" if user_feedback.strip() else ""
+
+        return f"""
+请为这套 PPT 重新生成「{meta['label']}」，只输出这一个部分，其余套件部分保持不变。
+
+**项目信息**
+- 主题：{topic}
+- 场景：{scenario}
+- 受众：{target_audience}
+- 风格偏好：{ppt_style}
+- 自定义风格补充：{custom_style_prompt}
+
+**大纲全貌**
+- 总页数：{len(slides)}
+- 页面类型分布：{type_dist}
+{outline_lines}
+
+**母版 HTML 原文**
+{template_html or "(无母版原文，请按项目风格自行设计一套)"}
+
+{hf_section}
+
+**现有套件其他部分（风格参考，必须与之一眼同源）**
+{existing_ref}
+
+{feedback_section}
+
+**本次输出约束**
+- 只重新设计并输出 `{meta['key']}` 这一种：{meta['desc']}
+- 必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale；封面/过渡页用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
+- 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
+- 沿用现有套件的 design_tokens 与其余部分的视觉语言，保持同一套设计系统。
+- 仅输出一个 JSON 对象，只包含你重生的字段，不要输出其他部分：
+```json
+{{ "{meta['key']}": "<新内容>" }}
+```
+""".strip()

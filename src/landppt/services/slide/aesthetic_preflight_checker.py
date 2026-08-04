@@ -367,28 +367,53 @@ class AestheticPreFlightChecker:
              footer_lock: Optional[Dict[str, str]] = None,
              slide_data: Optional[Dict[str, Any]] = None,
              page_number: Optional[int] = None,
-             total_pages: Optional[int] = None) -> Tuple[List[str], List[str]]:
+             total_pages: Optional[int] = None,
+             excluded_colors: Optional[set] = None) -> Tuple[List[str], List[str]]:
         """返回 (hard_fails, warnings)。
 
         header_lock：可选，从宪法 ===HEADER_LOCK=== 解析出的令牌字典。
         footer_lock：可选，从宪法 ===FOOTER_LOCK=== 解析出的令牌字典。
         传入时对页头标题区/页脚页码区做跨页一致性守恒校验；非内容页自动豁免，不传则跳过。
+        excluded_colors：可选的锁定色集合（如模板套件页头页脚的既定配色）。
+        这些颜色是设计既定值，不应在纯黑纯白/多 accent 检查中误判为 LLM 套路指纹。
         """
         hard_fails: List[str] = []
         warnings: List[str] = []
         if not html or not html.strip():
             return hard_fails, warnings
 
+        # 只剥掉系统注入的防溢出样式块（id="anti-overflow-fix"，含对正文可见性无影响的
+        # 注释/CSS），避免把系统注入内容误判为 LLM 套路指纹。LLM 自己写的 <style>
+        # 块（配色、accent）仍参与检查。套件页头页脚的既定配色通过 excluded_colors 排除。
+        visible_html = re.sub(
+            r'<style[^>]*id=["\']anti-overflow-fix["\'][^>]*>.*?</style>',
+            '',
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        visible_html = re.sub(r'<!--.*?-->', '', visible_html, flags=re.DOTALL)
+        excluded = {str(c).upper() for c in (excluded_colors or set())}
+        # 归一化：3 位 hex 展开为 6 位，方便匹配 #FFF vs #FFFFFF
+        def _norm_hex(h: str) -> str:
+            h = h.upper()
+            if len(h) == 3 and all(ch in "0123456789ABCDEF" for ch in h):
+                return "".join(ch * 2 for ch in h)
+            return h
+        excluded_norm = {_norm_hex(c.lstrip("#")) for c in excluded}
+
         try:
             # 1. em-dash / en-dash
-            dash_count = len(cls._DASH_RE.findall(html))
+            dash_count = len(cls._DASH_RE.findall(visible_html))
             if dash_count:
                 hard_fails.append(
                     f"出现 {dash_count} 处 em-dash/en-dash（—/–），属于最强 AI 套路指纹，请用普通连字符或换行/分栏替代"
                 )
 
             # 2. 纯黑纯白
-            pure_bw = cls._PURE_BW_RE.findall(html)
+            pure_bw = []
+            for m in cls._PURE_BW_RE.finditer(visible_html):
+                if _norm_hex(m.group(0).lstrip("#")) not in excluded_norm:
+                    pure_bw.append(m.group(0))
             if pure_bw:
                 warns = sorted({c.upper() for c in pure_bw})
                 hard_fails.append(
@@ -397,8 +422,10 @@ class AestheticPreFlightChecker:
 
             # 3. 多 accent 色撞色（页内侧重色是否唯一）
             distinct: dict = {}
-            for m in cls._HEX_RE.finditer(html):
+            for m in cls._HEX_RE.finditer(visible_html):
                 hexv = m.group(1).upper()
+                if _norm_hex(hexv) in excluded_norm:
+                    continue
                 rgb = cls._hex_to_rgb(hexv)
                 if cls._is_neutral(rgb):
                     continue

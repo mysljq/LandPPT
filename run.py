@@ -11,6 +11,15 @@ import os
 import asyncio
 from dotenv import load_dotenv
 
+# Windows: 强制 Proactor 事件循环，保证 Playwright 等子进程能力可用。
+# SelectorEventLoop 在 Windows 上不支持 create_subprocess_exec，
+# 会导致 Playwright 启动 Chromium 时抛 NotImplementedError。
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
 # Add src to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
