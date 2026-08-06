@@ -233,6 +233,7 @@ function buildTemplateCard(template) {
     const actions = [
         canEditOrDelete ? `<button class="btn btn-sm btn-primary" data-action="edit" data-template-id="${template.id}"><i class="fas fa-pen"></i> 编辑</button>` : '',
         `<button class="btn btn-sm btn-secondary" data-action="duplicate" data-template-id="${template.id}"><i class="fas fa-clone"></i> 复制</button>`,
+        `<button class="btn btn-sm btn-success" data-action="generate-suite" data-template-id="${template.id}"><i class="fas fa-layer-group"></i> 生成套件</button>`,
         `<button class="btn btn-sm btn-outline" data-action="export-json" data-template-id="${template.id}"><i class="fas fa-download"></i> 导出JSON</button>`,
         `<button class="btn btn-sm btn-outline" data-action="export-pptx" data-template-id="${template.id}"><i class="fas fa-file-powerpoint"></i> 导出PPTX</button>`,
         canSetDefault && !showDefaultBadge ? `<button class="btn btn-sm btn-success" data-action="set-default" data-template-id="${template.id}"><i class="fas fa-check"></i> 设为默认</button>` : '',
@@ -359,6 +360,9 @@ function handleTemplateGridClick(event) {
             break;
         case 'set-default':
             setDefaultTemplate(templateId);
+            break;
+        case 'generate-suite':
+            generateSuiteFromTemplate(templateId);
             break;
         case 'delete':
             deleteTemplate(templateId);
@@ -713,6 +717,44 @@ async function duplicateTemplate(templateId) {
         emit('templates:updated', { action: 'duplicate', id: templateId });
     } catch (error) {
         alert('复制失败: ' + error.message);
+    }
+}
+
+// 从模板生成套件并保存到套件库
+async function generateSuiteFromTemplate(templateId) {
+    const creativity = prompt('创意度（0=严格遵循母版，10=最具创意，默认 5）：', '5');
+    let creativityNum = 5;
+    if (creativity !== null && creativity.trim() !== '') {
+        creativityNum = Math.max(0, Math.min(10, parseInt(creativity, 10) || 5));
+    }
+    if (!confirm(`基于模板生成套件（创意度 ${creativityNum}）？生成后保存到「套件管理」套件库。`)) return;
+    try {
+        const data = await apiClient.post('/api/template-suites/generate', {
+            template_id: templateId,
+            creativity: creativityNum,
+        });
+        const suite = data.suite;
+        if (!suite) throw new Error('生成结果为空');
+        const defaultName = (suite.suite_name || '套件');
+        const name = prompt('套件名称：', defaultName);
+        if (name === null) return;
+        await apiClient.post('/api/template-suites', {
+            suite_name: name || defaultName,
+            description: suite.description || '',
+            cover: suite.cover,
+            transition: suite.transition,
+            catalog: suite.catalog || '',
+            ending: suite.ending || '',
+            header_footer: suite.header_footer,
+            design_tokens: suite.design_tokens || '',
+            template_id: suite.template_id || templateId,
+            template_hash: suite.template_hash || null,
+            template_name: suite.template_name || null,
+            tags: suite.tags || ['AI生成'],
+        });
+        alert('✅ 套件已生成并保存到套件库，可在「套件管理」页面查看。');
+    } catch (error) {
+        alert('生成套件失败: ' + error.message);
     }
 }
 

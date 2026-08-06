@@ -714,7 +714,9 @@ class AnthropicProvider(AIProvider):
                     headers.update(auth_header)
 
                     async with aiohttp.ClientSession(timeout=_build_aiohttp_timeout(config)) as session:
+                        logger.info("LLM HTTP 请求发出：POST %s（model=%s）", url, model)
                         async with session.post(url, headers=headers, json=body) as response:
+                            logger.info("LLM HTTP 响应状态：%s（auth=%s）", response.status, auth_name)
                             if response.status == 401 and auth_name == "x-api-key":
                                 # x-api-key failed, try Authorization header
                                 logger.debug("x-api-key auth failed, trying Authorization header")

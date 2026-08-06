@@ -87,6 +87,42 @@ class TemplateSuiteService:
         except Exception as exc:
             logger.error("Failed to persist template suite for project %s: %s", project_id, exc)
 
+    async def select_global_suite(self, project_id: str, suite_id: int) -> bool:
+        """Persist a chosen global-library suite as this project's suite source."""
+        try:
+            from .global_template_suite_service import GlobalTemplateSuiteService
+            svc = GlobalTemplateSuiteService(self._service)
+            suite = await svc.get_suite_payload(suite_id)
+            if not suite:
+                return False
+            project = await self.project_manager.get_project(project_id)
+            if not project:
+                return False
+            metadata = dict(project.project_metadata or {})
+            metadata["selected_global_suite_id"] = suite_id
+            metadata.pop("template_suite", None)  # 全局套件优先，清掉项目内旧套件避免混淆
+            await self.project_manager.update_project_metadata(project_id, metadata)
+            await svc.increment_usage(suite_id)
+            return True
+        except Exception as exc:
+            logger.error("Failed to select global suite %s for %s: %s", suite_id, project_id, exc)
+            return False
+
+    async def clear_selected_global_suite(self, project_id: str) -> bool:
+        """Remove the project's selected global-library suite (fall back to project suite)."""
+        try:
+            project = await self.project_manager.get_project(project_id)
+            if not project:
+                return False
+            metadata = dict(project.project_metadata or {})
+            if "selected_global_suite_id" in metadata:
+                metadata.pop("selected_global_suite_id")
+                await self.project_manager.update_project_metadata(project_id, metadata)
+            return True
+        except Exception as exc:
+            logger.error("Failed to clear selected global suite for %s: %s", project_id, exc)
+            return False
+
     async def get_suite(self, project_id: str) -> Optional[Dict[str, Any]]:
         """Return a valid suite for the project, or None (invalid / stale / missing).
 
@@ -160,12 +196,74 @@ class TemplateSuiteService:
             "generated_at": suite.get("generated_at"),
         }
 
-    def build_preview_html(self, suite: Dict[str, Any]) -> Dict[str, str]:
-        """Render the suite into three preview pages with sample slot content.
+    async def get_effective_suite(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Return the suite the project should use when generating PPT.
 
-        Returns {"cover": ..., "transition": ..., "content": ...} where each value
-        is a complete, standalone HTML document (1280x720) the frontend can show
-        in an iframe. Content page composes header_footer with a placeholder body.
+        Priority:
+        1. A suite explicitly selected from the global suite library
+           (project_metadata["selected_global_suite_id"]) — no template_hash check
+           (the user explicitly chose this suite, respect it).
+        2. Otherwise the project's own generated template_suite (existing logic).
+        3. None if neither exists.
+        """
+        try:
+            project = await self.project_manager.get_project(project_id)
+            if not project:
+                return None
+            metadata = project.project_metadata or {}
+
+            global_suite_id = metadata.get("selected_global_suite_id")
+            if global_suite_id:
+                try:
+                    from .global_template_suite_service import GlobalTemplateSuiteService
+                    svc = GlobalTemplateSuiteService(self._service)
+                    suite = await svc.get_suite_payload(global_suite_id)
+                    if suite:
+                        return suite
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load selected global suite %s for %s: %s",
+                        global_suite_id, project_id, exc,
+                    )
+                    # fall through to project-local suite
+
+            return await self.get_suite(project_id)
+        except Exception as exc:
+            logger.warning("Failed to get effective suite for project %s: %s", project_id, exc)
+            return None
+
+    @staticmethod
+    def _catalog_items_sample() -> str:
+        """Styled example rows for the catalog items slot (preview only).
+
+        Renders as a designed 目录 list (bullets + dividers + responsive two-column
+        grid) instead of a plain text paragraph, so previews show the intended look.
+        """
+        chapters = ["第一章 概述", "第二章 核心方案", "第三章 实施路径", "第四章 总结与展望"]
+        rows = "".join(
+            '<div style="display:flex; align-items:center; gap:10px; padding:10px 2px; '
+            'border-bottom:1px solid rgba(127,127,127,0.25);">'
+            '<span style="flex:0 0 auto; width:8px; height:8px; border-radius:50%; '
+            'background:currentColor; opacity:0.35;"></span>'
+            f'<span style="font-size:1em; font-weight:600; line-height:1.35;">{title}</span>'
+            "</div>"
+            for title in chapters
+        )
+        return (
+            '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); '
+            'gap:2px 36px; margin-top:8px; text-align:left;">'
+            + rows
+            + "</div>"
+        )
+
+    def build_preview_html(self, suite: Dict[str, Any]) -> Dict[str, str]:
+        """Render the suite into preview pages with sample slot content.
+
+        Returns {"cover", "transition", "catalog", "ending", "content"} where each
+        value is a complete, standalone HTML document (1280x720) the frontend can
+        show in an iframe. All special pages are filled with rich natural sample
+        content so users can see the actual suite effect; the content page composes
+        header_footer with a placeholder body.
         """
         from .template_suite_renderer import TemplateSuiteRenderer
 
@@ -187,20 +285,42 @@ class TemplateSuiteService:
                 )
             return filled
 
+        # 封面：主标题 + 副标题 + 演讲人/日期等补充文案
         cover = _fill(
             suite.get("cover"),
             {
-                "cover_title": "演示文稿标题（示例）",
-                "cover_subtitle": "副标题 · 用于展示封面套件效果",
-                "cover_extra": "演讲人：某某 · 2026年8月",
+                "cover_title": "年度工作报告",
+                "cover_subtitle": "2026 年上半年度工作汇报",
+                "cover_extra": "汇报人：张三 · 2026年8月",
             },
         )
+        # 过渡页：章节标题 + 引导语 + 章节说明
         transition = _fill(
             suite.get("transition"),
             {
-                "transition_title": "第一章 · 章节名称（示例）",
-                "transition_subtitle": "这一页用于章节之间的过渡",
-                "transition_extra": "",
+                "transition_title": "第二章 · 核心方案",
+                "transition_subtitle": "从规划到落地，本部分介绍具体实施方案",
+                "transition_extra": "核心章节 · 敬请期待",
+            },
+        )
+        # 目录页：有样式的目录行示例（圆点 + 分隔线 + 双栏网格），而非纯段落文本
+        catalog = _fill(
+            suite.get("catalog"),
+            {
+                "catalog_title": "目录",
+                "catalog_subtitle": "内容概览",
+                "catalog_extra": "",
+                "catalog_items": self._catalog_items_sample(),
+            },
+        )
+        # 结尾页：感谢标题 + 副标题 + 收尾要点
+        ending = _fill(
+            suite.get("ending"),
+            {
+                "ending_title": "感谢聆听",
+                "ending_subtitle": "期待与您进一步交流",
+                "ending_extra": "",
+                "ending_items": "联系方式：contact@example.com\n欢迎关注后续分享",
             },
         )
 
@@ -216,7 +336,13 @@ class TemplateSuiteService:
         )
         content = self._wrap_content_preview(hf)
 
-        return {"cover": cover, "transition": transition, "content": content}
+        return {
+            "cover": cover,
+            "transition": transition,
+            "catalog": catalog,
+            "ending": ending,
+            "content": content,
+        }
 
     def _wrap_content_preview(self, header_footer_fragment: str) -> str:
         """Wrap the header/footer fragment into a standalone 1280x720 document.
@@ -420,9 +546,33 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
     @staticmethod
     def _extract_json_from_response(content: str) -> Optional[Dict[str, Any]]:
-        content = (content or "")
-        content = content.split("</think>")[-1]
-        content = content.strip()
+        content = (content or "").split("</think>")[-1].strip()
+        try:
+            from summeryanyfile.core.json_parser import JSONParser
+        except Exception:
+            JSONParser = None
+
+        if JSONParser is not None:
+            # 复用健壮解析器：括号配对提取（正确跳过 HTML 内的引号/CSS 花括号）、
+            # 容错清洗（代码块/前后缀/尾逗号/智能引号）、ast.literal_eval 兜底。
+            candidates = [content]
+            candidates.extend(JSONParser._extract_fenced_code_blocks(content))
+            cleaned = JSONParser._clean_response(content)
+            if cleaned:
+                candidates.append(cleaned)
+            candidates.extend(JSONParser._extract_json_candidates(content))
+            seen = set()
+            for candidate in candidates:
+                candidate = candidate.strip()
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                parsed = JSONParser._loads_best_effort(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            return None
+
+        # 兜底：原有简单逻辑（无 summeryanyfile 时）
         if content.startswith("```json"):
             content = content[len("```json"):]
             if content.endswith("```"):
@@ -446,9 +596,15 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             return None
 
     def _validate_suite_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate/normalize the LLM suite payload; raise on invalid cover/transition."""
+        """Validate/normalize the LLM suite payload; raise on invalid cover/transition.
+
+        catalog/ending are optional (older suites may lack them) but when present
+        must be full HTML with their title slot.
+        """
         cover = str(payload.get("cover") or "").strip()
         transition = str(payload.get("transition") or "").strip()
+        catalog = str(payload.get("catalog") or "").strip()
+        ending = str(payload.get("ending") or "").strip()
         header_footer = str(payload.get("header_footer") or "").strip()
         design_tokens = str(payload.get("design_tokens") or "").strip()
 
@@ -467,6 +623,14 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         for slot in ("transition_title",):
             if slot not in transition:
                 missing.append(f"transition缺少槽位 {{{{{slot}}}}}")
+        if catalog and not catalog.lower().startswith("<!doctype html"):
+            missing.append("catalog")
+        if catalog and "catalog_title" not in catalog:
+            missing.append("catalog缺少槽位 {{catalog_title}}")
+        if ending and not ending.lower().startswith("<!doctype html"):
+            missing.append("ending")
+        if ending and "ending_title" not in ending:
+            missing.append("ending缺少槽位 {{ending_title}}")
         for slot in ("page_title", "current_page_number", "total_page_count"):
             if slot not in header_footer:
                 missing.append(f"header_footer缺少槽位 {{{{{slot}}}}}")
@@ -477,6 +641,8 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         return {
             "cover": cover,
             "transition": transition,
+            "catalog": catalog,
+            "ending": ending,
             "header_footer": header_footer,
             "design_tokens": design_tokens,
         }
@@ -486,21 +652,70 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         project_id: str,
         template: Dict[str, Any],
         force: bool = False,
+        creativity: int = 0,
+        reference_outline: bool = False,
     ) -> Dict[str, Any]:
-        """Generate (or refresh) a template suite for a project and persist it."""
+        """Generate (or refresh) a template suite for a project and persist it.
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
+        reference_outline：默认 False = 套件只基于母版模板生成，不绑定项目大纲/主题；
+        为 True 时把项目主题/大纲/受众等信息传给模型。
+        """
         template = template or {}
         html = template.get("html_template") or ""
         if not html.strip():
             raise ValueError("所选模板无 HTML 内容，无法生成套件")
 
-        extracted = MasterLayoutExtractor.extract_header_footer(html)
-
-        # Load project context for the prompt (outline + confirmed requirements).
+        # 从项目加载上下文（大纲/确认需求），供可选 reference_outline 使用。
         project = await self.project_manager.get_project(project_id)
         if not project:
             raise ValueError(f"项目 {project_id} 不存在")
-        outline = project.outline or {}
-        confirmed = project.confirmed_requirements or {}
+
+        suite = await self._generate_suite_payload(
+            template,
+            creativity=creativity,
+            reference_outline=reference_outline,
+            project=project,
+        )
+
+        await self._persist_suite(project_id, suite)
+        self._clear_caches(project_id)
+        logger.info(
+            "Generated template suite for project %s (template=%s)",
+            project_id,
+            suite.get("template_name"),
+        )
+        return suite
+
+    async def _generate_suite_payload(
+        self,
+        template: Dict[str, Any],
+        creativity: int = 0,
+        reference_outline: bool = False,
+        project: Any = None,
+    ) -> Dict[str, Any]:
+        """Generate a suite dict via one LLM call (no project persistence).
+
+        Reused by both the per-project flow and the global suite library.
+        creativity：0-10 刻度；reference_outline：为 True 时把项目主题/大纲传入模型。
+        """
+        template = template or {}
+        html = template.get("html_template") or ""
+        if not html.strip():
+            raise ValueError("所选模板无 HTML 内容，无法生成套件")
+
+        _tpl_name = template.get("template_name") or f"#{template.get('id')}"
+        _t0 = time.time()
+        logger.info(
+            "套件生成开始：模板=%s，创意度=%s，reference_outline=%s",
+            _tpl_name,
+            creativity,
+            reference_outline,
+        )
+
+        extracted = MasterLayoutExtractor.extract_header_footer(html)
+        outline = (project.outline or {}) if project else {}
+        confirmed = (project.confirmed_requirements or {}) if project else {}
 
         prompt = TemplatePrompts.build_template_suite_prompt(
             project=project,
@@ -508,20 +723,34 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             confirmed=confirmed,
             template_html=html,
             extracted_header_footer=extracted,
+            creativity=creativity,
+            reference_outline=reference_outline,
         )
+        logger.info("套件提示词构建完成（%s 字符），开始调用 AI...", len(prompt))
 
+        # max_output_tokens 显式放宽：套件一次输出 5 大段 HTML，模型默认输出上限
+        # 可能不足以容纳完整 JSON，导致截断后无法解析（本项目 max_tokens 是分块参数，
+        # 不能用；max_output_tokens 才是输出长度）。
         response = await self._text_completion_for_role(
-            "template", prompt=prompt, temperature=0.7
+            "template", prompt=prompt, temperature=0.7, max_output_tokens=12000
         )
         raw = (response.content or "").strip()
+        logger.info("套件 AI 调用完成，耗时 %.1fs，响应 %s 字符", time.time() - _t0, len(raw))
         if not raw:
             raise ValueError("AI 服务返回空响应")
 
         payload = self._extract_json_from_response(raw)
         if not payload:
+            logger.warning("套件 AI 响应无法解析为 JSON，发起一次修正重试（响应预览：%s）", raw[:200])
+            payload = await self._repair_suite_json(prompt, raw)
+            if payload:
+                logger.info("套件 JSON 修正重试成功")
+        if not payload:
+            logger.error("套件 AI 响应最终无法解析为 JSON（响应预览：%s）", raw[:300])
             raise ValueError("AI 响应中未找到有效的套件 JSON")
 
         validated = self._validate_suite_payload(payload)
+        logger.info("套件 AI 响应校验通过，执行页头页脚自包含修复...")
 
         identity = self._template_identity(template)
         header_footer = validated["header_footer"]
@@ -531,6 +760,8 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         suite = {
             "cover": validated["cover"],
             "transition": validated["transition"],
+            "catalog": validated.get("catalog") or "",
+            "ending": validated.get("ending") or "",
             "header_footer": header_footer,
             "design_tokens": validated["design_tokens"],
             "template_hash": identity["template_hash"],
@@ -538,17 +769,42 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             "template_name": identity["template_name"],
             "generated_at": time.time(),
         }
-
-        await self._persist_suite(project_id, suite)
-        self._clear_caches(project_id)
-        logger.info(
-            "Generated template suite for project %s (template=%s)",
-            project_id,
-            identity["template_name"],
-        )
+        logger.info("套件生成完成：模板=%s，总耗时 %.1fs", _tpl_name, time.time() - _t0)
         return suite
 
-    _SUITE_PART_KEYS = ("cover", "transition", "header_footer")
+    async def _repair_suite_json(
+        self,
+        original_prompt: str,
+        bad_raw: str,
+    ) -> Optional[Dict[str, Any]]:
+        """One corrective LLM call: re-emit the suite as strict JSON.
+
+        Called when the first response couldn't be parsed (bad HTML escaping,
+        prose wrapping, or truncation). The model gets its own earlier output and
+        is asked to re-emit it as a valid, json.loads-able object.
+        """
+        repair_prompt = (
+            "你之前为「PPT 模板套件」输出的内容不是有效的 JSON（可能因为 HTML 字符串里的引号/换行"
+            "未正确转义，或内容被截断）。请把下面「你之前输出的内容」整理成严格 JSON 对象后重新输出：\n"
+            "- 字段必须为：cover、transition、catalog、ending、header_footer、design_tokens"
+            "（catalog/ending 可省略，缺失字段给空字符串）。\n"
+            "- HTML 字符串内：双引号必须转义为 \\\"，换行必须写成 \\n，确保 json.loads 可直接解析。\n"
+            "- 只输出 JSON 本身，不要 Markdown 代码块、不要任何解释。\n\n"
+            "你之前输出的内容：\n"
+            f"{bad_raw[:6000]}\n\n"
+            "（若上方内容被截断，请基于字段结构补全必要部分；宁可保留未被截断的 HTML，"
+            "也不要输出不完整 JSON。）"
+        )
+        try:
+            response = await self._text_completion_for_role(
+                "template", prompt=repair_prompt, temperature=0.2, max_output_tokens=12000
+            )
+        except Exception as exc:
+            logger.warning("套件 JSON 修正重试调用失败: %s", exc)
+            return None
+        return self._extract_json_from_response(response.content or "")
+
+    _SUITE_PART_KEYS = ("cover", "transition", "catalog", "ending", "header_footer")
 
     async def regenerate_suite_part(
         self,
@@ -556,12 +812,17 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         part: str,
         template: Dict[str, Any],
         user_feedback: str = "",
+        creativity: int = 0,
+        reference_outline: bool = False,
     ) -> Dict[str, Any]:
         """Only regenerate one part (cover/transition/header_footer) of the suite.
 
         Loads the existing suite, calls the LLM to produce just `part`, merges it
         back while keeping every other part and design_tokens intact. Much cheaper
         than a full regeneration and keeps cross-part consistency.
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
+        reference_outline：默认 False = 仅基于母版/现有套件，不绑定项目大纲/主题。
         """
         if part not in self._SUITE_PART_KEYS:
             raise ValueError(f"不支持的套件类型: {part}")
@@ -591,10 +852,12 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             extracted_header_footer=extracted,
             existing_suite=existing,
             user_feedback=user_feedback,
+            creativity=creativity,
+            reference_outline=reference_outline,
         )
 
         response = await self._text_completion_for_role(
-            "template", prompt=prompt, temperature=0.7
+            "template", prompt=prompt, temperature=0.7, max_output_tokens=12000
         )
         raw = (response.content or "").strip()
         if not raw:
@@ -608,13 +871,19 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         if not new_value:
             raise ValueError(f"新的 {part} 内容为空")
 
-        # 对 cover/transition 做完整 HTML 校验；header_footer 只需含页头页脚槽位。
-        if part in ("cover", "transition"):
+        # 对 cover/transition/catalog/ending 做完整 HTML 校验；header_footer 只需含页头页脚槽位。
+        _full_pages = {"cover", "transition", "catalog", "ending"}
+        if part in _full_pages:
             if not new_value.lower().startswith("<!doctype html"):
                 raise ValueError(f"重新生成的 {part} 不是完整 HTML")
-            slot = "cover_title" if part == "cover" else "transition_title"
-            if slot not in new_value:
-                raise ValueError(f"重新生成的 {part} 缺少槽位 {{{{{slot}}}}}")
+            title_slot = {
+                "cover": "cover_title",
+                "transition": "transition_title",
+                "catalog": "catalog_title",
+                "ending": "ending_title",
+            }.get(part)
+            if title_slot and title_slot not in new_value:
+                raise ValueError(f"重新生成的 {part} 缺少槽位 {{{{{title_slot}}}}}")
         else:
             for slot in ("page_title", "current_page_number", "total_page_count"):
                 if slot not in new_value:
@@ -640,8 +909,12 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         part: str,
         user_feedback: str = "",
         user_id: Optional[int] = None,
+        creativity: int = 0,
     ):
-        """Stream single-type suite regeneration events, persisting on success."""
+        """Stream single-type suite regeneration events, persisting on success.
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
+        """
         lock = self._template_suite_locks.setdefault(project_id, asyncio.Lock())
         if lock.locked():
             yield {"type": "status", "message": "已有套件任务正在进行，请稍候..."}
@@ -656,7 +929,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
                 yield {"type": "status", "message": f"正在重新生成{part}..."}
                 try:
                     updated = await self.regenerate_suite_part(
-                        project_id, part, template, user_feedback=user_feedback
+                        project_id, part, template, user_feedback=user_feedback, creativity=creativity
                     )
                 except Exception as exc:
                     logger.error("Suite part regeneration failed for project %s: %s", project_id, exc)
@@ -683,8 +956,12 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         project_id: str,
         user_id: Optional[int] = None,
         force: bool = False,
+        creativity: int = 0,
     ):
-        """Stream suite-generation events and persist the suite on success."""
+        """Stream suite-generation events and persist the suite on success.
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
+        """
         lock = self._template_suite_locks.setdefault(project_id, asyncio.Lock())
         if lock.locked():
             yield {"type": "status", "message": "已有套件生成任务正在进行，请稍候..."}
@@ -711,7 +988,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
                 yield {"type": "status", "message": "正在基于母版风格生成套件（封面/过渡/内容页头页脚）..."}
                 try:
-                    suite = await self.generate_suite(project_id, template, force=force)
+                    suite = await self.generate_suite(project_id, template, force=force, creativity=creativity)
                 except Exception as exc:
                     logger.error("Template suite generation failed for project %s: %s", project_id, exc)
                     yield {"type": "error", "message": f"套件生成失败：{exc}"}

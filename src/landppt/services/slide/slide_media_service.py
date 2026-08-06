@@ -63,21 +63,28 @@ class SlideMediaService:
                 except Exception as e:
                     logger.warning(f'获取全局母版失败，使用默认生成方式: {e}')
 
-            # 模板套件：封面/过渡页优先用套件模板填充槽位；内容页注入页头页脚强约束。
+            # 模板套件：封面/过渡页优先用套件模板填充槽位；内容页注入页头页脚强约束；
+            # 目录页不直接模板填充，改为让 LLM 参考套件里的目录页设计生成完整目录页。
+            # get_effective_suite 优先用项目显式选择的全局套件库套件，否则回退到项目内生成套件。
             suite_constraint = ""
             if project_id:
                 try:
-                    suite = await self.template_suite.get_suite(project_id)
+                    suite = await self.template_suite.get_effective_suite(project_id)
                 except Exception as e:
                     logger.warning(f'获取模板套件失败，按现状生成: {e}')
                     suite = None
                 if suite:
-                    filled = await self._try_fill_suite_slide(
-                        suite, slide_data, page_number, total_pages, system_prompt
-                    )
-                    if filled:
-                        return filled
-                    suite_constraint = self._build_content_suite_constraint(suite)
+                    from ..template.template_suite_renderer import TemplateSuiteRenderer as _TSR
+                    page_type = _TSR.normalize_page_type(slide_data, page_number, total_pages)
+                    if page_type == "catalog" and str(suite.get("catalog") or "").strip():
+                        suite_constraint = self._build_catalog_suite_constraint(suite)
+                    else:
+                        filled = await self._try_fill_suite_slide(
+                            suite, slide_data, page_number, total_pages, system_prompt
+                        )
+                        if filled:
+                            return filled
+                        suite_constraint = self._build_content_suite_constraint(suite)
 
             if selected_template:
                 return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id, content_suite_constraint=suite_constraint)
@@ -131,6 +138,27 @@ class SlideMediaService:
             lines.append(f"\n**设计令牌（内容页全局对齐）**\n{tokens}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _build_catalog_suite_constraint(suite: Dict[str, Any]) -> str:
+        """Build the catalog-page reference constraint for LLM generation.
+
+        目录页不再做确定性模板填充：把套件里的目录页当作设计参考，让 LLM
+        按真实章节（content_points）生成完整目录页，遵循其视觉与条目排版。
+        """
+        catalog = str(suite.get("catalog") or "").strip()
+        if not catalog:
+            return ""
+        return (
+            "**目录页参考设计（严格遵循该目录页的视觉风格与目录条目排版来生成本页）**\n"
+            "- 目录条目必须使用本页真实章节（slide_data 的 content_points / content），"
+            "逐条套用参考页条目区（编号、分隔、布局）的样式呈现。\n"
+            "- 参考页中的 {{...}} 槽位是占位符，请用本页真实内容替换（如 {{catalog_title}} 用本页标题）。\n"
+            "- 不要照抄参考页里的示例章节文案，也不要逐字复用参考页整段 HTML——只遵循其设计语言。\n"
+            "```html\n"
+            f"{catalog}\n"
+            "```"
+        )
+
     async def _try_fill_suite_slide(
         self,
         suite: Dict[str, Any],
@@ -162,7 +190,7 @@ class SlideMediaService:
                 filled, remaining, slide_data, page_number, total_pages, system_prompt
             )
             filled = TemplateSuiteRenderer.fill_suite_template(filled, slot_values)
-        logger.info("第%s页使用模板套件渲染（封面/过渡）", page_number)
+        logger.info("第%s页使用模板套件渲染（封面/过渡/目录/结尾）", page_number)
         return filled
 
     async def _resolve_remaining_slots(
@@ -198,7 +226,7 @@ class SlideMediaService:
                 points_text = str(content_points).strip()
 
             context = (
-                f"请为以下 {page_number}/{total_pages} 页的封面/章节过渡页，补充其额外文案槽位"
+                f"请为以下 {page_number}/{total_pages} 页的封面/章节过渡/目录/结尾页，补充其额外文案槽位"
                 f"（{slots_text}），使其成为自然、专业的演示文案。\n\n"
                 f"**页面标题**：{title}\n"
                 f"**页面定位**：{description or '（未提供，请按标题自行推断）'}\n"
@@ -267,6 +295,17 @@ class SlideMediaService:
                 return point
             return f"—— {_title()} ——"
         if name == "transition_extra":
+            return ""
+        if name == "catalog_extra":
+            return ""
+        if name == "ending_extra":
+            return ""
+        if name in ("catalog_items", "ending_items"):
+            content_points = slide_data.get("content_points") or slide_data.get("content") or []
+            if isinstance(content_points, list):
+                return "\n".join(str(p).strip() for p in content_points if str(p).strip())
+            if isinstance(content_points, str) and content_points.strip():
+                return content_points.strip()
             return ""
         return f"[{name}]"
 

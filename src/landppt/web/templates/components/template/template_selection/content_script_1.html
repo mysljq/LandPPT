@@ -375,6 +375,7 @@
     async function refreshSuiteStatus() {
         const btn = document.getElementById('generateSuiteBtn');
         const previewBtn = document.getElementById('previewSuiteBtn');
+        const libraryBtn = document.getElementById('useLibrarySuiteBtn');
         const status = document.getElementById('suiteStatusText');
         if (!btn || !status) return;
 
@@ -382,23 +383,89 @@
         if (selectedTemplateMode !== 'global' || !selectedTemplateId) {
             btn.disabled = true;
             if (previewBtn) previewBtn.disabled = true;
+            if (libraryBtn) libraryBtn.disabled = true;
             status.textContent = '请先选择一个全局模板';
             return;
         }
 
         btn.disabled = false;
         if (previewBtn) previewBtn.disabled = true;
-        status.textContent = '为封面/过渡/内容页生成一致性页头页脚';
+        if (libraryBtn) libraryBtn.disabled = false;
+        status.textContent = '选择一种套件来源：基于模板生成 或 使用套件库';
 
         try {
             const resp = await fetch(`/api/projects/${projectId}/template-suite`);
             const data = await resp.json();
             if (resp.ok && data?.success && data?.status === 'ready') {
-                status.textContent = `已有套件（${data.template_name || '当前模板'}）· 点击可重新生成`;
+                status.textContent = `已有套件（${data.template_name || '当前模板'}）· 可重新生成或改用套件库`;
                 if (previewBtn) previewBtn.disabled = false;
             }
         } catch (_) {
             // 状态查询失败不阻塞按钮
+        }
+    }
+
+    // 套件库选择
+    async function openLibrarySuitePicker() {
+        const libraryBtn = document.getElementById('useLibrarySuiteBtn');
+        if (!libraryBtn || libraryBtn.disabled) return;
+        const modal = document.getElementById('librarySuiteModal');
+        const list = document.getElementById('librarySuiteList');
+        if (!modal || !list) return;
+        modal.style.display = 'flex';
+        list.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-secondary);">加载中...</div>';
+        try {
+            const resp = await fetch('/api/template-suites/all');
+            const data = await resp.json();
+            const suites = data.suites || [];
+            if (!suites.length) {
+                list.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-secondary);">套件库为空。请先在「套件管理」页面从模板生成套件。</div>';
+                return;
+            }
+            list.innerHTML = suites.map(s => `
+                <div class="template-card" style="cursor:pointer;" onclick="selectLibrarySuite(${s.id})">
+                    <div class="template-preview" style="height:120px;">
+                        <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);font-size:0.8rem;text-align:center;padding:8px;">
+                            ${s.suite_name}
+                        </div>
+                    </div>
+                    <div class="template-info" style="padding:10px 12px;">
+                        <div style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">${s.suite_name}</div>
+                        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">来源：${s.template_name || '独立套件'} · 使用${s.usage_count || 0}次</div>
+                    </div>
+                </div>
+            `).join('');
+        } catch (error) {
+            list.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-secondary);">加载失败：${error.message}</div>`;
+        }
+    }
+
+    function closeLibrarySuitePicker() {
+        const modal = document.getElementById('librarySuiteModal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async function selectLibrarySuite(suiteId) {
+        const status = document.getElementById('suiteStatusText');
+        if (status) status.textContent = '正在选用套件库套件...';
+        try {
+            const resp = await fetch('/api/template-suites/select-for-project', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project_id: projectId, suite_id: suiteId })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                throw new Error(data.detail || data.message || '选用失败');
+            }
+            closeLibrarySuitePicker();
+            if (status) status.textContent = '✅ 已选用套件库套件，开始生成PPT时将应用';
+            const previewBtn = document.getElementById('previewSuiteBtn');
+            if (previewBtn) previewBtn.disabled = false;
+            suitePreviewData = null;
+        } catch (error) {
+            if (status) status.textContent = `选用失败：${error.message}`;
+            alert(`选用失败：${error.message}`);
         }
     }
 
@@ -444,6 +511,7 @@
     function showSuiteTab(tab) {
         currentSuiteTab = tab;
         const frame = document.getElementById('suitePreviewFrame');
+        const box = document.getElementById('suitePreviewBox');
         const loading = document.getElementById('suitePreviewLoading');
         if (!frame || !suitePreviewData) return;
 
@@ -463,6 +531,11 @@
         const url = URL.createObjectURL(blob);
         frame.onload = function () {
             if (loading) loading.style.display = 'none';
+            // 16:9 等比缩放 1280x720 到容器宽度
+            if (box) {
+                const scale = (box.clientWidth || 800) / 1280;
+                frame.style.transform = `scale(${scale})`;
+            }
             setTimeout(() => URL.revokeObjectURL(url), 2000);
         };
         frame.src = url;
@@ -472,6 +545,8 @@
     function _suitePartFromTab() {
         return currentSuiteTab === 'cover' ? 'cover'
             : currentSuiteTab === 'transition' ? 'transition'
+            : currentSuiteTab === 'catalog' ? 'catalog'
+            : currentSuiteTab === 'ending' ? 'ending'
             : 'header_footer';
     }
 
@@ -507,7 +582,7 @@
             const resp = await fetch(`/api/projects/${projectId}/template-suite/regenerate-part`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ part, feedback, stream: true })
+                body: JSON.stringify({ part, feedback, stream: true, creativity: getSuiteCreativity() })
             });
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
@@ -580,6 +655,59 @@
         suitePreviewData = null;
     }
 
+    // 套件创意度：0=严格遵循母版，10=最具创意
+    function getSuiteCreativity() {
+        const slider = document.getElementById('suiteCreativitySlider');
+        const val = slider ? parseInt(slider.value, 10) : 5;
+        return Number.isFinite(val) ? Math.max(0, Math.min(10, val)) : 5;
+    }
+
+    function updateSuiteCreativityLabel() {
+        const slider = document.getElementById('suiteCreativitySlider');
+        const label = document.getElementById('suiteCreativityLabel');
+        if (!slider || !label) return;
+        const val = parseInt(slider.value, 10);
+        let text = String(val);
+        if (val <= 1) text += ' · 严格遵循母版';
+        else if (val <= 3) text += ' · 以母版为主';
+        else if (val <= 6) text += ' · 母版与创意平衡';
+        else if (val <= 8) text += ' · 大胆创意';
+        else text += ' · 最具创意';
+        label.textContent = text;
+    }
+
+    async function maybeSaveSuiteToLibrary(suite) {
+        // 生成套件后询问是否保存到套件库（便于跨项目复用）。
+        if (!suite || !suite.cover || !suite.transition || !suite.header_footer) return;
+        if (!confirm('是否将这套件保存到「套件管理」的套件库中，供其他项目复用？\n\n选择「取消」则仅当前项目使用。')) return;
+        const defaultName = (suite.template_name || '未命名') + '套件';
+        const name = prompt('套件名称：', defaultName);
+        if (name === null) return;
+        try {
+            await fetch('/api/template-suites', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    suite_name: name || defaultName,
+                    description: 'AI 基于模板生成',
+                    cover: suite.cover,
+                    transition: suite.transition,
+                    catalog: suite.catalog || '',
+                    ending: suite.ending || '',
+                    header_footer: suite.header_footer,
+                    design_tokens: suite.design_tokens || '',
+                    template_id: suite.template_id || null,
+                    template_hash: suite.template_hash || null,
+                    template_name: suite.template_name || null,
+                    tags: ['AI生成'],
+                })
+            });
+            alert('✅ 已保存到套件库，可在「套件管理」页面查看。');
+        } catch (error) {
+            alert(`保存到套件库失败：${error.message}`);
+        }
+    }
+
     async function generateTemplateSuite() {
         const btn = document.getElementById('generateSuiteBtn');
         const status = document.getElementById('suiteStatusText');
@@ -628,7 +756,7 @@
             const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force: true, stream: true })
+                body: JSON.stringify({ force: true, stream: true, creativity: getSuiteCreativity() })
             });
 
             if (!resp.ok) {
@@ -661,6 +789,10 @@
                         if (event?.type === 'complete') {
                             if (status) {
                                 status.textContent = event.message || '模板套件生成完成！';
+                            }
+                            // 生成完成后，可选保存到套件库（复用项目内已生成的套件数据）。
+                            if (event?.suite) {
+                                await maybeSaveSuiteToLibrary(event.suite);
                             }
                             alert('✅ 模板套件生成完成！可点击「预览套件」查看效果，然后开始生成 PPT。');
                             const pBtn = document.getElementById('previewSuiteBtn');

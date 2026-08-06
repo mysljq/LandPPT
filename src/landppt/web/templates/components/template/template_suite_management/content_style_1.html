@@ -1,0 +1,80 @@
+/* 套件管理页 · 卡片与套件专属样式 */
+.suite-card {
+    background: #fff;
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: all 0.2s ease;
+}
+.suite-card:hover {
+    border-color: #cbd5e1;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    transform: translateY(-2px);
+}
+.suite-card-preview {
+    width: 100%;
+    height: 200px;
+    background: #f8fafc;
+    position: relative;
+    border-bottom: 1px solid var(--border-color, #e5e7eb);
+    overflow: hidden;
+    cursor: pointer;
+}
+.suite-card-preview iframe {
+    width: 1280px;
+    height: 720px;
+    border: none;
+    pointer-events: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(0.28);
+    transform-origin: center center;
+}
+.suite-card-info { padding: 14px 16px; flex-grow: 1; }
+.suite-card-name {
+    font-size: 0.95rem; font-weight: 700; color: var(--text-primary);
+    margin: 0 0 6px; display: flex; justify-content: space-between; align-items: flex-start;
+}
+.suite-card-desc {
+    font-size: 0.78rem; color: var(--text-muted); line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.suite-card-meta {
+    font-size: 0.72rem; color: #94a3b8; margin-top: 8px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+}
+.suite-card-actions {
+    padding: 10px 16px;
+    border-top: 1px solid var(--border-color, #e5e7eb);
+    background: #f8fafc;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.suite-tab-btn {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.suite-tab-btn:hover:not(.active) { border-color: #94a3b8; color: var(--text-primary); }
+.suite-tab-btn.active { background: #111; border-color: #111; color: #fff; }
+.tag-chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    background: #f1f5f9;
+    color: #64748b;
+    margin-right: 4px;
+    margin-bottom: 4px;
+}

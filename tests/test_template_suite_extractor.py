@@ -41,6 +41,8 @@ CLASS_TEMPLATE = """<!DOCTYPE html>
 SUITE = {
     "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1><p>{{ cover_subtitle }}</p><p>{{ cover_extra }}</p></body></html>",
     "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1><p>{{ transition_subtitle }}</p><p>{{ transition_extra }}</p></body></html>",
+    "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1><ul>{{ catalog_items }}</ul><p>{{ catalog_extra }}</p></body></html>",
+    "ending": "<!DOCTYPE html><html><body><h1>{{ ending_title }}</h1><p>{{ ending_subtitle }}</p><p>{{ ending_extra }}</p></body></html>",
     "header_footer": "<header>{{ page_title }}</header><footer>{{ current_page_number }} / {{ total_page_count }}</footer>",
     "design_tokens": "字体栈：A；强调色：#123456",
 }
@@ -122,9 +124,39 @@ def test_renderer_content_not_covered():
     ) is None
 
 
+def test_renderer_catalog_fill():
+    filled = TemplateSuiteRenderer.apply_suite_to_slide(
+        SUITE,
+        {"title": "目录", "slide_type": "agenda", "content_points": ["第一章 概述", "第二章 方案"]},
+        2, 10,
+    )
+    assert filled is not None
+    assert "目录" in filled
+    assert "第一章 概述" in filled  # items slot filled from content_points
+    assert "{{ catalog_extra }}" in filled  # optional slot stays for LLM completion
+
+
+def test_renderer_ending_fill():
+    filled = TemplateSuiteRenderer.apply_suite_to_slide(
+        SUITE,
+        {"title": "感谢聆听", "slide_type": "thankyou", "content_points": ["谢谢关注"]},
+        10, 10,
+    )
+    assert filled is not None
+    assert "感谢聆听" in filled
+    assert "谢谢关注" in filled
+
+
 def test_renderer_returns_none_when_entry_missing():
     assert TemplateSuiteRenderer.apply_suite_to_slide(
         {"cover": ""}, {"title": "x", "slide_type": "title"}, 1, 10
+    ) is None
+    # catalog/ending entries missing -> those page types fall back (None)
+    assert TemplateSuiteRenderer.apply_suite_to_slide(
+        {"cover": "x", "transition": "x"}, {"title": "目录", "slide_type": "agenda"}, 2, 10
+    ) is None
+    assert TemplateSuiteRenderer.apply_suite_to_slide(
+        {"cover": "x", "transition": "x"}, {"title": "谢谢", "slide_type": "thankyou"}, 10, 10
     ) is None
 
 
@@ -175,15 +207,20 @@ def test_build_preview_html():
     suite = dict(SUITE)
     suite["cover"] = "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1><p>{{ cover_subtitle }}</p><p>{{ cover_extra }}</p></body></html>"
     suite["transition"] = "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>"
+    suite["catalog"] = "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1><ul>{{ catalog_items }}</ul></body></html>"
+    suite["ending"] = "<!DOCTYPE html><html><body><h1>{{ ending_title }}</h1><p>{{ ending_subtitle }}</p></body></html>"
     suite["header_footer"] = "<header>{{ page_title }}</header><footer>{{ current_page_number }} / {{ total_page_count }}</footer>"
     preview = svc.build_preview_html(suite)
 
-    assert set(preview.keys()) == {"cover", "transition", "content"}
+    assert set(preview.keys()) == {"cover", "transition", "catalog", "ending", "content"}
     for key, html in preview.items():
         assert html.strip().lower().startswith("<!doctype html"), f"{key} must be a full document"
         assert "{{" not in html, f"{key} should have all slots filled"
-    assert "演示文稿标题" in preview["cover"]
-    assert "章节" in preview["transition"]
+    # 各特殊页都应填充自然的示例内容，而非空/占位符
+    assert "年度工作报告" in preview["cover"]
+    assert "核心方案" in preview["transition"]
+    assert "第一章" in preview["catalog"]
+    assert "感谢聆听" in preview["ending"]
     assert "<header>" in preview["content"] and "<footer>" in preview["content"]
 
 
@@ -590,3 +627,339 @@ def test_header_footer_stage_inserted_between_anchors():
     assert -1 not in (ta, ms, na)
     assert ta < ms < na, "main-stage must sit between header and footer"
     assert "{{ page_content }}" in fixed
+
+
+def test_creativity_parameter_maps_to_guidance():
+    """The 0-10 creativity scale must produce distinct guidance: 0=strictly
+    follow master, 10=most creative; out-of-range values are clamped."""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    base = dict(project=None, outline={"slides": [{"title": "x"}]},
+                confirmed={"topic": "t"}, template_html="<div>t</div>")
+    p0 = TemplatePrompts.build_template_suite_prompt(**base, creativity=0)
+    p5 = TemplatePrompts.build_template_suite_prompt(**base, creativity=5)
+    p10 = TemplatePrompts.build_template_suite_prompt(**base, creativity=10)
+
+    assert "严格遵循母版" in p0
+    assert "母版与创意平衡" in p5
+    assert "最具创意" in p10
+    assert p0 != p5 and p5 != p10
+
+    # Clamping
+    pneg = TemplatePrompts.build_template_suite_prompt(**base, creativity=-3)
+    phigh = TemplatePrompts.build_template_suite_prompt(**base, creativity=99)
+    assert "严格遵循母版" in pneg
+    assert "最具创意" in phigh
+
+    # Part prompt: cover/transition honor it; header_footer ignores it.
+    part_base = dict(outline={"slides": [{"title": "x"}]}, confirmed={"topic": "t"},
+                     template_html="<div>t</div>", existing_suite={"design_tokens": "t"})
+    pc = TemplatePrompts.build_template_suite_part_prompt(part="cover", creativity=10, **part_base)
+    ph = TemplatePrompts.build_template_suite_part_prompt(part="header_footer", creativity=10, **part_base)
+    assert "最具创意" in pc
+    assert "最具创意" not in ph
+
+
+def test_suite_prompt_default_ignores_outline_topic():
+    """The suite-generation prompt must by default NOT reference the project
+    outline/topic — only the master template — and include them when
+    reference_outline=True."""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI大模型行业趋势"
+        scenario = "峰会"
+
+    outline = {
+        "title": "AI大模型行业趋势",
+        "slides": [{"title": "开场", "slide_type": "title"}, {"title": "大模型", "slide_type": "content"}],
+    }
+    confirmed = {"target_audience": "高管", "ppt_style": "科技感"}
+    base = dict(project=P(), outline=outline, confirmed=confirmed,
+                template_html="<div>tpl</div>", creativity=5)
+
+    p0 = TemplatePrompts.build_template_suite_prompt(**base)
+    assert "大纲全貌" not in p0
+    assert "项目信息" not in p0
+    assert "AI大模型" not in p0
+    assert "母版 HTML 原文" in p0
+
+    p1 = TemplatePrompts.build_template_suite_prompt(**base, reference_outline=True)
+    assert "大纲全貌" in p1
+    assert "项目信息" in p1
+    assert "AI大模型" in p1
+
+    # part prompt too
+    pb = dict(part="cover", outline=outline, confirmed=confirmed,
+              template_html="<div>t</div>", existing_suite={"design_tokens": "t"}, creativity=5)
+    pp0 = TemplatePrompts.build_template_suite_part_prompt(**pb)
+    pp1 = TemplatePrompts.build_template_suite_part_prompt(**pb, reference_outline=True)
+    assert "大纲全貌" not in pp0
+    assert "大纲全貌" in pp1
+
+
+def test_get_effective_suite_prefers_selected_global_suite():
+    """get_effective_suite must prefer a project's selected global-library suite
+    over the project-local template_suite."""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    suite_payload = {
+        "cover": "<!DOCTYPE html><html><body>{{ cover_title }}</body></html>",
+        "transition": "<!DOCTYPE html><html><body>{{ transition_title }}</body></html>",
+        "header_footer": "<header>{{ page_title }}</header>",
+        "design_tokens": "t",
+        "template_name": "全局套件",
+    }
+
+    class FakePM:
+        def __init__(self):
+            self.meta = {"selected_global_suite_id": 7, "template_suite": {"template_name": "项目内套件"}}
+
+        async def get_project(self, pid, user_id=None):
+            p = type("P", (), {"project_metadata": dict(self.meta)})()
+            return p
+
+        async def update_project_metadata(self, pid, meta, user_id=None):
+            self.meta = dict(meta)
+
+    class FakeHost:
+        project_manager = FakePM()
+
+    svc = TemplateSuiteService(FakeHost())
+
+    class FakeGlobal(GlobalTemplateSuiteService):
+        def __init__(self, service=None):
+            self._service = service
+
+        async def get_suite_payload(self, sid):
+            return dict(suite_payload) if sid == 7 else None
+
+    # patch the local import inside get_effective_suite
+    import landppt.services.template.template_suite_service as mod
+    orig = getattr(mod, "_GLOBAL_SUITE_SVC", None)
+    mod._GLOBAL_SUITE_SVC = FakeGlobal
+    # inject by patching module-level: the function does `from .global_template_suite_service import GlobalTemplateSuiteService`
+    # We instead replace via sys.modules injection.
+    import sys
+    saved = sys.modules.get("landppt.services.template.global_template_suite_service")
+    fake_mod = type(sys)("fake_global_mod")
+    fake_mod.GlobalTemplateSuiteService = FakeGlobal
+    sys.modules["landppt.services.template.global_template_suite_service"] = fake_mod
+    try:
+        async def run():
+            return await svc.get_effective_suite("p1")
+        result = asyncio.run(run())
+    finally:
+        if saved is not None:
+            sys.modules["landppt.services.template.global_template_suite_service"] = saved
+        else:
+            sys.modules.pop("landppt.services.template.global_template_suite_service", None)
+
+    assert result is not None
+    assert result["template_name"] == "全局套件"
+    assert "cover_title" in result["cover"]
+
+
+def test_get_effective_suite_falls_back_to_project_suite():
+    """Without a selected global suite, get_effective_suite falls back to the
+    project-local template_suite."""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    class FakePM:
+        def __init__(self):
+            self.meta = {"template_suite": {"cover": "PROJECT_COVER", "template_name": "项目内套件"}}
+
+        async def get_project(self, pid, user_id=None):
+            return type("P", (), {"project_metadata": dict(self.meta)})()
+
+    class FakeHost:
+        project_manager = FakePM()
+
+    svc = TemplateSuiteService(FakeHost())
+    # override get_suite to avoid DB/project real path
+    async def fake_get_suite(pid):
+        return {"cover": "PROJECT_COVER", "template_name": "项目内套件"}
+
+    svc.get_suite = fake_get_suite
+
+    async def run():
+        return await svc.get_effective_suite("p1")
+
+    result = asyncio.run(run())
+    assert result is not None
+    assert result["cover"] == "PROJECT_COVER"
+
+
+def test_build_catalog_suite_constraint():
+    """目录页参考约束包含套件目录页 HTML 与设计指引；无目录页时为空串。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    c = SlideMediaService._build_catalog_suite_constraint({
+        "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1><div>01 示例章节</div></body></html>",
+    })
+    assert "目录页参考设计" in c
+    assert "示例章节" in c
+    assert "{{ catalog_title }}" in c
+
+    assert SlideMediaService._build_catalog_suite_constraint({"catalog": "   "}) == ""
+    assert SlideMediaService._build_catalog_suite_constraint({}) == ""
+
+
+def test_catalog_page_uses_reference_not_template_fill():
+    """目录页生成：套件目录作为设计参考交给 LLM（注入 prompt），
+    而不走 _try_fill_suite_slide 模板填充路径。"""
+    import asyncio
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1><div>01 示例章节</div></body></html>",
+        "header_footer": "<header>{{ page_title }}</header>",
+        "design_tokens": "t",
+    }
+    captured = {}
+
+    class FakeTemplateSuite:
+        async def get_effective_suite(self, project_id):
+            return suite
+
+    class FakeMedia:
+        template_suite = FakeTemplateSuite()
+
+        async def get_selected_global_template(self, project_id):
+            return None
+
+        async def _try_fill_suite_slide(self, *args, **kwargs):
+            raise AssertionError("目录页不应走模板填充 _try_fill_suite_slide")
+
+        async def _ensure_slide_images_context(self, *a, **k):
+            return None
+
+        async def _get_creative_design_inputs(self, *a, **k):
+            return ("", "", "")
+
+        async def _process_slide_image(self, *a, **k):
+            return None
+
+        def _build_slide_context(self, *a, **k):
+            return ""
+
+        async def _generate_html_with_retry(self, context, *a, **k):
+            captured["context"] = context
+            return "<!DOCTYPE html><html><body>目录</body></html>"
+
+        async def _generate_fallback_slide_html(self, *a, **k):
+            return "fallback"
+
+        async def _apply_auto_layout_repair(self, html, *a, **k):
+            return html
+
+    media = SlideMediaService(FakeMedia())
+
+    async def run():
+        return await media._generate_single_slide_html_with_prompts(
+            {"title": "目录", "slide_type": "agenda",
+             "content_points": ["第一章 概述", "第二章 方案"]},
+            {"project_id": "p1", "topic": "T", "target_audience": "A", "description": "D"},
+            "sys", 3, 10, project_id="p1",
+        )
+
+    result = asyncio.run(run())
+    assert "目录页参考设计" in captured["context"], "目录页参考设计应注入生成 prompt"
+    assert "示例章节" in captured["context"], "套件目录页 HTML 应作为参考注入"
+    assert result and "目录" in result
+
+
+def test_extract_json_from_response_robust():
+    """健壮 JSON 解析：HTML 转义、Markdown 代码块、前后散文、Python 字面量都能解析；
+    真正坏掉的 JSON（未转义引号）返回 None（触发修正重试）。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    good = (
+        '{"cover": "<!DOCTYPE html><html><body><div style=\\"color:#fff\\">Hi</div>'
+        '{{ cover_title }}</body></html>", "transition": "<html>x</html>", '
+        '"header_footer": "<header>{{ page_title }}</header>", "design_tokens": "t"}'
+    )
+
+    # 1) 正常转义的 HTML-in-JSON
+    p = TemplateSuiteService._extract_json_from_response(good)
+    assert p and p["cover"].startswith("<!DOCTYPE html>")
+
+    # 2) Markdown 代码块包裹
+    p = TemplateSuiteService._extract_json_from_response("```json\n" + good + "\n```")
+    assert p and "cover" in p
+
+    # 3) 前后有散文解释
+    p = TemplateSuiteService._extract_json_from_response("好的，套件如下：\n" + good + "\n以上。")
+    assert p and "cover" in p
+
+    # 4) 尾逗号 / 智能引号等常见脏格式
+    dirty = '{"cover":"<html>c</html>","transition":"<html>t</html>","header_footer":"<header>{{ page_title }}</header>","design_tokens":"t",}'
+    p = TemplateSuiteService._extract_json_from_response(dirty)
+    assert p and "cover" in p
+
+    # 5) Python 字面量兜底（单引号 + true）
+    py = "{'cover': '<html>c</html>', 'transition': '<html>t</html>', 'header_footer': '<header>{{ page_title }}</header>', 'design_tokens': 't', 'ok': true}"
+    p = TemplateSuiteService._extract_json_from_response(py)
+    assert p and "cover" in p
+
+    # 6) 真正坏掉的 JSON（HTML 内未转义引号）→ None，走修正重试
+    broken = '{"cover": "<!DOCTYPE html><div style="broken">A</div>", "transition": "t", "header_footer": "h", "design_tokens": "d"}'
+    assert TemplateSuiteService._extract_json_from_response(broken) is None
+
+
+def test_generate_suite_payload_repairs_invalid_json():
+    """第一次 LLM 响应不是有效 JSON 时，触发一次修正重试并成功解析。"""
+    import asyncio
+    import json
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    calls = []
+
+    class FakeService:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            calls.append((role, kwargs.get("max_output_tokens")))
+            if len(calls) == 1:
+                # 第一次：散文 + 坏 JSON（HTML 内未转义引号）→ 无法解析
+                return type("R", (), {"content": (
+                    '这是生成的套件 JSON：{"cover": "<!DOCTYPE html><div style="broken">A</div>", '
+                    '"transition": "broken", "header_footer": "broken", "design_tokens": "t"}'
+                )})()
+            # 第二次（修正重试）：严格 JSON
+            content = json.dumps({
+                "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+                "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>",
+                "header_footer": (
+                    '<div class="hf-canvas"><div class="bg-paper"></div><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                ),
+                "design_tokens": "字体栈：A；强调色：#1a2b3c",
+            }, ensure_ascii=False)
+            return type("R", (), {"content": content})()
+
+    svc = TemplateSuiteService(FakeService())
+    template = {
+        "id": 1,
+        "template_name": "商务模板",
+        "html_template": (
+            "<!DOCTYPE html><html><head><style>:root{--accent:#1a2b3c}</style></head>"
+            "<body><header>H</header><main>M</main><footer>F</footer></body></html>"
+        ),
+    }
+
+    async def run():
+        return await svc._generate_suite_payload(
+            template, creativity=5, reference_outline=False, project=None
+        )
+
+    result = asyncio.run(run())
+    assert len(calls) == 2, "首次解析失败后应触发一次修正重试"
+    assert calls[0][1] == 12000, "主调用应携带 max_output_tokens 上限"
+    assert result["cover"].startswith("<!DOCTYPE html>")
+    assert "cover_title" in result["cover"]
+    assert result["transition"].startswith("<!DOCTYPE html>")
+    assert "page_title" in result["header_footer"]

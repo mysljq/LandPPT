@@ -30,6 +30,22 @@ async def global_master_templates_page(
         return templates.TemplateResponse("error.html", {"request": request, "error": str(exc)})
 
 
+@router.get("/template-suites", response_class=HTMLResponse)
+async def template_suite_management_page(
+    request: Request,
+    user: User = Depends(get_current_user_required),
+):
+    """全局模板套件管理页。"""
+    try:
+        return templates.TemplateResponse(
+            "pages/template/template_suite_management.html",
+            {"request": request, "user": user},
+        )
+    except Exception as exc:
+        logger.error("Error loading template suite management page: %s", exc)
+        return templates.TemplateResponse("error.html", {"request": request, "error": str(exc)})
+
+
 @router.get("/image-gallery", response_class=HTMLResponse)
 async def image_gallery_page(
     request: Request,

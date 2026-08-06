@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}套件管理{% endblock %}
+
+{% block extra_css %}
+<style>
+{% include "components/template/template_suite_management/extra_css_1.html" %}
+</style>
+{% endblock %}
+
+{% block content %}
+{% include "components/template/template_suite_management/content_1.html" %}
+<style>
+{% include "components/template/template_suite_management/content_style_1.html" %}
+</style>
+<script type="module" src="/static/js/pages/template/template_suite_management/templateSuiteManagement.js"></script>
+{% endblock %}

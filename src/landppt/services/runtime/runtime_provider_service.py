@@ -103,7 +103,13 @@ class RuntimeProviderService:
                     model = user_config.get(provider_model_key)
                 settings = {'role': role, 'provider': provider_name, 'model': model}
                 provider = await get_user_ai_provider(self.user_id, provider_name)
-                logger.info(f"Got provider for role '{role}': {provider_name}, model: {model}")
+                logger.info(
+                    "Got provider for role '%s': provider=%s, model=%s, base_url=%s",
+                    role,
+                    provider_name,
+                    model,
+                    (getattr(provider, "config", {}) or {}).get("base_url", ""),
+                )
                 return (provider, settings)
             except Exception as e:
                 logger.warning(f'Failed to get user role provider async, falling back to global: {e}')

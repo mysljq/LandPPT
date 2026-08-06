@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete, and_, func, or_, inspect, text
 from sqlalchemy.orm import selectinload
 
-from .models import Project, TodoBoard, TodoStage, ProjectVersion, SlideData, PPTTemplate, GlobalMasterTemplate, CreditTransaction, RedemptionCode, User, UserConfig, UserMetrics
+from .models import Project, TodoBoard, TodoStage, ProjectVersion, SlideData, PPTTemplate, GlobalMasterTemplate, GlobalTemplateSuite, CreditTransaction, RedemptionCode, User, UserConfig, UserMetrics
 from ..api.models import PPTProject, TodoBoard as TodoBoardModel, TodoStage as TodoStageModel
 
 logger = logging.getLogger(__name__)
@@ -1469,3 +1469,93 @@ class UserConfigRepository:
         except Exception as e:
             logger.error(f"Error copying configs for user {user_id}: {e}")
             return 0
+
+
+class GlobalTemplateSuiteRepository:
+    """Repository for Global Template Suite operations (shared across users)."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_suite(self, suite_data: Dict[str, Any]) -> GlobalTemplateSuite:
+        """Create a new global template suite."""
+        suite_data["created_at"] = time.time()
+        suite_data["updated_at"] = time.time()
+        suite = GlobalTemplateSuite(**suite_data)
+        self.session.add(suite)
+        await self.session.commit()
+        await self.session.refresh(suite)
+        return suite
+
+    async def get_suite_by_id(self, suite_id: int) -> Optional[GlobalTemplateSuite]:
+        """Get suite by ID (global shared, no user scope)."""
+        stmt = select(GlobalTemplateSuite).where(GlobalTemplateSuite.id == suite_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_suites_paginated(
+        self,
+        active_only: bool = True,
+        offset: int = 0,
+        limit: int = 6,
+        search: Optional[str] = None,
+        template_id: Optional[int] = None,
+    ) -> Tuple[List[GlobalTemplateSuite], int]:
+        """List suites with pagination / search / template filter."""
+        stmt = select(GlobalTemplateSuite)
+        count_stmt = select(func.count(GlobalTemplateSuite.id))
+        if active_only:
+            stmt = stmt.where(GlobalTemplateSuite.is_active == True)
+            count_stmt = count_stmt.where(GlobalTemplateSuite.is_active == True)
+        if template_id is not None:
+            stmt = stmt.where(GlobalTemplateSuite.template_id == template_id)
+            count_stmt = count_stmt.where(GlobalTemplateSuite.template_id == template_id)
+        if search and search.strip():
+            search_filter = or_(
+                GlobalTemplateSuite.suite_name.ilike(f"%{search}%"),
+                GlobalTemplateSuite.description.ilike(f"%{search}%"),
+            )
+            stmt = stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+        stmt = stmt.order_by(GlobalTemplateSuite.usage_count.desc()).offset(offset).limit(limit)
+        result = await self.session.execute(stmt)
+        count_result = await self.session.execute(count_stmt)
+        return result.scalars().all(), count_result.scalar()
+
+    async def list_all_suites(self, active_only: bool = True) -> List[GlobalTemplateSuite]:
+        """List all suites (no pagination)."""
+        stmt = select(GlobalTemplateSuite)
+        if active_only:
+            stmt = stmt.where(GlobalTemplateSuite.is_active == True)
+        stmt = stmt.order_by(GlobalTemplateSuite.usage_count.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_suite(self, suite_id: int, update_data: Dict[str, Any]) -> bool:
+        """Update a suite by ID."""
+        suite = await self.get_suite_by_id(suite_id)
+        if not suite:
+            return False
+        update_data["updated_at"] = time.time()
+        for key, value in update_data.items():
+            setattr(suite, key, value)
+        await self.session.commit()
+        return True
+
+    async def delete_suite(self, suite_id: int) -> bool:
+        """Delete a suite by ID."""
+        suite = await self.get_suite_by_id(suite_id)
+        if not suite:
+            return False
+        await self.session.delete(suite)
+        await self.session.commit()
+        return True
+
+    async def increment_usage(self, suite_id: int) -> bool:
+        """Increment a suite's usage count."""
+        suite = await self.get_suite_by_id(suite_id)
+        if not suite:
+            return False
+        suite.usage_count = (suite.usage_count or 0) + 1
+        await self.session.commit()
+        return True

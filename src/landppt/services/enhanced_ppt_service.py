@@ -34,6 +34,7 @@ from .outline.project_outline_workflow_service import ProjectOutlineWorkflowServ
 from .prompts import prompts_manager
 from .template.template_selection_service import TemplateSelectionService
 from .template.template_suite_service import TemplateSuiteService
+from .template.global_template_suite_service import GlobalTemplateSuiteService
 from .slide.slide_generation_service import SlideGenerationService
 from .runtime.runtime_support_service import RuntimeSupportService
 from .slide.slide_authoring_service import SlideAuthoringService
@@ -121,6 +122,7 @@ class EnhancedPPTService(PPTService):
         self.creative_design = CreativeDesignService(self)
         self.template_selection = TemplateSelectionService(self)
         self.template_suite = TemplateSuiteService(self)
+        self.global_template_suite = GlobalTemplateSuiteService(self)
         self.slide_generation = SlideGenerationService(self)
         self.layout_repair = LayoutRepairService(self)
         self.project_outline_workflow = ProjectOutlineWorkflowService(self)

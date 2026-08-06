@@ -467,6 +467,12 @@ async def generate_project_template_suite(
             payload = {}
 
         force = bool(payload.get("force", False))
+        # creativity：0-10 刻度，0=严格遵循母版，10=最具创意；默认 5（平衡）。
+        try:
+            creativity = int(payload.get("creativity", 5))
+        except (TypeError, ValueError):
+            creativity = 5
+        creativity = max(0, min(10, creativity))
         want_stream = True if payload.get("stream") is None else bool(payload.get("stream"))
         accept = (request.headers.get("accept") or "").lower()
         if "application/json" in accept and "text/event-stream" not in accept and payload.get("stream") is None:
@@ -513,6 +519,7 @@ async def generate_project_template_suite(
                         project_id,
                         user_id=user.id,
                         force=force,
+                        creativity=creativity,
                     ):
                         if (
                             will_generate
@@ -546,6 +553,7 @@ async def generate_project_template_suite(
             project_id,
             user_id=user.id,
             force=force,
+            creativity=creativity,
         ):
             if (event or {}).get("type") == "complete":
                 suite = (event or {}).get("suite")
@@ -594,6 +602,12 @@ async def regenerate_project_template_suite_part(
 
         part = (payload.get("part") or "").strip()
         user_feedback = (payload.get("feedback") or "").strip()
+        # creativity：0-10 刻度，0=严格遵循母版，10=最具创意；默认 5（平衡）。
+        try:
+            creativity = int(payload.get("creativity", 5))
+        except (TypeError, ValueError):
+            creativity = 5
+        creativity = max(0, min(10, creativity))
         if part not in ("cover", "transition", "header_footer"):
             raise HTTPException(status_code=400, detail="part 必须是 cover / transition / header_footer")
 
@@ -640,6 +654,7 @@ async def regenerate_project_template_suite_part(
                         part,
                         user_feedback=user_feedback,
                         user_id=user.id,
+                        creativity=creativity,
                     ):
                         if not credits_consumed and (event or {}).get("type") == "complete":
                             await consume_credits_for_operation(
@@ -670,6 +685,7 @@ async def regenerate_project_template_suite_part(
             part,
             user_feedback=user_feedback,
             user_id=user.id,
+            creativity=creativity,
         ):
             if (event or {}).get("type") == "complete":
                 updated = (event or {}).get("suite")

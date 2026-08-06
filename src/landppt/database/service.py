@@ -12,9 +12,10 @@ logger = logging.getLogger(__name__)
 
 from .repositories import (
     ProjectRepository, TodoBoardRepository, TodoStageRepository,
-    ProjectVersionRepository, SlideDataRepository, PPTTemplateRepository, GlobalMasterTemplateRepository
+    ProjectVersionRepository, SlideDataRepository, PPTTemplateRepository, GlobalMasterTemplateRepository,
+    GlobalTemplateSuiteRepository,
 )
-from .models import Project as DBProject, TodoBoard as DBTodoBoard, TodoStage as DBTodoStage, PPTTemplate as DBPPTTemplate, GlobalMasterTemplate as DBGlobalMasterTemplate
+from .models import Project as DBProject, TodoBoard as DBTodoBoard, TodoStage as DBTodoStage, PPTTemplate as DBPPTTemplate, GlobalMasterTemplate as DBGlobalMasterTemplate, GlobalTemplateSuite as DBGlobalTemplateSuite
 from ..api.models import (
     PPTProject, TodoBoard, TodoStage, ProjectListResponse,
     PPTGenerationRequest
@@ -881,3 +882,52 @@ class DatabaseService:
         """Get the default global master template"""
         template_repo = GlobalMasterTemplateRepository(self.session)
         return await template_repo.get_default_template(user_id=user_id)
+
+    # ------------------------------------------------------------------
+    # Global Template Suite
+    # ------------------------------------------------------------------
+
+    async def create_global_template_suite(self, suite_data: Dict[str, Any]) -> DBGlobalTemplateSuite:
+        """Create a global template suite."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.create_suite(suite_data)
+
+    async def get_global_template_suite_by_id(self, suite_id: int) -> Optional[DBGlobalTemplateSuite]:
+        """Get a global template suite by ID."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.get_suite_by_id(suite_id)
+
+    async def list_global_template_suites_paginated(
+        self,
+        active_only: bool = True,
+        offset: int = 0,
+        limit: int = 6,
+        search: Optional[str] = None,
+        template_id: Optional[int] = None,
+    ) -> Tuple[List[DBGlobalTemplateSuite], int]:
+        """List global template suites with pagination."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.list_suites_paginated(
+            active_only=active_only, offset=offset, limit=limit,
+            search=search, template_id=template_id,
+        )
+
+    async def list_all_global_template_suites(self, active_only: bool = True) -> List[DBGlobalTemplateSuite]:
+        """List all global template suites."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.list_all_suites(active_only=active_only)
+
+    async def update_global_template_suite(self, suite_id: int, update_data: Dict[str, Any]) -> bool:
+        """Update a global template suite."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.update_suite(suite_id, update_data)
+
+    async def delete_global_template_suite(self, suite_id: int) -> bool:
+        """Delete a global template suite."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.delete_suite(suite_id)
+
+    async def increment_global_template_suite_usage(self, suite_id: int) -> bool:
+        """Increment a global template suite's usage count."""
+        repo = GlobalTemplateSuiteRepository(self.session)
+        return await repo.increment_usage(suite_id)

@@ -1,6 +1,6 @@
 """
-Template Suite Renderer — deterministic slot-filling for cover/transition suite
-templates, plus page-type dispatch used by the slide generation pipeline.
+Template Suite Renderer — deterministic slot-filling for cover/transition/catalog/
+ending suite templates, plus page-type dispatch used by the slide generation pipeline.
 
 Slot semantics:
 - Provided slots are substituted deterministically with real content.
@@ -17,23 +17,33 @@ from ..prompts.design_prompts import DesignPrompts
 
 _SLOT_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
-# Page-type keys the suite covers. Catalog/ending stay on the existing
-# free-design path per the approved scope.
-_SUITE_PAGE_TYPES = ("cover", "transition")
+# Page-type keys the suite covers. All four special pages are covered;
+# plain content pages stay on the free-design path (only header/footer locked).
+_SUITE_PAGE_TYPES = ("cover", "transition", "catalog", "ending")
 
-# Mapping from slide-type keys to the slot-set the suite template expects.
-_COVER_SLOTS = ("cover_title", "cover_subtitle", "cover_extra")
-_TRANSITION_SLOTS = ("transition_title", "transition_subtitle", "transition_extra")
+# Title/subtitle slot names per page type (extra optional slot left open).
+_TITLE_SLOT = {
+    "cover": "cover_title",
+    "transition": "transition_title",
+    "catalog": "catalog_title",
+    "ending": "ending_title",
+}
+_SUBTITLE_SLOT = {
+    "cover": "cover_subtitle",
+    "transition": "transition_subtitle",
+    "catalog": "catalog_subtitle",
+    "ending": "ending_subtitle",
+}
 
 
 class TemplateSuiteRenderer:
-    """Fill cover/transition suite templates and dispatch page types."""
+    """Fill suite templates and dispatch page types."""
 
     @staticmethod
     def _suite_entry(suite: Dict[str, Any], page_type: str) -> Optional[str]:
         if not suite:
             return None
-        entry = suite.get("cover") if page_type == "cover" else suite.get("transition")
+        entry = suite.get(page_type)
         if not isinstance(entry, str) or not entry.strip():
             return None
         return entry
@@ -77,7 +87,7 @@ class TemplateSuiteRenderer:
         page_number: int,
         total_pages: int,
     ) -> Optional[str]:
-        """Render a cover/transition slide from its suite template.
+        """Render a cover/transition/catalog/ending slide from its suite template.
 
         Returns the filled HTML, or None when no applicable suite template exists
         (caller falls back to the existing generation path).
@@ -108,14 +118,35 @@ class TemplateSuiteRenderer:
             subtitle = content_points.strip()
 
         slots: Dict[str, str] = {}
-        if page_type == "cover":
-            slots["cover_title"] = title
-            slots["cover_subtitle"] = subtitle
-        else:
-            slots["transition_title"] = title
-            slots["transition_subtitle"] = subtitle
+        title_slot = _TITLE_SLOT.get(page_type)
+        subtitle_slot = _SUBTITLE_SLOT.get(page_type)
+        if title_slot:
+            slots[title_slot] = title
+        if subtitle_slot:
+            slots[subtitle_slot] = subtitle
+
+        # For catalog pages, also try filling a chapter/items slot if the
+        # template uses one (e.g. {{ catalog_items }}): join content points.
+        if page_type == "catalog":
+            items = TemplateSuiteRenderer._collect_items(content_points)
+            if items:
+                slots["catalog_items"] = items
+        elif page_type == "ending":
+            items = TemplateSuiteRenderer._collect_items(content_points)
+            if items:
+                slots["ending_items"] = items
 
         filled = TemplateSuiteRenderer.fill_suite_template(entry, slots)
         if not filled.strip():
             return None
         return filled
+
+    @staticmethod
+    def _collect_items(content_points: Any) -> str:
+        """Join content points into a compact list (used for catalog/ending items)."""
+        if isinstance(content_points, list):
+            points = [str(p).strip() for p in content_points if str(p).strip()]
+            return "\n".join(points)
+        if isinstance(content_points, str) and content_points.strip():
+            return content_points.strip()
+        return ""

@@ -111,7 +111,11 @@
             <div style="display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;">
                 <button id="generateSuiteBtn" class="btn btn-outline-primary" disabled
                     onclick="generateTemplateSuite()">
-                    <i class="fas fa-layer-group"></i> 生成一致性套件
+                    <i class="fas fa-layer-group"></i> 基于模板生成套件
+                </button>
+                <button id="useLibrarySuiteBtn" class="btn btn-outline-primary" disabled
+                    onclick="openLibrarySuitePicker()">
+                    <i class="fas fa-book"></i> 使用套件库中的套件
                 </button>
                 <button id="previewSuiteBtn" class="btn btn-outline-primary" disabled
                     onclick="previewTemplateSuite()">
@@ -119,13 +123,37 @@
                 </button>
                 <span id="suiteStatusText" style="font-size: 0.8rem; color: var(--text-secondary);"></span>
             </div>
+
+            <!-- 创意度选择：0=严格遵循母版，10=最具创意 -->
+            <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 10px; flex-wrap: wrap;">
+                <label for="suiteCreativitySlider" style="font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; white-space: nowrap;">创意度</label>
+                <input type="range" id="suiteCreativitySlider" min="0" max="10" step="1" value="5"
+                    style="width: 180px; accent-color: #111; cursor: pointer;"
+                    oninput="updateSuiteCreativityLabel()">
+                <span id="suiteCreativityLabel" style="font-size: 0.78rem; color: var(--text-primary); font-weight: 700; min-width: 130px;">5 · 平衡</span>
+            </div>
+
             <div style="margin-top: 8px; font-size: 0.78rem; color: #64748b; line-height: 1.6;">
-                💡 选中模板后生成套件，包含<b>封面模板</b>、<b>过渡页模板</b>与<b>内容页规范页头页脚</b>，
-                让整份 PPT 的页头页脚与过渡页结构保持一致。<br>
-                可选步骤：不生成也能正常出 PPT（封面/过渡页会由 AI 自由发挥）。
+                💡 套件包含<b>封面模板</b>、<b>过渡页模板</b>与<b>内容页规范页头页脚</b>。<br>
+                可选步骤：不生成/不使用也能正常出 PPT（封面/过渡页会由 AI 自由发挥）。
             </div>
         </div>
     </div>
+
+<!-- 套件库选择 Modal -->
+<div id="librarySuiteModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 900px; width: 92%; max-height: 90vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+            <h2>选择套件库中的套件</h2>
+            <span class="close" onclick="closeLibrarySuitePicker()">&times;</span>
+        </div>
+        <div class="modal-body" style="overflow: auto; flex: 1;">
+            <div id="librarySuiteList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;">
+                <div style="text-align:center; padding:32px; color:var(--text-secondary);">加载中...</div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- 套件预览 Modal -->
 <div id="suitePreviewModal" class="modal" style="display: none;">
@@ -137,7 +165,9 @@
         <div style="padding: 12px 24px; border-bottom: 1px solid var(--border-color, #e5e7eb); display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <button class="btn btn-sm suite-tab-btn active" data-suite-tab="cover" onclick="showSuiteTab('cover')">📄 封面</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="transition" onclick="showSuiteTab('transition')">🔀 过渡页</button>
+            <button class="btn btn-sm suite-tab-btn" data-suite-tab="catalog" onclick="showSuiteTab('catalog')">📋 目录页</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="content" onclick="showSuiteTab('content')">📑 内容页（页头页脚）</button>
+            <button class="btn btn-sm suite-tab-btn" data-suite-tab="ending" onclick="showSuiteTab('ending')">🎉 结尾页</button>
             <span style="flex: 1;"></span>
             <button class="btn btn-sm btn-outline-primary" id="regenerateSuitePartBtn" onclick="regenerateSuitePart()" style="display:none;">
                 <i class="fas fa-redo"></i> 重新生成此类型
@@ -149,12 +179,14 @@
             <button class="btn btn-sm btn-secondary" onclick="cancelRegenerateSuitePart()">取消</button>
             <span id="regenerateSuitePartStatus" style="font-size: 0.78rem; color: var(--text-secondary);"></span>
         </div>
-        <div class="modal-body" style="text-align: center; flex: 1; overflow: auto;">
+        <div class="modal-body" style="padding: 16px; flex: 1; overflow: auto;">
             <div id="suitePreviewLoading" style="padding: 40px; color: var(--text-secondary); display: none;">
                 <i class="fas fa-spinner fa-spin"></i> 正在加载套件预览...
             </div>
-            <iframe id="suitePreviewFrame"
-                style="width: 1280px; height: 720px; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; transform: scale(0.8); transform-origin: top left; margin: 0 auto; max-width: 100%;"></iframe>
+            <div id="suitePreviewBox" style="position: relative; width: 100%; aspect-ratio: 16/9; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; overflow: hidden; background: #f8fafc;">
+                <iframe id="suitePreviewFrame"
+                    style="position: absolute; top: 0; left: 0; width: 1280px; height: 720px; border: none; transform-origin: top left;"></iframe>
+            </div>
         </div>
         <div style="padding: 10px 24px; border-top: 1px solid var(--border-color, #e5e7eb); font-size: 0.78rem; color: #64748b; text-align: center;">
             预览展示的是套件模板效果（已填入示例文字），实际生成 PPT 时会替换为你的真实标题与内容。

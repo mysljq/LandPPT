@@ -318,6 +318,29 @@ class GlobalMasterTemplate(Base):
     updated_at: Mapped[float] = mapped_column(Float, default=time.time, onupdate=time.time)
 
 
+class GlobalTemplateSuite(Base):
+    """全局模板套件表——可跨项目复用的套件（封面/过渡页/内容页页头页脚）。"""
+    __tablename__ = "global_template_suites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    suite_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cover: Mapped[str] = mapped_column(Text, nullable=False)  # 完整封面 HTML（含 {{cover_title}} 等槽位）
+    transition: Mapped[str] = mapped_column(Text, nullable=False)  # 完整过渡页 HTML（{{transition_title}} 等）
+    catalog: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 目录/大纲页 HTML（{{catalog_title}} 等）
+    ending: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 结尾/致谢页 HTML（{{ending_title}} 等）
+    header_footer: Mapped[str] = mapped_column(Text, nullable=False)  # 内容页自包含骨架片段（{{page_title}} 等）
+    design_tokens: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 一行设计令牌
+    template_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)  # 来源全局模板 ID
+    template_hash: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # 来源模板指纹
+    template_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # 来源模板名
+    tags: Mapped[List[str]] = mapped_column(JSON, nullable=True)  # 标签分类
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)  # 是否启用
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)  # 使用次数统计
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+    updated_at: Mapped[float] = mapped_column(Float, default=time.time, onupdate=time.time)
+
+
 class SpeechScript(Base):
     """演讲稿存储表"""
     __tablename__ = "speech_scripts"

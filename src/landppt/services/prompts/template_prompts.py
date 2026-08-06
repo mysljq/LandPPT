@@ -316,12 +316,66 @@ class TemplatePrompts:
 """.strip()
 
     @staticmethod
+    def _build_creativity_guidance(creativity: int) -> str:
+        """根据 0-10 刻度生成封面/过渡页的"遵循母版 vs 创意自由"指引。
+
+        0 = 严格遵循母版设计语言；10 = 最具创意（可超越母版构图/手法，
+        仅保留配色基因）。
+        """
+        try:
+            creativity = int(creativity)
+        except (TypeError, ValueError):
+            creativity = 0
+        creativity = max(0, min(10, creativity))
+
+        if creativity <= 1:
+            # 严格遵循母版
+            return (
+                "**封面/过渡页创意度：低（严格遵循母版）**\n"
+                "- 封面/过渡页的视觉语言应尽量贴近母版：沿用母版的配色、字体、材质、几何语言与构图逻辑，"
+                "让它们看起来就是母版体系的自然延伸。\n"
+                "- 可以在排版细节上做小幅润色（层次、间距、装饰点缀），但不要改变母版的整体气质与结构。"
+            )
+        if creativity <= 3:
+            return (
+                "**封面/过渡页创意度：中低（以母版为主，适度升华）**\n"
+                "- 沿用母版的配色与字体基因，但可以适度提升构图张力与视觉层次。\n"
+                "- 允许更丰富的装饰手法（背景层次、几何语言、细节点缀），但整体气质仍贴近母版。"
+            )
+        if creativity <= 6:
+            return (
+                "**封面/过渡页创意度：中（母版与创意平衡）**\n"
+                "- 继承母版的配色基因（主色/强调色/字体气质），但封面/过渡页的构图、材质、层次、装饰手法"
+                "可以明显更丰富、更有设计感。\n"
+                "- 鼓励使用多背景层、材质纹理、几何张力、非对称构图等，让封面/过渡页显得更精致专业，"
+                "但配色仍能追溯到母版。"
+            )
+        if creativity <= 8:
+            return (
+                "**封面/过渡页创意度：较高（大胆创意，保留配色基因）**\n"
+                "- 封面/过渡页可以自由发挥成专业级设计（像精品模板/发布会的封面）：构图、材质、层次、"
+                "装饰手法都可以大胆突破母版的框架。\n"
+                "- 仅需保留母版的配色基因（从主色/强调色/字体气质出发，可提炼、可升华），"
+                "不必逐字照搬母版结构。\n"
+                "- 追求高完成度的视觉设计：多背景层叠、材质纹理、几何语言、细节点缀、光影质感等。"
+            )
+        # creativity 9-10：最具创意
+        return (
+            "**封面/过渡页创意度：最高（最具创意，仅保留配色线索）**\n"
+            "- 封面/过渡页可以完全自由地发挥，追求惊艳的视觉冲击与记忆点，像顶级设计作品/发布会封面。\n"
+            "- 只需从母版提炼一两个配色线索（主色/强调色之一）作为点缀，构图、材质、装饰可以完全超越母版。\n"
+            "- 鼓励突破常规的排版、材质、层次与光影，让封面/过渡页成为整套 PPT 的视觉亮点。"
+        )
+
+    @staticmethod
     def build_template_suite_prompt(
         project: Any = None,
         outline: Dict[str, Any] = None,
         confirmed: Dict[str, Any] = None,
         template_html: str = "",
         extracted_header_footer: Dict[str, str] = None,
+        creativity: int = 0,
+        reference_outline: bool = False,
     ) -> str:
         """组装"模板套件"生成提示词。
 
@@ -331,6 +385,10 @@ class TemplatePrompts:
         - 内容页规范页头页脚（{{page_title}}/{{current_page_number}}/{{total_page_count}} 槽位）
         - design_tokens 一行设计令牌
         输出固定 JSON 结构，供机械解析。
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
+        reference_outline：为 True 时才把项目主题/大纲/受众等信息传给模型；
+        默认 False = 套件只基于母版模板生成，不绑定具体项目内容。
         """
         outline = outline or {}
         confirmed = confirmed or {}
@@ -342,10 +400,26 @@ class TemplatePrompts:
         ppt_style = confirmed.get("ppt_style") or ""
         custom_style_prompt = confirmed.get("custom_style_prompt") or ""
 
-        # 大纲全貌（每页一行）
-        outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
-        type_dist = TemplatePrompts._build_slide_type_distribution(slides)
-        arc = TemplatePrompts._build_narrative_arc_summary(slides)
+        # 项目上下文（仅 reference_outline=True 时包含）
+        project_context = ""
+        if reference_outline:
+            outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
+            type_dist = TemplatePrompts._build_slide_type_distribution(slides)
+            arc = TemplatePrompts._build_narrative_arc_summary(slides)
+            project_context = f"""
+**项目信息**
+- 主题：{topic}
+- 场景：{scenario}
+- 受众：{target_audience}
+- 风格偏好：{ppt_style}
+- 自定义风格补充：{custom_style_prompt}
+
+**大纲全貌**
+- 总页数：{len(slides)}
+- 页面类型分布：{type_dist}
+{f"- 叙事弧线：{arc}" if arc else ""}
+{outline_lines}
+"""
 
         # 确定性提取的母版页头/页脚（作为内容页页头页脚的强约束来源）
         hf = extracted_header_footer or {}
@@ -362,21 +436,9 @@ class TemplatePrompts:
 """
 
         return f"""
-请基于已选母版的设计风格与主题色，为这套 PPT 生成"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
+请基于已选母版的设计风格与主题色，生成一套通用的"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
 
-**项目信息**
-- 主题：{topic}
-- 场景：{scenario}
-- 受众：{target_audience}
-- 风格偏好：{ppt_style}
-- 自定义风格补充：{custom_style_prompt}
-
-**大纲全貌**
-- 总页数：{len(slides)}
-- 页面类型分布：{type_dist}
-{f"- 叙事弧线：{arc}" if arc else ""}
-{outline_lines}
-
+{project_context}
 **母版 HTML 原文**
 {template_html or "(无母版原文，请按项目风格自行设计一套)"}
 
@@ -387,28 +449,34 @@ class TemplatePrompts:
 **任务与输出约束**
 1. `cover`：一个完整的封面 HTML（1280×720，无滚动条，设计丰富有仪式感），预留槽位 `{{{{ cover_title }}}}`（主标题）、`{{{{ cover_subtitle }}}}`（副标题）、`{{{{ cover_extra }}}}`（可选补充文案）。
 2. `transition`：一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 `{{{{ transition_title }}}}`（章节标题）、`{{{{ transition_subtitle }}}}`（简短引导语）、`{{{{ transition_extra }}}}`（可选补充）。
-3. `header_footer`：内容页的**自包含骨架片段**（不是完整页面，但包含内容页的全部视觉骨架）。必须包含：
+3. `catalog`：一个完整的**目录/大纲页** HTML（1280×720，无滚动条）。预留槽位 `{{{{ catalog_title }}}}`（页面标题，如"目录"）、`{{{{ catalog_subtitle }}}}`（副标题）、`{{{{ catalog_extra }}}}`（可选补充）。**目录条目区必须自带完整设计**：用编号（01/02/03…）+ 章节名 + 分隔线/双栏等排版，呈现 4-6 个示例章节（如"第一章 项目概述"），让条目区看起来像专业模板的目录，而不是一段文字；**不要预留 `{{{{ catalog_items }}}}` 槽位**，生成 PPT 时模型会参考本页设计并填入真实章节。
+4. `ending`：一个完整的**结尾/致谢页** HTML（1280×720，无滚动条），预留槽位 `{{{{ ending_title }}}}`（主标题，如"感谢聆听"）、`{{{{ ending_subtitle }}}}`（副标题）、`{{{{ ending_extra }}}}`（可选补充）、`{{{{ ending_items }}}}`（可选收尾要点列表）。
+5. `header_footer`：内容页的**自包含骨架片段**（不是完整页面，但包含内容页的全部视觉骨架）。必须包含：
    - 模板的背景装饰层（如 `bg-paper`/`bg-grid`/边框装饰/印章等，从母版同源继承），保证内容页有背景和装饰；
    - 页头 `{{{{ page_title }}}}`（页头标题）；
    - 一个正文占位容器 `{{{{ page_content }}}}`（供后续填充正文）；
    - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）。
    样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
-4. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
-5. 三块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面与过渡页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
-6. 封面/过渡页的视觉语言必须与母版一致（配色、字体、材质、几何语言），但允许更丰富的编排；不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
+6. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
+7. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
+8. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
+
+{TemplatePrompts._build_creativity_guidance(creativity)}
 
 **输出格式（严格 JSON，不要附加任何解释）**
 ```json
 {{
   "cover": "<完整封面HTML>",
   "transition": "<完整过渡页HTML>",
+  "catalog": "<完整目录页HTML>",
+  "ending": "<完整结尾页HTML>",
   "header_footer": "<规范页头页脚HTML片段>",
   "design_tokens": "字体栈：...；强调色：...；页头背景：...；页码样式：..."
 }}
 ```
 """.strip()
 
-    # 套件单类型重新生成：只重生 cover / transition / header_footer 中的一种，
+    # 套件单类型重新生成：只重生 cover/transition/catalog/ending/header_footer 中的一种，
     # 其余部分和设计令牌保留，避免整套重生成浪费 token。
     _SUITE_PART_META = {
         "cover": {
@@ -420,6 +488,16 @@ class TemplatePrompts:
             "key": "transition",
             "label": "过渡页模板",
             "desc": "一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 {{transition_title}}（章节标题）、{{transition_subtitle}}（简短引导语）、{{transition_extra}}（可选补充）。",
+        },
+        "catalog": {
+            "key": "catalog",
+            "label": "目录页模板",
+            "desc": "一个完整的目录/大纲页 HTML（1280×720，无滚动条）。预留槽位 {{catalog_title}}（页面标题）、{{catalog_subtitle}}（副标题）、{{catalog_extra}}（可选补充）。目录条目区必须自带完整设计（编号 01/02… + 章节名 + 分隔/双栏排版），呈现 4-6 个示例章节，像专业模板的目录；不要预留 {{catalog_items}} 槽位。",
+        },
+        "ending": {
+            "key": "ending",
+            "label": "结尾/致谢页模板",
+            "desc": "一个完整的结尾/致谢页 HTML（1280×720，无滚动条），预留槽位 {{ending_title}}（主标题）、{{ending_subtitle}}（副标题）、{{ending_extra}}（可选补充）、{{ending_items}}（可选收尾要点）。",
         },
         "header_footer": {
             "key": "header_footer",
@@ -438,11 +516,16 @@ class TemplatePrompts:
         extracted_header_footer: Dict[str, str] = None,
         existing_suite: Dict[str, Any] = None,
         user_feedback: str = "",
+        creativity: int = 0,
+        reference_outline: bool = False,
     ) -> str:
         """组装"模板套件单类型重新生成"提示词。
 
         只重新生成 part（cover/transition/header_footer）这一种，其余套件部分
         与 design_tokens 作为风格参考保留，从而节省 token、保持整体一致。
+
+        creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
+        reference_outline：为 True 时才把项目主题/大纲等信息传给模型；默认 False = 仅基于母版/现有套件。
         """
         meta = TemplatePrompts._SUITE_PART_META.get(part)
         if not meta:
@@ -459,8 +542,24 @@ class TemplatePrompts:
         ppt_style = confirmed.get("ppt_style") or ""
         custom_style_prompt = confirmed.get("custom_style_prompt") or ""
 
-        outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
-        type_dist = TemplatePrompts._build_slide_type_distribution(slides)
+        # 项目上下文（仅 reference_outline=True 时包含）
+        project_context = ""
+        if reference_outline:
+            outline_lines = TemplatePrompts._build_compact_outline_summary(slides)
+            type_dist = TemplatePrompts._build_slide_type_distribution(slides)
+            project_context = f"""
+**项目信息**
+- 主题：{topic}
+- 场景：{scenario}
+- 受众：{target_audience}
+- 风格偏好：{ppt_style}
+- 自定义风格补充：{custom_style_prompt}
+
+**大纲全貌**
+- 总页数：{len(slides)}
+- 页面类型分布：{type_dist}
+{outline_lines}
+"""
 
         hf = extracted_header_footer or {}
         header_block = (hf.get("header_html") or "") + "\n" + (hf.get("header_css") or "")
@@ -494,18 +593,7 @@ class TemplatePrompts:
         return f"""
 请为这套 PPT 重新生成「{meta['label']}」，只输出这一个部分，其余套件部分保持不变。
 
-**项目信息**
-- 主题：{topic}
-- 场景：{scenario}
-- 受众：{target_audience}
-- 风格偏好：{ppt_style}
-- 自定义风格补充：{custom_style_prompt}
-
-**大纲全貌**
-- 总页数：{len(slides)}
-- 页面类型分布：{type_dist}
-{outline_lines}
-
+{project_context}
 **母版 HTML 原文**
 {template_html or "(无母版原文，请按项目风格自行设计一套)"}
 
@@ -521,6 +609,7 @@ class TemplatePrompts:
 - 必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale；封面/过渡页用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
 - 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
 - 沿用现有套件的 design_tokens 与其余部分的视觉语言，保持同一套设计系统。
+{TemplatePrompts._build_creativity_guidance(creativity) if part in ("cover", "transition", "catalog", "ending") else ""}
 - 仅输出一个 JSON 对象，只包含你重生的字段，不要输出其他部分：
 ```json
 {{ "{meta['key']}": "<新内容>" }}
