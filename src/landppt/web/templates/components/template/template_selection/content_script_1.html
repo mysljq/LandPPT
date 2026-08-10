@@ -8,6 +8,10 @@
     let currentSearch = '';
     let currentTag = '';
     let allTags = [];
+    // 基于大纲智能生成的套件（预览/保存用）
+    let outlineSuite = null;
+    // 是否已选用套件库套件（无模板也能开始生成PPT）
+    let librarySuiteSelected = false;
 
     // Extract project ID from URL path: /projects/{project_id}/template-selection
     let pathParts = window.location.pathname.split('/');
@@ -376,32 +380,51 @@
         const btn = document.getElementById('generateSuiteBtn');
         const previewBtn = document.getElementById('previewSuiteBtn');
         const libraryBtn = document.getElementById('useLibrarySuiteBtn');
+        const outlineBtn = document.getElementById('generateOutlineSuiteBtn');
         const status = document.getElementById('suiteStatusText');
         if (!btn || !status) return;
 
-        // 未选择全局模板时禁用按钮并提示
+        // 「基于大纲智能生成套件」与「使用套件库中的套件」不依赖选中模板，始终可用
+        if (outlineBtn) outlineBtn.disabled = false;
+        if (libraryBtn) libraryBtn.disabled = false;
+
+        // 「基于模板生成套件」才需要先选中全局模板
         if (selectedTemplateMode !== 'global' || !selectedTemplateId) {
             btn.disabled = true;
-            if (previewBtn) previewBtn.disabled = true;
-            if (libraryBtn) libraryBtn.disabled = true;
-            status.textContent = '请先选择一个全局模板';
-            return;
+        } else {
+            btn.disabled = false;
         }
 
-        btn.disabled = false;
+        // 预览按钮：取决于项目当前是否有可用套件（无论是否选中模板）
         if (previewBtn) previewBtn.disabled = true;
-        if (libraryBtn) libraryBtn.disabled = false;
-        status.textContent = '选择一种套件来源：基于模板生成 或 使用套件库';
-
+        let suiteReady = false;
+        let suiteName = '';
         try {
             const resp = await fetch(`/api/projects/${projectId}/template-suite`);
             const data = await resp.json();
             if (resp.ok && data?.success && data?.status === 'ready') {
-                status.textContent = `已有套件（${data.template_name || '当前模板'}）· 可重新生成或改用套件库`;
+                suiteReady = true;
+                suiteName = data.template_name || '当前套件';
                 if (previewBtn) previewBtn.disabled = false;
             }
         } catch (_) {
             // 状态查询失败不阻塞按钮
+        }
+
+        // 开始生成PPT：选了模板 / 自由模板 / 选中库套件 / 项目已有有效套件 都可开始
+        const startBtn = document.getElementById('startGenerationBtn');
+        if (startBtn) {
+            startBtn.disabled = !(selectedTemplateId || selectedTemplateMode === 'free' || librarySuiteSelected || suiteReady);
+        }
+
+        if (suiteReady) {
+            status.textContent = `已有套件（${suiteName}）· 可重新生成 / 预览 / 改用套件库`;
+        } else if (selectedTemplateMode === 'global' && selectedTemplateId) {
+            status.textContent = '选择一种套件来源：基于模板生成、基于大纲智能生成 或 使用套件库';
+        } else if (librarySuiteSelected) {
+            status.textContent = '已选用套件库套件，可直接开始生成PPT';
+        } else {
+            status.textContent = '可直接「基于大纲智能生成套件」或「使用套件库中的套件」，或先选择一个全局模板';
         }
     }
 
@@ -459,9 +482,12 @@
                 throw new Error(data.detail || data.message || '选用失败');
             }
             closeLibrarySuitePicker();
-            if (status) status.textContent = '✅ 已选用套件库套件，开始生成PPT时将应用';
+            librarySuiteSelected = true;
+            if (status) status.textContent = '✅ 已选用套件库套件，可直接开始生成PPT';
             const previewBtn = document.getElementById('previewSuiteBtn');
             if (previewBtn) previewBtn.disabled = false;
+            const startBtn = document.getElementById('startGenerationBtn');
+            if (startBtn) startBtn.disabled = false;
             suitePreviewData = null;
         } catch (error) {
             if (status) status.textContent = `选用失败：${error.message}`;
@@ -829,6 +855,192 @@
         }
     }
 
+    // 「基于大纲智能生成套件」：无需母版模板，直接根据项目大纲/主题设计一套套件。
+    // 打开「基于大纲智能生成套件」弹窗（设置 → 生成 → 预览 + 操作）
+    function generateOutlineSuite() {
+        const modal = document.getElementById('outlineSuiteModal');
+        if (!modal) return;
+        document.getElementById('outlineGenSetup').style.display = 'block';
+        document.getElementById('outlineGenProgress').style.display = 'none';
+        document.getElementById('outlineGenComplete').style.display = 'none';
+        const saveStatus = document.getElementById('outlineSaveStatus');
+        if (saveStatus) saveStatus.textContent = '';
+        updateOutlineCreativityLabel();
+        modal.style.display = 'flex';
+    }
+
+    function closeOutlineSuiteModal() {
+        const modal = document.getElementById('outlineSuiteModal');
+        if (modal) modal.style.display = 'none';
+        outlineSuite = null;
+    }
+
+    // 重新智能生成：回到设置步骤（保留已填的自定义要求/创意度）
+    function outlineRegenerate() {
+        document.getElementById('outlineGenComplete').style.display = 'none';
+        document.getElementById('outlineGenSetup').style.display = 'block';
+        const saveStatus = document.getElementById('outlineSaveStatus');
+        if (saveStatus) saveStatus.textContent = '';
+    }
+
+    function updateOutlineCreativityLabel() {
+        const slider = document.getElementById('outlineCreativitySlider');
+        const label = document.getElementById('outlineCreativityLabel');
+        if (!slider || !label) return;
+        const val = parseInt(slider.value, 10);
+        let text = String(val);
+        if (val <= 1) text += ' · 严格遵循大纲';
+        else if (val <= 3) text += ' · 以大纲为主';
+        else if (val <= 6) text += ' · 大纲与创意平衡';
+        else if (val <= 8) text += ' · 大胆创意';
+        else text += ' · 最具创意';
+        label.textContent = text;
+    }
+
+    // 执行生成：带自定义要求，完成后只展示预览（不自动保存）
+    async function startOutlineSuiteGen() {
+        const setup = document.getElementById('outlineGenSetup');
+        const progress = document.getElementById('outlineGenProgress');
+        const complete = document.getElementById('outlineGenComplete');
+        const status = document.getElementById('outlineGenStatus');
+        const saveStatus = document.getElementById('outlineSaveStatus');
+        const startBtn = document.getElementById('outlineStartBtn');
+        if (!progress) return;
+        const requirements = (document.getElementById('outlineCustomReq').value || '').trim();
+        const creativity = parseInt(document.getElementById('outlineCreativitySlider').value, 10) || 5;
+        if (startBtn) startBtn.disabled = true;
+        setup.style.display = 'none';
+        progress.style.display = 'block';
+        if (status) status.textContent = '正在基于大纲内容智能生成套件...';
+        if (saveStatus) saveStatus.textContent = '';
+        try {
+            const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force: true, stream: true, creativity, free: true, requirements })
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data?.detail || data?.message || '套件生成请求失败');
+            }
+            let suite = null;
+            if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                let done = false;
+                while (!done) {
+                    const { value, done: isDone } = await reader.read();
+                    done = isDone;
+                    buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let event;
+                        try { event = JSON.parse(line.slice(6)); } catch (_) { continue; }
+                        if (event?.type === 'status' && status) status.textContent = event.message || status.textContent;
+                        if (event?.type === 'complete') { suite = event?.suite || null; break; }
+                        if (event?.type === 'error') throw new Error(event.message || '套件生成失败');
+                    }
+                    if (suite) break;
+                }
+            } else {
+                const data = await resp.json();
+                if (!data?.success) throw new Error(data?.error || data?.message || '套件生成失败');
+                suite = data?.suite || null;
+            }
+            if (!suite) throw new Error('套件生成未返回数据');
+            outlineSuite = suite;
+            // 生成完成：展示预览（保存由用户点击单独按钮决定）
+            progress.style.display = 'none';
+            complete.style.display = 'block';
+            if (status) status.textContent = '';
+            renderOutlineGenPreview('cover');
+            const pBtn = document.getElementById('previewSuiteBtn');
+            if (pBtn) pBtn.disabled = false;
+        } catch (error) {
+            console.error('Outline suite generation error:', error);
+            progress.style.display = 'none';
+            setup.style.display = 'block';
+            if (status) status.textContent = '';
+            alert(`❌ 套件生成失败：${error.message}`);
+        } finally {
+            if (startBtn) startBtn.disabled = false;
+        }
+    }
+
+    function _outlineWrapContent(hf) {
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>html,body{margin:0;padding:0;width:1280px;height:720px;overflow:hidden}</style></head><body>${hf || ''}</body></html>`;
+    }
+
+    function renderOutlineGenPreview(tab) {
+        const s = outlineSuite;
+        const frame = document.getElementById('outlinePreviewFrame');
+        const box = document.getElementById('outlinePreviewBox');
+        if (!s || !frame) return;
+        let html = '';
+        if (tab === 'cover') html = s.cover;
+        else if (tab === 'transition') html = s.transition;
+        else if (tab === 'catalog') html = s.catalog || '';
+        else if (tab === 'ending') html = s.ending || '';
+        else html = _outlineWrapContent(s.header_footer);
+        const blob = new Blob([html], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        frame.onload = function () {
+            if (box) {
+                const scale = (box.clientWidth || 800) / 1280;
+                frame.style.transform = `scale(${scale})`;
+            }
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        };
+        frame.src = url;
+        document.querySelectorAll('#outlineGenComplete .suite-tab-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.suiteTab === tab);
+        });
+    }
+
+    function outlineShowTab(tab) {
+        renderOutlineGenPreview(tab);
+    }
+
+    // 单独按钮：把刚生成的大纲智能套件保存到套件库
+    async function saveOutlineSuiteToLibrary() {
+        const s = outlineSuite;
+        const status = document.getElementById('outlineSaveStatus');
+        const btn = document.getElementById('outlineSaveBtn');
+        if (!s) { if (status) status.textContent = '没有可保存的套件'; return; }
+        if (btn) btn.disabled = true;
+        if (status) status.textContent = '保存中...';
+        try {
+            const resp = await fetch('/api/template-suites', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    suite_name: (s.template_name || '大纲智能') + '套件',
+                    description: '基于大纲智能生成',
+                    cover: s.cover,
+                    transition: s.transition,
+                    catalog: s.catalog || '',
+                    ending: s.ending || '',
+                    header_footer: s.header_footer,
+                    design_tokens: s.design_tokens || '',
+                    template_id: s.template_id || null,
+                    template_hash: s.template_hash || null,
+                    template_name: s.template_name || '大纲智能套件',
+                    tags: ['AI生成', '大纲智能'],
+                })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data?.detail || data?.message || `HTTP ${resp.status}`);
+            if (status) status.textContent = '✅ 已保存到套件库，可在「套件管理」页面查看';
+        } catch (error) {
+            if (status) status.textContent = `❌ 保存失败：${error.message}`;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     function selectFreeAndStart() {
         selectFreeTemplate();
         setTimeout(() => startPPTGeneration(), 100);
@@ -906,8 +1118,8 @@
         console.log('selectedTemplateMode:', selectedTemplateMode);
         console.log('projectId:', projectId);
 
-        if (selectedTemplateMode !== 'free' && !selectedTemplateId) {
-            alert('请先选择一个模板');
+        if (selectedTemplateMode !== 'free' && !selectedTemplateId && !librarySuiteSelected) {
+            alert('请先选择一个模板，或选择一个套件（套件库/大纲智能）');
             return;
         }
 
@@ -919,6 +1131,15 @@
         try {
             console.log('Sending request to select template...');
 
+            // 只选了库套件/大纲套件、没选模板时：用「suite」模式（清掉默认模板与自由模板，
+            // 内容页不绑定固定全局模板、也不触发 todo 编辑器的自由模板流程，只按套件设计）。
+            let tm = selectedTemplateMode;
+            let tid = selectedTemplateMode === 'free' ? null : selectedTemplateId;
+            if (!selectedTemplateId && selectedTemplateMode !== 'free') {
+                tm = 'suite';
+                tid = null;
+            }
+
             // Select template for project
             const response = await fetch(`/api/projects/${projectId}/select-template`, {
                 method: 'POST',
@@ -927,8 +1148,8 @@
                 },
                 body: JSON.stringify({
                     project_id: projectId,
-                    selected_template_id: selectedTemplateMode === 'free' ? null : selectedTemplateId,
-                    template_mode: selectedTemplateMode
+                    selected_template_id: tid,
+                    template_mode: tm
                 })
             });
 

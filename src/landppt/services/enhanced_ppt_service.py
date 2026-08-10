@@ -669,6 +669,9 @@ class EnhancedPPTService(PPTService):
     async def select_free_template_for_project(self, project_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         return await self.template_selection.select_free_template_for_project(project_id, user_id=user_id)
 
+    async def select_suite_only_template_for_project(self, project_id: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        return await self.template_selection.select_suite_only_template_for_project(project_id, user_id=user_id)
+
     async def get_selected_global_template(self, project_id: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         return await self.template_selection.get_selected_global_template(project_id, user_id=user_id)
 

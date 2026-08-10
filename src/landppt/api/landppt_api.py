@@ -1022,6 +1022,9 @@ async def select_global_template_for_project(
 
         if request.template_mode == "free":
             result = await user_ppt_service.select_free_template_for_project(project_id, user_id=user.id)
+        elif request.template_mode == "suite":
+            # 仅使用套件（不选模板）：清掉全局/自由模板，内容页按套件设计
+            result = await user_ppt_service.select_suite_only_template_for_project(project_id, user_id=user.id)
         else:
             # "default" 和未指定都等价于 selected_template_id=None（由后端选择默认模板）
             template_id = None if request.template_mode == "default" else request.selected_template_id

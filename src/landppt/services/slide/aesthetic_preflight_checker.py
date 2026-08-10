@@ -410,15 +410,15 @@ class AestheticPreFlightChecker:
                 )
 
             # 2. 纯黑纯白
-            pure_bw = []
-            for m in cls._PURE_BW_RE.finditer(visible_html):
-                if _norm_hex(m.group(0).lstrip("#")) not in excluded_norm:
-                    pure_bw.append(m.group(0))
-            if pure_bw:
-                warns = sorted({c.upper() for c in pure_bw})
-                hard_fails.append(
-                    f"出现纯黑/纯白 {warns}，请改用近黑（如 #1A1A1A）和近白保留层次"
-                )
+            # pure_bw = []
+            # for m in cls._PURE_BW_RE.finditer(visible_html):
+            #     if _norm_hex(m.group(0).lstrip("#")) not in excluded_norm:
+            #         pure_bw.append(m.group(0))
+            # if pure_bw:
+            #     warns = sorted({c.upper() for c in pure_bw})
+            #     hard_fails.append(
+            #         f"出现纯黑/纯白 {warns}，请改用近黑（如 #1A1A1A）和近白保留层次"
+            #     )
 
             # 3. 多 accent 色撞色（页内侧重色是否唯一）
             distinct: dict = {}
@@ -432,7 +432,7 @@ class AestheticPreFlightChecker:
                 distinct[hexv] = distinct.get(hexv, 0) + 1
             # 去掉极低频的噪点色（仅出现一次且非主色），剩余即为"页内活跃强调色"
             active = {c: n for c, n in distinct.items() if n >= 2}
-            if len(active) > 1:
+            if len(active) > 3:
                 top = sorted(active.items(), key=lambda kv: kv[1], reverse=True)
                 hard_fails.append(
                     f"页内出现多种活跃 accent 色 {sorted(c for c, _ in top)}，全册应锁定唯一 accent，请只保留一种"

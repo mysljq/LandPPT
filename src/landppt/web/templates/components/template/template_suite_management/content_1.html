@@ -7,6 +7,7 @@
         </div>
         <div class="page-header-actions">
             <button id="generateSuiteFromTemplateBtn" class="btn btn-primary"><i class="fas fa-wand-magic-sparkles"></i> 从模板生成套件</button>
+            <button id="generateSuiteFromImagesBtn" class="btn btn-primary"><i class="fas fa-image"></i> 基于AI读图生成套件</button>
         </div>
     </div>
 
@@ -118,6 +119,74 @@
     </div>
 </div>
 
+<!-- 基于AI读图生成套件 Modal -->
+<div id="imageGenerateModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 900px; width: 92%; max-height: 92vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+            <h2><i class="fas fa-image"></i> 基于AI读图生成套件</h2>
+            <button class="close" id="closeImageGenerateModal" type="button">&times;</button>
+        </div>
+        <div class="modal-body" style="overflow: auto;">
+            <!-- 步骤1：上传截图 -->
+            <div id="imgGenUpload">
+                <p style="margin:0 0 12px; color:var(--text-secondary); font-size:0.85rem; line-height:1.6;">
+                    上传页面截图，AI 将读取截图设计生成对应套件；<b>未上传的类型将由 AI 基于其它页面设计自动补全</b>。
+                </p>
+                <div id="imgUploadGrid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px;"></div>
+                <div style="display:flex; align-items:center; gap:12px; margin-top:18px; flex-wrap:wrap;">
+                    <label for="imgCreativitySlider" style="font-size:0.82rem; color:var(--text-secondary); font-weight:600; white-space:nowrap;">创意度</label>
+                    <input type="range" id="imgCreativitySlider" min="0" max="10" step="1" value="5"
+                        style="flex:1; min-width:160px; accent-color:#111; cursor:pointer;"
+                        oninput="updateImgCreativityLabel()">
+                    <span id="imgCreativityLabel" style="font-size:0.82rem; color:var(--text-primary); font-weight:700; min-width:130px;">5 · 平衡</span>
+                </div>
+                <label style="display:flex; align-items:center; gap:8px; margin-top:12px; cursor:pointer; font-size:0.82rem; color:var(--text-secondary);">
+                    <input type="checkbox" id="imgExtractImages" checked style="accent-color:#111; cursor:pointer;">
+                    提取截图中的图片/图标并直接复用（推荐）
+                </label>
+                <div style="text-align:center; margin-top:18px;">
+                    <button id="imgStartGenerateBtn" class="btn btn-primary" onclick="startImageGenerateSuite()">
+                        <i class="fas fa-wand-magic-sparkles"></i> 开始生成套件
+                    </button>
+                </div>
+            </div>
+
+            <!-- 步骤2：生成中 -->
+            <div id="imgGenProgress" style="display:none; text-align:center; padding:24px 0;">
+                <div class="loading-spinner"></div>
+                <p id="imgGenStatus" style="margin-top:14px; color:var(--text-secondary); font-weight:600;">正在识别截图并生成套件...</p>
+                <p id="imgGenElapsed" style="margin-top:6px; color:#94a3b8; font-size:0.82rem;">已耗时 0 秒</p>
+            </div>
+
+            <!-- 步骤3：完成 + 预览 -->
+            <div id="imgGenComplete" style="display:none;">
+                <div class="completion-header">
+                    <h3 style="margin:0; color:#16a34a; font-size:1.05rem; font-weight:700;">✓ 基于截图生成套件完成</h3>
+                </div>
+                <div style="margin:12px 0;">
+                    <input type="text" id="imgSuiteNameInput" placeholder="套件名称（留空则用默认名）"
+                        style="width:100%; padding:9px 12px; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; font-size:0.85rem;">
+                </div>
+                <div style="display:flex; gap:8px; margin:12px 0; flex-wrap:wrap;">
+                    <button class="btn btn-sm suite-tab-btn active" data-suite-tab="cover" onclick="suiteMgmtShowImageGenTab('cover')">📄 封面</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="transition" onclick="suiteMgmtShowImageGenTab('transition')">🔀 过渡页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="catalog" onclick="suiteMgmtShowImageGenTab('catalog')">📋 目录页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="content" onclick="suiteMgmtShowImageGenTab('content')">📑 内容页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="ending" onclick="suiteMgmtShowImageGenTab('ending')">🎉 结尾页</button>
+                </div>
+                <div id="imgPreviewBox" style="position:relative; width:100%; aspect-ratio:16/9; border:1px solid var(--border-color,#e5e7eb); border-radius:10px; overflow:hidden; background:#f8fafc;">
+                    <iframe id="imgPreviewFrame" style="position:absolute; top:0; left:0; width:1280px; height:720px; border:none; transform-origin:top left;"></iframe>
+                </div>
+                <div style="margin-top:16px; text-align:center; display:flex; gap:8px; justify-content:center;">
+                    <button type="button" id="imgSaveSuiteBtn" class="btn btn-success" onclick="saveImageGeneratedSuiteToLibrary()"><i class="fas fa-save"></i> 保存到套件库</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeImageGenerateModal()">关闭</button>
+                </div>
+                <div id="imgSaveStatus" style="margin-top:8px; text-align:center; font-size:0.8rem; color:var(--text-secondary);"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 套件预览 Modal（查看库中套件） -->
 <div id="previewModal" class="modal" style="display: none;">
     <div class="modal-content" style="max-width: 95%; width: 95%;">
@@ -125,16 +194,42 @@
             <h2 id="previewTitle">套件预览</h2>
             <button class="close" id="closePreviewModal" type="button">&times;</button>
         </div>
-        <div style="padding:10px 24px; display:flex; gap:8px; border-bottom:1px solid var(--border-color,#e5e7eb); flex-wrap:wrap;">
+        <div style="padding:10px 24px; display:flex; gap:8px; border-bottom:1px solid var(--border-color,#e5e7eb); flex-wrap:wrap; align-items:center;">
             <button class="btn btn-sm suite-tab-btn active" data-suite-tab="cover" onclick="suiteMgmtShowLibTab('cover')">📄 封面</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="transition" onclick="suiteMgmtShowLibTab('transition')">🔀 过渡页</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="catalog" onclick="suiteMgmtShowLibTab('catalog')">📋 目录页</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="content" onclick="suiteMgmtShowLibTab('content')">📑 内容页</button>
             <button class="btn btn-sm suite-tab-btn" data-suite-tab="ending" onclick="suiteMgmtShowLibTab('ending')">🎉 结尾页</button>
+            <span style="flex:1;"></span>
+            <button id="editSuiteBtn" class="btn btn-sm btn-outline-primary" onclick="openSuiteEditor()">✏️ 编辑当前页面</button>
         </div>
         <div class="modal-body" style="padding:16px;">
             <div id="previewBox" style="position:relative; width:100%; aspect-ratio:16/9; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; overflow:hidden; background:#f8fafc;">
                 <iframe id="previewFrame" style="position:absolute; top:0; left:0; width:1280px; height:720px; border:none; transform-origin:top left;"></iframe>
+            </div>
+
+            <!-- 套件页面 HTML 编辑器 -->
+            <div id="suiteEditorArea" style="display:none; margin-top:14px; padding-top:14px; border-top:1px solid var(--border-color,#e5e7eb);">
+                <div style="display:flex; gap:14px; flex-wrap:wrap;">
+                    <div style="flex:1; min-width:280px;">
+                        <div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">
+                            正在编辑：<span id="suiteEditPartLabel"></span> · HTML 源码（编辑后点「保存修改」）
+                        </div>
+                        <textarea id="suiteEditorCode" spellcheck="false"
+                            style="width:100%; height:300px; font-family:Consolas,Menlo,monospace; font-size:0.8rem; border:1px solid #ddd; border-radius:8px; padding:10px; resize:vertical; box-sizing:border-box; line-height:1.5;"></textarea>
+                    </div>
+                    <div style="flex:1; min-width:280px;">
+                        <div style="font-size:0.78rem; color:var(--text-secondary); margin-bottom:6px; font-weight:600;">实时预览</div>
+                        <div id="suiteEditPreviewBox" style="position:relative; width:100%; aspect-ratio:16/9; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; overflow:hidden; background:#f8fafc;">
+                            <iframe id="suiteEditPreviewFrame" style="position:absolute; top:0; left:0; width:1280px; height:720px; border:none; transform-origin:top left;"></iframe>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:12px; text-align:center; display:flex; gap:8px; justify-content:center; align-items:center; flex-wrap:wrap;">
+                    <button id="suiteEditSaveBtn" class="btn btn-success" onclick="saveSuiteEditor()"><i class="fas fa-save"></i> 保存修改</button>
+                    <button class="btn btn-secondary" onclick="closeSuiteEditor()">取消</button>
+                    <span id="suiteEditStatus" style="font-size:0.8rem; color:var(--text-secondary);"></span>
+                </div>
             </div>
         </div>
     </div>

@@ -705,6 +705,7 @@ class AnthropicProvider(AIProvider):
                 ("Authorization", {"Authorization": f"Bearer {api_key}"})  # MiniMax/other compatible APIs
             ]
 
+            last_error = None
             for auth_name, auth_header in auth_methods:
                 try:
                     headers = {
@@ -720,15 +721,18 @@ class AnthropicProvider(AIProvider):
                             if response.status == 401 and auth_name == "x-api-key":
                                 # x-api-key failed, try Authorization header
                                 logger.debug("x-api-key auth failed, trying Authorization header")
+                                last_error = f"HTTP 401: 认证失败（x-api-key）"
                                 break  # Exit inner loop to try next auth method
 
                             if response.status != 200:
-                                error_text = await response.text()
+                                error_text = (await response.text())[:500]
+                                last_error = f"HTTP {response.status}: {error_text}"
                                 if auth_name == "x-api-key":
-                                    # Try next auth method
-                                    logger.debug(f"x-api-key auth failed ({response.status}), trying Authorization")
+                                    # 401 之外的错误（503/429/5xx 等）试 Authorization 意义不大，
+                                    # 但保留回退以兼容部分非标准端点。
+                                    logger.debug("x-api-key request failed (%s), trying Authorization", response.status)
                                     break  # Exit inner loop to try next auth method
-                                raise Exception(f"API error {response.status}: {error_text}")
+                                raise Exception(last_error)
 
                             # Parse streaming response (SSE format)
                             async for line in response.content:
@@ -752,10 +756,12 @@ class AnthropicProvider(AIProvider):
 
                 except Exception as auth_error:
                     logger.debug(f"Auth method {auth_name} failed: {auth_error}")
+                    if last_error is None:
+                        last_error = str(auth_error)
                     continue  # Try next auth method
 
             # If we get here, all auth methods failed
-            raise Exception("All authentication methods failed")
+            raise Exception(f"模型服务调用失败：{last_error or '未知错误'}")
 
         except Exception as e:
             logger.error(f"Anthropic streaming API error: {e}")

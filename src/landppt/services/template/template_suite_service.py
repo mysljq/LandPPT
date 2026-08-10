@@ -138,6 +138,9 @@ class TemplateSuiteService:
             suite = metadata.get(self._METADATA_KEY)
             if not isinstance(suite, dict) or not suite:
                 return None
+            # 大纲智能套件：不依赖母版模板，直接生效。
+            if suite.get("template_mode") == "outline":
+                return suite
             template = await self.get_selected_global_template(project_id)
             if not template:
                 # No template selected — treat the suite as inapplicable.
@@ -186,8 +189,11 @@ class TemplateSuiteService:
             return None
 
     async def get_suite_status(self, project_id: str) -> Dict[str, Any]:
-        """Lightweight status for the frontend button (existence + freshness)."""
-        suite = await self.get_suite(project_id)
+        """Lightweight status for the frontend button (existence + freshness).
+
+        用 get_effective_suite：选中的套件库套件也算作项目当前有效套件。
+        """
+        suite = await self.get_effective_suite(project_id)
         if not suite:
             return {"status": "none"}
         return {
@@ -650,20 +656,24 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
     async def generate_suite(
         self,
         project_id: str,
-        template: Dict[str, Any],
+        template: Optional[Dict[str, Any]] = None,
         force: bool = False,
         creativity: int = 0,
         reference_outline: bool = False,
+        free: bool = False,
+        custom_requirements: str = "",
     ) -> Dict[str, Any]:
         """Generate (or refresh) a template suite for a project and persist it.
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
         reference_outline：默认 False = 套件只基于母版模板生成，不绑定项目大纲/主题；
         为 True 时把项目主题/大纲/受众等信息传给模型。
+        free=True：大纲智能套件——无需母版模板，直接根据项目大纲/主题设计一套套件。
+        custom_requirements：用户自定义要求（如主题色/风格），设计时须遵循。
         """
         template = template or {}
-        html = template.get("html_template") or ""
-        if not html.strip():
+        html = (template.get("html_template") or "") if template else ""
+        if not html.strip() and not free:
             raise ValueError("所选模板无 HTML 内容，无法生成套件")
 
         # 从项目加载上下文（大纲/确认需求），供可选 reference_outline 使用。
@@ -674,16 +684,24 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         suite = await self._generate_suite_payload(
             template,
             creativity=creativity,
-            reference_outline=reference_outline,
+            reference_outline=(reference_outline or free),
             project=project,
+            allow_no_template=free,
+            custom_requirements=custom_requirements,
         )
+        if free:
+            suite["template_mode"] = "outline"
+            suite["template_name"] = "大纲智能套件"
+            suite["template_id"] = None
+            suite["template_hash"] = "outline-suite"
 
         await self._persist_suite(project_id, suite)
         self._clear_caches(project_id)
         logger.info(
-            "Generated template suite for project %s (template=%s)",
+            "Generated template suite for project %s (template=%s%s)",
             project_id,
             suite.get("template_name"),
+            "，大纲模式" if free else "",
         )
         return suite
 
@@ -693,15 +711,19 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         creativity: int = 0,
         reference_outline: bool = False,
         project: Any = None,
+        allow_no_template: bool = False,
+        custom_requirements: str = "",
     ) -> Dict[str, Any]:
         """Generate a suite dict via one LLM call (no project persistence).
 
         Reused by both the per-project flow and the global suite library.
         creativity：0-10 刻度；reference_outline：为 True 时把项目主题/大纲传入模型。
+        allow_no_template=True：无母版（大纲智能套件）——模型根据项目大纲/主题自行设计一套。
+        custom_requirements：用户自定义要求（如主题色/风格），注入 prompt 让模型遵循。
         """
         template = template or {}
-        html = template.get("html_template") or ""
-        if not html.strip():
+        html = (template.get("html_template") or "") if template else ""
+        if not html.strip() and not allow_no_template:
             raise ValueError("所选模板无 HTML 内容，无法生成套件")
 
         _tpl_name = template.get("template_name") or f"#{template.get('id')}"
@@ -725,6 +747,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             extracted_header_footer=extracted,
             creativity=creativity,
             reference_outline=reference_outline,
+            custom_requirements=custom_requirements,
         )
         logger.info("套件提示词构建完成（%s 字符），开始调用 AI...", len(prompt))
 
@@ -957,10 +980,14 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         user_id: Optional[int] = None,
         force: bool = False,
         creativity: int = 0,
+        free: bool = False,
+        custom_requirements: str = "",
     ):
         """Stream suite-generation events and persist the suite on success.
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
+        free=True：大纲智能套件——无需母版模板，直接根据项目大纲/主题设计一套。
+        custom_requirements：用户自定义要求（如主题色/风格）。
         """
         lock = self._template_suite_locks.setdefault(project_id, asyncio.Lock())
         if lock.locked():
@@ -968,10 +995,13 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
         async with lock:
             try:
-                template = await self.get_selected_global_template(project_id, user_id=user_id)
-                if not template:
-                    yield {"type": "error", "message": "项目未选定模板，无法生成套件"}
-                    return
+                if free:
+                    template = None
+                else:
+                    template = await self.get_selected_global_template(project_id, user_id=user_id)
+                    if not template:
+                        yield {"type": "error", "message": "项目未选定模板，无法生成套件"}
+                        return
 
                 suite = None
                 if not force:
@@ -986,9 +1016,15 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
                     }
                     return
 
-                yield {"type": "status", "message": "正在基于母版风格生成套件（封面/过渡/内容页头页脚）..."}
+                if free:
+                    yield {"type": "status", "message": "正在基于大纲内容智能生成套件（封面/过渡/目录/结尾/内容页头页脚）..."}
+                else:
+                    yield {"type": "status", "message": "正在基于母版风格生成套件（封面/过渡/内容页头页脚）..."}
                 try:
-                    suite = await self.generate_suite(project_id, template, force=force, creativity=creativity)
+                    suite = await self.generate_suite(
+                        project_id, template, force=force, creativity=creativity,
+                        free=free, custom_requirements=custom_requirements,
+                    )
                 except Exception as exc:
                     logger.error("Template suite generation failed for project %s: %s", project_id, exc)
                     yield {"type": "error", "message": f"套件生成失败：{exc}"}
@@ -996,7 +1032,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
                 yield {
                     "type": "complete",
-                    "message": "模板套件生成完成！",
+                    "message": "模板套件生成完成！" if not free else "大纲智能套件生成完成！",
                     "suite": suite,
                     "template_name": suite.get("template_name"),
                 }

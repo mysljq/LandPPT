@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Dict, Optional
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -54,6 +54,8 @@ class SuiteUpdateRequest(BaseModel):
     description: Optional[str] = None
     cover: Optional[str] = None
     transition: Optional[str] = None
+    catalog: Optional[str] = None
+    ending: Optional[str] = None
     header_footer: Optional[str] = None
     design_tokens: Optional[str] = None
     tags: Optional[list] = None
@@ -225,6 +227,71 @@ async def generate_suite_from_template(payload: SuiteGenerateRequest, user=Depen
     except Exception as exc:
         logger.error("Error generating template suite from template: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/generate-from-images")
+async def generate_suite_from_images(
+    creativity: int = Form(5),
+    extract_images: bool = Form(True),
+    cover: Optional[UploadFile] = File(default=None),
+    transition: Optional[UploadFile] = File(default=None),
+    catalog: Optional[UploadFile] = File(default=None),
+    ending: Optional[UploadFile] = File(default=None),
+    content: Optional[UploadFile] = File(default=None),
+    user=Depends(get_current_user_required),
+):
+    """基于上传的页面截图生成套件（多模态读图）。返回 SSE 流。
+
+    字段 cover/transition/catalog/ending/content 均为可选的页面截图（content=内容页）。
+    未上传的类型由后端用大模型基于其它页面设计补全。
+    extract_images=True 时，识别截图中的图片/图标区域并在生成结果中直接复用。
+    """
+    logger.info(
+        "收到基于AI读图生成套件请求：user_id=%s, creativity=%s, extract_images=%s",
+        user.id, creativity, extract_images,
+    )
+
+    async def _read_img(f: Optional[UploadFile]) -> Optional[bytes]:
+        if f is None:
+            return None
+        try:
+            data = await f.read()
+        finally:
+            await f.close()
+        return data or None
+
+    images: Dict[str, bytes] = {}
+    for key, field in (
+        ("cover", cover),
+        ("transition", transition),
+        ("catalog", catalog),
+        ("ending", ending),
+        ("header_footer", content),
+    ):
+        data = await _read_img(field)
+        if data:
+            images[key] = data
+
+    if not images:
+        raise HTTPException(status_code=400, detail="请至少上传一张页面截图")
+
+    svc = _suite_service_for_user(user)
+
+    async def event_stream():
+        try:
+            async for event in svc.stream_generate_suite_from_images(
+                images, creativity=creativity, user_id=user.id, extract_images=extract_images
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.error("基于AI读图生成套件失败: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': f'生成失败：{exc}'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.post("/{suite_id}/duplicate")

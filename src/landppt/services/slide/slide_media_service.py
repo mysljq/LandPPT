@@ -78,6 +78,8 @@ class SlideMediaService:
                     page_type = _TSR.normalize_page_type(slide_data, page_number, total_pages)
                     if page_type == "catalog" and str(suite.get("catalog") or "").strip():
                         suite_constraint = self._build_catalog_suite_constraint(suite)
+                        # 目录页：只参考套件目录设计，忽略母版模板
+                        selected_template = None
                     else:
                         filled = await self._try_fill_suite_slide(
                             suite, slide_data, page_number, total_pages, system_prompt
@@ -85,6 +87,13 @@ class SlideMediaService:
                         if filled:
                             return filled
                         suite_constraint = self._build_content_suite_constraint(suite)
+                        # 内容页：有套件时只按套件设计（页头页脚 + 设计令牌），忽略母版模板
+                        if page_type == "content":
+                            selected_template = None
+                            logger.info(
+                                "第%s页使用套件设计（忽略母版模板），仅按套件页头页脚/设计令牌生成内容页",
+                                page_number,
+                            )
 
             if selected_template:
                 return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id, content_suite_constraint=suite_constraint)

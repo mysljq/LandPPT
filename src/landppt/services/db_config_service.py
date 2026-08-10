@@ -65,7 +65,16 @@ class DatabaseConfigService:
             "landppt_model": {"type": "text", "category": "ai_providers", "default": "MODEL1"},
             
             "default_ai_provider": {"type": "select", "category": "ai_providers", "default": "landppt"},
-            
+
+            # 多模态模型（读图）— 独立的视觉模型配置，用于读取页面截图生成套件等
+            "vision_model_provider": {"type": "select", "category": "ai_providers", "default": ""},
+            "vision_model_api_key": {"type": "password", "category": "ai_providers"},
+            "vision_model_base_url": {"type": "url", "category": "ai_providers"},
+            "vision_model_name": {"type": "text", "category": "ai_providers", "default": ""},
+            "vision_model_custom_params": {"type": "boolean", "category": "ai_providers", "default": "false"},
+            "vision_model_temperature": {"type": "number", "category": "ai_providers", "default": ""},
+            "vision_model_top_p": {"type": "number", "category": "ai_providers", "default": ""},
+
             # Model Role Overrides
             "default_model_provider": {"type": "select", "category": "model_roles", "default": ""},
             "default_model_name": {"type": "text", "category": "model_roles", "default": ""},
@@ -868,3 +877,87 @@ def get_user_role_provider_sync(
     actual_provider = provider_config.pop("provider_name")
     provider = AIProviderFactory.create_provider(actual_provider, provider_config)
     return provider, settings
+
+
+async def get_vision_provider(user_id: Optional[int] = None):
+    """Resolve the multimodal (vision) provider used to read page screenshots.
+
+    Priority:
+      1. 用户独立配置的多模态模型（vision_model_provider / api_key / base_url / name）。
+         custom_params 勾选时才使用自定义 temperature / top_p，否则用 provider 默认。
+      2. 回退到 vision_analysis 角色配置（复用该 provider 的 api_key/base_url）。
+    Returns (provider, settings) where settings = {"model", "temperature", "top_p"};
+    temperature / top_p 为 None 时使用 provider 默认值。
+    Raises ValueError when not configured.
+    """
+
+    @staticmethod
+    def _num(key: str) -> Optional[float]:
+        raw = user_config.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(str(raw))
+        except (TypeError, ValueError):
+            return None
+
+    from ..ai.providers import AIProviderFactory
+
+    config_service = get_db_config_service()
+    user_config = (
+        await config_service.get_all_config(user_id=user_id)
+        if user_id is not None
+        else {}
+    )
+
+    # 自定义采样参数开关：勾选才读 temperature / top_p，否则用 provider 默认
+    custom_params = user_config.get("vision_model_custom_params", False)
+    if isinstance(custom_params, str):
+        custom_params = custom_params.lower() in {"true", "1", "yes", "on"}
+    vision_temperature = _num("vision_model_temperature") if custom_params else None
+    vision_top_p = _num("vision_model_top_p") if custom_params else None
+
+    # 1) 独立多模态模型配置
+    vision_provider_name = str(user_config.get("vision_model_provider") or "").strip()
+    vision_model = str(user_config.get("vision_model_name") or "").strip()
+    if vision_provider_name:
+        if not vision_model:
+            vision_model = str(user_config.get(f"{vision_provider_name}_model") or "").strip()
+        provider_config = {
+            "api_key": user_config.get("vision_model_api_key"),
+            "base_url": user_config.get("vision_model_base_url"),
+            "model": vision_model,
+        }
+        if vision_temperature is not None:
+            provider_config["temperature"] = vision_temperature
+        if vision_top_p is not None:
+            provider_config["top_p"] = vision_top_p
+        provider = AIProviderFactory.create_provider(vision_provider_name, provider_config)
+        logger.info(
+            "Vision provider (dedicated): provider=%s model=%s base_url=%s temperature=%s top_p=%s",
+            vision_provider_name,
+            vision_model,
+            provider_config.get("base_url"),
+            vision_temperature,
+            vision_top_p,
+        )
+        return provider, {
+            "model": vision_model,
+            "temperature": vision_temperature,
+            "top_p": vision_top_p,
+        }
+
+    # 2) 回退：vision_analysis 角色
+    if user_id is not None:
+        role_provider = str(user_config.get("vision_analysis_model_provider") or "").strip()
+        role_model = str(user_config.get("vision_analysis_model_name") or "").strip()
+        if role_provider:
+            if not role_model:
+                role_model = str(user_config.get(f"{role_provider}_model") or "").strip()
+            provider = await get_user_ai_provider(user_id, role_provider)
+            logger.info("Vision provider (vision_analysis role): provider=%s model=%s", role_provider, role_model)
+            return provider, {"model": role_model, "temperature": None, "top_p": None}
+
+    raise ValueError(
+        "未配置多模态模型（读图）：请在「系统配置 → AI 提供者 → 多模态模型」中填写提供者、API Key、Base URL 与模型名"
+    )

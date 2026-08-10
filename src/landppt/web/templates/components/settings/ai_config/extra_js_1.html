@@ -1062,6 +1062,7 @@
         function populateAllForms() {
             // 填充AI提供者配置
             populateProviderForms();
+            populateVisionModelPanel();
 
             // 填充生成参数
             populateGenerationParams();
@@ -1071,6 +1072,41 @@
 
             // 填充图片服务配置
             populateImageServiceConfig();
+        }
+
+        // 填充「多模态模型（读图）」面板（独立于 provider 卡片）
+        function populateVisionModelPanel() {
+            const panel = document.getElementById('vision-model-panel');
+            if (!panel) return;
+            panel.querySelectorAll('input[name], select[name]').forEach(input => {
+                const configKey = input.name;
+                if (currentConfig[configKey] === undefined || currentConfig[configKey] === null) return;
+                if (input.type === 'checkbox') {
+                    input.checked = currentConfig[configKey] === true || currentConfig[configKey] === 'true';
+                } else if (input.type === 'password') {
+                    if (!input.value && currentConfig[configKey]) {
+                        input.value = currentConfig[configKey];
+                        input.placeholder = '••••••••';
+                    }
+                } else {
+                    if (!input.value && currentConfig[configKey]) {
+                        input.value = currentConfig[configKey];
+                    }
+                }
+            });
+            toggleVisionCustomParams();
+        }
+
+        // 「自定义采样参数」开关：勾选才启用 temperature / top_p，否则用提供者默认
+        function toggleVisionCustomParams() {
+            const cb = document.getElementById('vision_model_custom_params');
+            const fields = document.getElementById('vision-custom-params-fields');
+            if (!fields) return;
+            const on = cb ? cb.checked : false;
+            fields.style.opacity = on ? '1' : '0.45';
+            fields.querySelectorAll('input').forEach(input => {
+                input.disabled = !on;
+            });
         }
 
         function populateProviderForms() {
@@ -1727,6 +1763,42 @@
                     errorMsg = '网络连接失败，请检查服务器状态';
                 }
                 showNotification('保存配置失败: ' + errorMsg, 'error');
+                closeTestModal();
+            }
+        }
+
+        // 保存多模态模型（读图）配置
+        async function saveVisionModelConfig() {
+            const panel = document.getElementById('vision-model-panel');
+            if (!panel) return;
+            const config = {};
+            panel.querySelectorAll('input[name], select[name]').forEach(el => {
+                const name = el.getAttribute('name');
+                if (!name) return;
+                if (el.type === 'checkbox') {
+                    config[name] = el.checked;
+                } else {
+                    config[name] = el.value.trim();
+                }
+            });
+            try {
+                showLoading('正在保存多模态模型配置...');
+                const response = await fetch('/api/config/ai_providers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config })
+                });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    showNotification('多模态模型配置保存成功，已实时生效', 'success');
+                    loadAllConfigs();
+                } else {
+                    const msg = (result && (result.errors || result.message || result.error || result.detail)) || '未知错误';
+                    showNotification('多模态模型配置保存失败: ' + msg, 'error');
+                }
+            } catch (error) {
+                showNotification('多模态模型配置保存失败: ' + (error.message || '网络连接失败'), 'error');
+            } finally {
                 closeTestModal();
             }
         }

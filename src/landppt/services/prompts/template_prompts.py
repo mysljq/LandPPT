@@ -376,6 +376,7 @@ class TemplatePrompts:
         extracted_header_footer: Dict[str, str] = None,
         creativity: int = 0,
         reference_outline: bool = False,
+        custom_requirements: str = "",
     ) -> str:
         """组装"模板套件"生成提示词。
 
@@ -389,6 +390,7 @@ class TemplatePrompts:
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
         reference_outline：为 True 时才把项目主题/大纲/受众等信息传给模型；
         默认 False = 套件只基于母版模板生成，不绑定具体项目内容。
+        custom_requirements：用户自定义要求（如主题色/风格），设计时须遵循。
         """
         outline = outline or {}
         confirmed = confirmed or {}
@@ -435,10 +437,16 @@ class TemplatePrompts:
 {footer_block.strip() or "(未能提取到明确页脚)"}
 """
 
+        # 用户自定义要求区块（避免在 f-string 表达式内用反斜杠）
+        custom_req_section = ""
+        if (custom_requirements or "").strip():
+            custom_req_section = "**用户自定义要求（设计时必须遵循）**\n" + custom_requirements.strip() + "\n"
+
         return f"""
 请基于已选母版的设计风格与主题色，生成一套通用的"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
 
 {project_context}
+{custom_req_section}
 **母版 HTML 原文**
 {template_html or "(无母版原文，请按项目风格自行设计一套)"}
 

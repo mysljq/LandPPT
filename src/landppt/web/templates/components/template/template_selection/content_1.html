@@ -113,6 +113,10 @@
                     onclick="generateTemplateSuite()">
                     <i class="fas fa-layer-group"></i> 基于模板生成套件
                 </button>
+                <button id="generateOutlineSuiteBtn" class="btn btn-outline-primary"
+                    onclick="generateOutlineSuite()">
+                    <i class="fas fa-magic"></i> 基于大纲智能生成套件
+                </button>
                 <button id="useLibrarySuiteBtn" class="btn btn-outline-primary" disabled
                     onclick="openLibrarySuitePicker()">
                     <i class="fas fa-book"></i> 使用套件库中的套件
@@ -139,6 +143,63 @@
             </div>
         </div>
     </div>
+
+<!-- 基于大纲智能生成套件 Modal -->
+<div id="outlineSuiteModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 860px; width: 94%; max-height: 92vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+            <h2><i class="fas fa-magic"></i> 基于大纲智能生成套件</h2>
+            <span class="close" onclick="closeOutlineSuiteModal()">&times;</span>
+        </div>
+        <div class="modal-body" style="overflow: auto;">
+            <!-- 步骤1：设置 -->
+            <div id="outlineGenSetup">
+                <p style="margin:0 0 12px; color:var(--text-secondary); font-size:0.85rem; line-height:1.6;">
+                    AI 将根据项目大纲内容智能设计一套套件（封面 / 过渡页 / 目录页 / 结尾页 / 内容页页头页脚），无需选择模板。
+                </p>
+                <label style="font-size:0.82rem; font-weight:600; color:var(--text-secondary); display:block; margin-bottom:6px;">自定义要求（可选）</label>
+                <textarea id="outlineCustomReq" rows="3" placeholder="例如：主题色为深蓝 + 金色点缀 / 极简商务风 / 偏科技感 / 留白多一些..."
+                    style="width:100%; padding:9px 12px; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; font-size:0.85rem; resize:vertical; box-sizing:border-box; font-family:inherit;"></textarea>
+                <div style="display:flex; align-items:center; gap:12px; margin-top:14px; flex-wrap:wrap;">
+                    <label for="outlineCreativitySlider" style="font-size:0.8rem; color:var(--text-secondary); font-weight:600; white-space:nowrap;">创意度</label>
+                    <input type="range" id="outlineCreativitySlider" min="0" max="10" step="1" value="5"
+                        style="flex:1; min-width:160px; accent-color:#111; cursor:pointer;" oninput="updateOutlineCreativityLabel()">
+                    <span id="outlineCreativityLabel" style="font-size:0.8rem; color:var(--text-primary); font-weight:700; min-width:130px;">5 · 平衡</span>
+                </div>
+                <div style="text-align:center; margin-top:18px;">
+                    <button id="outlineStartBtn" class="btn btn-primary" onclick="startOutlineSuiteGen()"><i class="fas fa-magic"></i> 开始生成</button>
+                </div>
+            </div>
+            <!-- 步骤2：生成中 -->
+            <div id="outlineGenProgress" style="display:none; text-align:center; padding:24px 0;">
+                <div style="display:inline-block; width:36px; height:36px; border:3px solid #f1f5f9; border-top:3px solid #111; border-radius:50%; animation:spin 0.8s linear infinite;"></div>
+                <p id="outlineGenStatus" style="margin-top:14px; color:var(--text-secondary); font-weight:600;">正在基于大纲生成套件...</p>
+            </div>
+            <!-- 步骤3：完成预览 -->
+            <div id="outlineGenComplete" style="display:none;">
+                <div style="background:#f0fdf4; padding:10px 14px; border-radius:8px;">
+                    <h3 style="margin:0; color:#16a34a; font-size:1rem; font-weight:700;">✓ 大纲智能套件生成完成</h3>
+                </div>
+                <div style="display:flex; gap:8px; margin:12px 0; flex-wrap:wrap;">
+                    <button class="btn btn-sm suite-tab-btn active" data-suite-tab="cover" onclick="outlineShowTab('cover')">📄 封面</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="transition" onclick="outlineShowTab('transition')">🔀 过渡页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="catalog" onclick="outlineShowTab('catalog')">📋 目录页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="content" onclick="outlineShowTab('content')">📑 内容页</button>
+                    <button class="btn btn-sm suite-tab-btn" data-suite-tab="ending" onclick="outlineShowTab('ending')">🎉 结尾页</button>
+                </div>
+                <div id="outlinePreviewBox" style="position:relative; width:100%; aspect-ratio:16/9; border:1px solid var(--border-color,#e5e7eb); border-radius:8px; overflow:hidden; background:#f8fafc;">
+                    <iframe id="outlinePreviewFrame" style="position:absolute; top:0; left:0; width:1280px; height:720px; border:none; transform-origin:top left;"></iframe>
+                </div>
+                <div style="margin-top:16px; text-align:center; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+                    <button id="outlineSaveBtn" class="btn btn-success" onclick="saveOutlineSuiteToLibrary()"><i class="fas fa-save"></i> 保存到套件库</button>
+                    <button class="btn btn-primary" onclick="outlineRegenerate()"><i class="fas fa-redo"></i> 重新智能生成</button>
+                    <button class="btn btn-secondary" onclick="closeOutlineSuiteModal()">改用套件库 / 基于模板生成</button>
+                    <span id="outlineSaveStatus" style="font-size:0.8rem; color:var(--text-secondary); width:100%;"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- 套件库选择 Modal -->
 <div id="librarySuiteModal" class="modal" style="display: none;">

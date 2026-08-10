@@ -431,7 +431,7 @@ async def get_project_template_suite_preview(
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        suite = await user_ppt_service.template_suite.get_suite(project_id)
+        suite = await user_ppt_service.template_suite.get_effective_suite(project_id)
         if not suite:
             raise HTTPException(status_code=404, detail="模板套件尚未生成，请先点击「生成一致性套件」")
 
@@ -467,6 +467,10 @@ async def generate_project_template_suite(
             payload = {}
 
         force = bool(payload.get("force", False))
+        # free=True：大纲智能套件——无需母版模板，直接根据项目大纲/主题设计套件。
+        free = bool(payload.get("free", False))
+        # requirements：用户自定义要求（如主题色/风格），注入套件生成 prompt。
+        requirements = str(payload.get("requirements", "") or "").strip()
         # creativity：0-10 刻度，0=严格遵循母版，10=最具创意；默认 5（平衡）。
         try:
             creativity = int(payload.get("creativity", 5))
@@ -520,6 +524,8 @@ async def generate_project_template_suite(
                         user_id=user.id,
                         force=force,
                         creativity=creativity,
+                        free=free,
+                        custom_requirements=requirements,
                     ):
                         if (
                             will_generate
@@ -554,6 +560,8 @@ async def generate_project_template_suite(
             user_id=user.id,
             force=force,
             creativity=creativity,
+            free=free,
+            custom_requirements=requirements,
         ):
             if (event or {}).get("type") == "complete":
                 suite = (event or {}).get("suite")

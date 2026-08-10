@@ -872,6 +872,76 @@ def test_catalog_page_uses_reference_not_template_fill():
     assert result and "目录" in result
 
 
+def test_content_page_with_suite_ignores_template():
+    """有套件时内容页只按套件设计（页头页脚约束），不调用 _generate_slide_with_template。"""
+    import asyncio
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "catalog": "<!DOCTYPE html><html><body>{{ catalog_title }}</body></html>",
+        "header_footer": "<header>{{ page_title }}</header><footer>{{ current_page_number }}/{{ total_page_count }}</footer>",
+        "design_tokens": "字体栈：X；强调色：#123456",
+    }
+    captured = {}
+    called_generate_with_template = {"called": False}
+
+    class FakeTemplateSuite:
+        async def get_effective_suite(self, project_id):
+            return suite
+
+    class FakeMedia:
+        template_suite = FakeTemplateSuite()
+
+        async def get_selected_global_template(self, project_id):
+            # 有套件也应忽略模板：若被调用 _generate_slide_with_template 则失败
+            return {"id": 1, "template_name": "Toy风", "html_template": "<html>tpl</html>"}
+
+        async def _try_fill_suite_slide(self, *args, **kwargs):
+            return None  # 内容页不走套件模板填充
+
+        async def _generate_slide_with_template(self, *args, **kwargs):
+            called_generate_with_template["called"] = True
+            return "TEMPLATE_USED"
+
+        async def _ensure_slide_images_context(self, *a, **k):
+            return None
+
+        async def _get_creative_design_inputs(self, *a, **k):
+            return ("", "", "")
+
+        async def _process_slide_image(self, *a, **k):
+            return None
+
+        def _build_slide_context(self, *a, **k):
+            return ""
+
+        async def _generate_html_with_retry(self, context, *a, **k):
+            captured["context"] = context
+            return "<!DOCTYPE html><html><body>内容页</body></html>"
+
+        async def _generate_fallback_slide_html(self, *a, **k):
+            return "fallback"
+
+        async def _apply_auto_layout_repair(self, html, *a, **k):
+            return html
+
+    media = SlideMediaService(FakeMedia())
+
+    async def run():
+        return await media._generate_single_slide_html_with_prompts(
+            {"title": "背景介绍", "slide_type": "content", "content_points": ["要点"]},
+            {"project_id": "p1", "topic": "T", "target_audience": "A", "description": "D"},
+            "sys", 2, 10, project_id="p1",
+        )
+
+    result = asyncio.run(run())
+    assert called_generate_with_template["called"] is False, "有套件的内容页不应使用模板生成"
+    assert "页头页脚强约束" in captured["context"], "内容页应注入套件页头页脚约束"
+    assert "{{ page_title }}" in captured["context"]
+    assert "Toy风" not in captured["context"], "模板不应进入内容页 prompt"
+    assert result and "内容页" in result
+
+
 def test_extract_json_from_response_robust():
     """健壮 JSON 解析：HTML 转义、Markdown 代码块、前后散文、Python 字面量都能解析；
     真正坏掉的 JSON（未转义引号）返回 None（触发修正重试）。"""
@@ -963,3 +1033,320 @@ def test_generate_suite_payload_repairs_invalid_json():
     assert "cover_title" in result["cover"]
     assert result["transition"].startswith("<!DOCTYPE html>")
     assert "page_title" in result["header_footer"]
+
+
+def test_stream_generate_suite_from_images_uses_vision_and_missing():
+    """有截图的类型走视觉生成（含图片/图标提取），缺失类型走文本补全，组装成完整套件。"""
+    import asyncio
+    import io as _io
+    from unittest.mock import AsyncMock, patch
+
+    from PIL import Image
+
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    vision_calls = {"count": 0, "has_image": False}
+
+    class FakeVision:
+        async def chat_completion(self, messages, **kwargs):
+            vision_calls["count"] += 1
+            for msg in messages:
+                content = msg.content
+                if isinstance(content, list):
+                    from landppt.ai.base import ImageContent
+                    vision_calls["has_image"] = vision_calls["has_image"] or any(
+                        isinstance(c, ImageContent) for c in content
+                    )
+            if vision_calls["count"] == 1:
+                # 第一次：区域检测 → 返回一个图片区域
+                return type("R", (), {"content": '[{"name":"logo","left":0.1,"top":0.1,"width":0.2,"height":0.2}]'})()
+            # 第二次：HTML 生成 → 用 SUITE_ASSET 占位
+            return type("R", (), {"content": (
+                '<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1>'
+                '<img src="SUITE_ASSET:logo" style="width:100px;"></body></html>'
+            )})()
+
+    text_calls = {"count": 0}
+
+    class FakeHost:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            text_calls["count"] += 1
+            if "内容页" in prompt:
+                return type("R", (), {"content": (
+                    '<div class="hf-canvas"><div class="bg-paper"></div><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                )})()
+            return type("R", (), {"content": "<!DOCTYPE html><html><body><h1>PAGE</h1></body></html>"})()
+
+    svc = GlobalTemplateSuiteService()
+    svc._build_host = lambda: FakeHost()
+
+    buf = _io.BytesIO()
+    Image.new("RGBA", (128, 72), (100, 150, 200, 255)).save(buf, format="PNG")
+    png = buf.getvalue()
+
+    async def run():
+        events = []
+        async for ev in svc.stream_generate_suite_from_images(
+            {"cover": png}, creativity=5, user_id=1
+        ):
+            events.append(ev)
+        return events
+
+    with patch(
+        "landppt.services.db_config_service.get_vision_provider",
+        new=AsyncMock(return_value=(FakeVision(), {"model": "gpt-4o", "temperature": None, "top_p": None})),
+    ):
+        events = asyncio.run(run())
+
+    types = [e["type"] for e in events]
+    assert types[-1] == "complete", events
+    suite = events[-1]["suite"]
+    assert suite["cover"].startswith("<!DOCTYPE html>")
+    assert "page_title" in suite["header_footer"]
+    # 封面：区域检测 1 次 + HTML 生成 1 次；缺失的 4 个类型用文本补全
+    assert vision_calls["count"] == 2
+    assert vision_calls["has_image"] is True, "视觉消息应包含图片"
+    assert text_calls["count"] == 4
+    # 图片/图标提取：占位被替换成真实 data URL
+    assert "SUITE_ASSET:" not in suite["cover"]
+    assert "data:image/png;base64," in suite["cover"]
+
+
+def test_stream_generate_suite_from_images_no_images_errors():
+    """没有任何截图时直接报错。"""
+    import asyncio
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    svc = GlobalTemplateSuiteService()
+
+    async def run():
+        events = []
+        async for ev in svc.stream_generate_suite_from_images({}, creativity=5):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run())
+    assert events[0]["type"] == "error"
+    assert "至少上传" in events[0]["message"]
+
+
+def test_image_suite_helpers():
+    """视觉服务的工具函数：代码块剥离 / 独立 HTML 包裹 / 图片 MIME 识别。"""
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService as G
+
+    # 剥离 Markdown 代码块
+    assert G._strip_code_fence("```html\n<p>x</p>\n```") == "<p>x</p>"
+    assert G._strip_code_fence("```\n<p>y</p>\n```") == "<p>y</p>"
+    assert G._strip_code_fence("说明文字\n<div>z</div>") == "<div>z</div>"
+
+    # 独立 HTML 包裹
+    assert G._ensure_standalone_html("<p>a</p>").startswith("<!DOCTYPE html>")
+    assert "<p>a</p>" in G._ensure_standalone_html("<p>a</p>")
+    assert G._ensure_standalone_html("<!DOCTYPE html><p>a</p>").startswith("<!DOCTYPE html>")
+    assert G._ensure_standalone_html("") == ""
+
+    # 图片 MIME 识别
+    assert G._guess_image_mime(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8) == "image/png"
+    assert G._guess_image_mime(b"\xff\xd8\xff\xe0\x00\x10") == "image/jpeg"
+    assert G._guess_image_mime(b"BM\x00\x00") == "image/bmp"
+    assert G._guess_image_mime(b"\x00\x01\x02\x03") == "image/png"
+
+    # 图片区域解析 / 归一化 / 裁剪 / 注入
+    assert G._parse_region_list('[{"name":"logo","left":0.1,"top":0.1,"width":0.2,"height":0.2}]') == [
+        {"name": "logo", "left": 0.1, "top": 0.1, "width": 0.2, "height": 0.2}
+    ]
+    assert G._parse_region_list('{"regions": [{"name":"a","left":0,"top":0,"width":0.5,"height":0.5}]}') != []
+    assert G._parse_region_list("不是 JSON") == []
+    norm = G._normalize_regions([
+        {"name": "logo", "left": 0.1, "top": 0.1, "width": 0.2, "height": 0.2},
+        {"name": "", "left": -1, "top": 0, "width": 0, "height": 0},
+    ])
+    assert len(norm) == 1 and norm[0]["name"] == "logo"
+    # 注入：占位替换为 data URL；漏掉图片时按检测位置兜底补插
+    injected = G._inject_assets_into_html(
+        '<img src="SUITE_ASSET:logo">',
+        {"logo": {"data_url": "data:image/png;base64,AAA", "left": 0.1, "top": 0.1, "width": 0.2, "height": 0.2}},
+    )
+    assert "SUITE_ASSET:" not in injected and "data:image/png;base64,AAA" in injected
+    # 模型漏掉图片 → 兜底补插绝对定位 img
+    injected2 = G._inject_assets_into_html(
+        "<html><body><h1>x</h1></body></html>",
+        {"logo": {"data_url": "data:image/png;base64,BBB", "left": 0.1, "top": 0.1, "width": 0.2, "height": 0.2}},
+    )
+    assert "data:image/png;base64,BBB" in injected2 and "position:absolute" in injected2
+    assert injected2.count("data:image") == 1
+    # 裁剪：合法 PNG 裁剪出一个 data URL（新结构带坐标）
+    import io as _io
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGBA", (128, 72), (10, 20, 30, 255)).save(buf, format="PNG")
+    crops = G._crop_image_regions(buf.getvalue(), [{"name": "a", "left": 0, "top": 0, "width": 0.5, "height": 0.5}])
+    assert "a" in crops and crops["a"]["data_url"].startswith("data:image/png;base64,")
+    assert crops["a"]["width"] == 0.5
+
+    # 服务端错误识别：503/429/5xx/端点不可用 → 应整体跳过后续视觉调用
+    assert G._is_vision_server_error(Exception("Error code: 503 - upstream request failed")) is True
+    assert G._is_vision_server_error(Exception("HTTP 429 too many requests")) is True
+    assert G._is_vision_server_error(Exception("Endpoint is unavailable")) is True
+    assert G._is_vision_server_error(Exception("400 invalid request")) is False
+    assert G._is_vision_server_error(Exception("model not found")) is False
+
+
+def test_stream_generate_suite_from_images_falls_back_on_vision_failure():
+    """某个类型的视觉生成失败（如 503）时，不回退整个套件，改用文本补全该类型。"""
+    import asyncio
+    import io as _io
+    from unittest.mock import AsyncMock, patch
+
+    from PIL import Image
+
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    class FailingVision:
+        async def chat_completion(self, messages, **kwargs):
+            raise Exception("模型服务调用失败：HTTP 503: 服务不可用")
+
+    text_calls = {"count": 0}
+
+    class FakeHost:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            text_calls["count"] += 1
+            if "内容页" in prompt:
+                return type("R", (), {"content": (
+                    '<div class="hf-canvas"><div class="bg-paper"></div><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                )})()
+            return type("R", (), {"content": "<!DOCTYPE html><html><body><h1>PAGE</h1></body></html>"})()
+
+    svc = GlobalTemplateSuiteService()
+    svc._build_host = lambda: FakeHost()
+
+    buf = _io.BytesIO()
+    Image.new("RGBA", (128, 72), (1, 2, 3, 255)).save(buf, format="PNG")
+    png = buf.getvalue()
+
+    async def run():
+        events = []
+        async for ev in svc.stream_generate_suite_from_images(
+            {"cover": png}, creativity=5, user_id=1, extract_images=False
+        ):
+            events.append(ev)
+        return events
+
+    with patch(
+        "landppt.services.db_config_service.get_vision_provider",
+        new=AsyncMock(return_value=(FailingVision(), {"model": "gpt-4o", "temperature": None, "top_p": None})),
+    ):
+        events = asyncio.run(run())
+
+    types = [e["type"] for e in events]
+    assert types[-1] == "complete", events
+    suite = events[-1]["suite"]
+    # 封面视觉失败 → 5 个类型全部由文本补全，套件仍完整
+    assert text_calls["count"] == 5
+    assert suite["cover"].startswith("<!DOCTYPE html>")
+    assert "page_title" in suite["header_footer"]
+
+
+def test_call_vision_with_retry_passes_temperature():
+    """视觉调用会透传配置的 temperature / top_p（如 kimi-k3 需要 temperature=1）。"""
+    import asyncio
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    captured = {}
+
+    class V:
+        async def chat_completion(self, messages, **kwargs):
+            captured["temperature"] = kwargs.get("temperature")
+            captured["top_p"] = kwargs.get("top_p")
+            captured["model"] = kwargs.get("model")
+            return type("R", (), {"content": "ok"})()
+
+    svc = GlobalTemplateSuiteService()
+
+    async def run():
+        return await svc._call_vision_with_retry(V(), "kimi-k3", [], temperature=1.0, top_p=0.95, max_tokens=500)
+
+    result = asyncio.run(run())
+    assert captured["temperature"] == 1.0
+    assert captured["top_p"] == 0.95
+    assert captured["model"] == "kimi-k3"
+    assert result.content == "ok"
+
+    # temperature / top_p 为 None 时不传（用 provider 默认）
+    captured.clear()
+    async def run2():
+        return await svc._call_vision_with_retry(V(), "m", [], max_tokens=500)
+
+    asyncio.run(run2())
+    assert captured.get("temperature") is None
+    assert captured.get("top_p") is None
+
+
+def test_generate_suite_free_outline_mode_and_get_suite():
+    """大纲智能套件：无母版模板也能生成（prompt 带大纲），get_suite 无需模板即可读取。"""
+    import asyncio
+    import json
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    class FakePM:
+        def __init__(self):
+            self.meta = {}
+
+        async def get_project(self, pid, user_id=None):
+            return type("P", (), {
+                "outline": {"title": "测试", "slides": [{"title": "a"}]},
+                "confirmed_requirements": {"topic": "测试主题"},
+                "project_metadata": dict(self.meta),
+            })()
+
+        async def update_project_metadata(self, pid, meta, user_id=None):
+            self.meta = dict(meta)
+
+    captured = {}
+
+    class FakeService:
+        project_manager = FakePM()
+
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            captured["prompt"] = prompt
+            return type("R", (), {"content": json.dumps({
+                "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+                "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>",
+                "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1></body></html>",
+                "ending": "<!DOCTYPE html><html><body><h1>{{ ending_title }}</h1></body></html>",
+                "header_footer": (
+                    '<div class="hf-canvas"><div class="bg-paper"></div><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                ),
+                "design_tokens": "t",
+            }, ensure_ascii=False)})()
+        async def get_selected_global_template(self, pid, user_id=None):
+            return None
+
+        def clear_cached_style_genes(self, pid):
+            pass
+
+    svc = TemplateSuiteService(FakeService())
+
+    async def run():
+        suite = await svc.generate_suite("p1", None, free=True, creativity=5)
+        read_back = await svc.get_suite("p1")
+        return suite, read_back
+
+    suite, read_back = asyncio.run(run())
+    assert suite["template_mode"] == "outline"
+    assert suite["template_name"] == "大纲智能套件"
+    # 大纲模式 prompt 应包含"无母版/自行设计"且带上项目大纲
+    assert "无母版原文" in captured["prompt"] or "自行设计" in captured["prompt"]
+    assert "测试" in captured["prompt"]
+    # get_suite 无需选中模板即可读取大纲套件
+    assert read_back is not None
+    assert read_back["template_mode"] == "outline"

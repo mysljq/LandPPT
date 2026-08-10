@@ -889,8 +889,8 @@
                     } catch (_) {
                         templateMode = null;
                     }
-                    if (templateMode === 'free') {
-                        // Free template mode: skip global template selection check
+                    if (templateMode === 'free' || templateMode === 'suite') {
+                        // Free template / suite-only 模式：跳过"必须选全局模板"检查（只按套件生成）
                     } else {
                         const templateUrl = `/api/projects/{{ todo_board.task_id }}/selected-global-template`;
                         const templateResponse = await fetch(templateUrl);

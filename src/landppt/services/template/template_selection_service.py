@@ -344,6 +344,45 @@ class TemplateSelectionService:
                 "selected_template": None,
             }
 
+    async def select_suite_only_template_for_project(
+        self,
+        project_id: str,
+        user_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """把项目设为「仅使用套件」模式：清掉全局模板与自由模板。
+
+        用于只选了套件库套件、没选模板的场景：内容页不绑定任何全局/自由模板，
+        只按套件的页头页脚/设计令牌生成，且不触发 todo 编辑器的"自由模板"流程。
+        """
+        try:
+            project = await self.project_manager.get_project(project_id, user_id=user_id)
+            if not project:
+                raise ValueError(f"Project {project_id} not found")
+
+            project_metadata = dict(project.project_metadata or {})
+            project_metadata["template_mode"] = "suite"
+            project_metadata.pop("selected_global_template_id", None)
+            # 清掉可能残留的自由模板，避免 todo 编辑器误判为 free 模式
+            project_metadata.pop("free_template_html", None)
+            project_metadata.pop("free_template_name", None)
+            project_metadata.pop("free_template_prompt", None)
+            project_metadata["free_template_status"] = "none"
+
+            await self.project_manager.update_project_metadata(project_id, project_metadata)
+            self.clear_cached_style_genes(project_id)
+            return {
+                "success": True,
+                "message": "已设为仅使用套件（不选模板）",
+                "selected_template": None,
+            }
+        except Exception as exc:
+            logger.error("Error selecting suite-only mode for project %s: %s", project_id, exc)
+            return {
+                "success": False,
+                "message": str(exc),
+                "selected_template": None,
+            }
+
     async def get_selected_global_template(
         self,
         project_id: str,
