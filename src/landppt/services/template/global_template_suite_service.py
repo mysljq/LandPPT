@@ -110,12 +110,24 @@ class GlobalTemplateSuiteService:
             suite = await asyncio.shield(db.get_global_template_suite_by_id(suite_id))
             if not suite or not suite.is_active:
                 return None
+            header_footer = suite.header_footer or ""
+            # A2：标准化内容区标识——保证库套件 header_footer 含一个标准、可测量的
+            # `.suite-stage` 容器（固定 px 边界 + overflow:hidden），让内容不覆盖
+            # 页头分割线/页脚，并让 measure_content_overflow 选对容器测出真实溢出。
+            # 免重新生成套件：读取时即时 backfill，幂等无副作用。
+            try:
+                from .template_suite_service import TemplateSuiteService as _TSS
+                standardized = _TSS._ensure_standard_content_stage(header_footer)
+                if standardized and standardized != header_footer:
+                    header_footer = standardized
+            except Exception as exc:
+                logger.warning("Standardize content stage for suite %s failed: %s", suite_id, exc)
             return {
                 "cover": suite.cover,
                 "transition": suite.transition,
                 "catalog": suite.catalog or "",
                 "ending": suite.ending or "",
-                "header_footer": suite.header_footer,
+                "header_footer": header_footer,
                 "design_tokens": suite.design_tokens or "",
                 "template_hash": suite.template_hash,
                 "template_id": suite.template_id,

@@ -360,6 +360,126 @@ class ProjectOutlineNormalizationService:
 
         return slides
 
+    # 章节编号前缀（一级章节标题）：中文数字/阿拉伯数字/第X章
+    _CHAPTER_PREFIX_RE = re.compile(r"^\s*[一二三四五六七八九十百]+[、.．]\s*")
+    _CHAPTER_NUM_PREFIX_RE = re.compile(r"^\s*\d{1,2}[、.．]\s*")
+    _CHAPTER_CN_RE = re.compile(r"^\s*第[一二三四五六七八九十百\d]+\s*[章节部分篇]\s*[:：\-]?\s*")
+
+    @classmethod
+    def _extract_chapter_titles(cls, slides: List[Dict[str, Any]]) -> List[str]:
+        """从第一个 agenda 页的 content_points 提取一级章节标题（带编号前缀，如"一、室组人员管理"）。
+
+        缩进子项（如"   ZA38使用情况"）无编号前缀，不是一级章节，忽略。
+        """
+        for s in slides:
+            if (s or {}).get("slide_type") != "agenda":
+                continue
+            titles = []
+            for cp in (s.get("content_points") or []):
+                t = str(cp).strip()
+                if not t:
+                    continue
+                if (
+                    cls._CHAPTER_PREFIX_RE.match(t)
+                    or cls._CHAPTER_NUM_PREFIX_RE.match(t)
+                    or cls._CHAPTER_CN_RE.match(t)
+                ):
+                    titles.append(t)
+            if titles:
+                return titles
+        return []
+
+    @classmethod
+    def _strip_chapter_prefix(cls, title: str) -> str:
+        """去掉一级章节标题的编号前缀，返回核心标题（如"一、室组人员管理"→"室组人员管理"）。"""
+        t = (title or "").strip()
+        t = cls._CHAPTER_PREFIX_RE.sub("", t)
+        t = cls._CHAPTER_NUM_PREFIX_RE.sub("", t)
+        t = cls._CHAPTER_CN_RE.sub("", t)
+        return t.strip()
+
+    @classmethod
+    def _chapter_key_of_slide(
+        cls,
+        slide: Dict[str, Any],
+        prev_out: Optional[Dict[str, Any]],
+        chapter_titles: List[str],
+    ) -> Optional[str]:
+        """若该 content 页是"章节起始页"，返回它的章节 key；否则返回 None。
+
+        三类信号：
+        1. 标题自带章节编号前缀（一、/1、/第X章）；
+        2. 标题匹配 agenda 一级章节标题核心（含"低代码方向"→"三、低代码方向"）；
+        3. 从封面/目录等非内容页直接进入的第一个内容页（含第一章）。
+
+        同一章节 key 只允许插入一次过渡页（同一章下的多个子页不重复插）。
+        """
+        if (slide or {}).get("slide_type") != "content":
+            return None
+        title = str(slide.get("title") or "").strip()
+        if not title:
+            return None
+
+        # 1) 标题带章节编号前缀
+        if (
+            cls._CHAPTER_PREFIX_RE.match(title)
+            or cls._CHAPTER_NUM_PREFIX_RE.match(title)
+            or cls._CHAPTER_CN_RE.match(title)
+        ):
+            return cls._strip_chapter_prefix(title)
+
+        # 2) 标题匹配 agenda 一级章节标题核心词
+        for ct in chapter_titles:
+            ct_core = cls._strip_chapter_prefix(ct)
+            if len(ct_core) >= 3 and (ct_core in title or title in ct_core):
+                return ct_core
+
+        # 3) 封面/目录/结尾后进入的第一个内容页（含第一章）
+        if prev_out and prev_out.get("slide_type") not in ("content", "transition"):
+            return title
+
+        return None
+
+    @classmethod
+    def _ensure_transition_slides(
+        cls,
+        slides: List[Dict[str, Any]],
+        include_transition_pages: bool,
+    ) -> List[Dict[str, Any]]:
+        """开启过渡页时，保证每个一级章节（含第一章）前都有 transition 页。
+
+        这是对 LLM 生成结果的确定性兜底：LLM prompt 已要求每章过渡，但仍可能
+        遗漏第一章或部分章节。这里按章节起始信号补齐缺失的过渡页并重排页码。
+        同一章节只补插一次（后续同章子页不重复插）。
+        """
+        if not include_transition_pages or not slides:
+            return slides
+
+        chapter_titles = cls._extract_chapter_titles(slides)
+        out: List[Dict[str, Any]] = []
+        last_chapter_key: Optional[str] = None
+        for slide in slides:
+            if (slide or {}).get("slide_type") == "content":
+                prev_out = out[-1] if out else None
+                key = cls._chapter_key_of_slide(slide, prev_out, chapter_titles)
+                if key:
+                    prev_is_transition = bool(prev_out and prev_out.get("slide_type") == "transition")
+                    if key != last_chapter_key and not prev_is_transition:
+                        title = str(slide.get("title") or "").strip() or f"第{len(out) + 1}页"
+                        out.append({
+                            "page_number": len(out) + 1,
+                            "title": title,
+                            "content_points": [title, "章节过渡 · 进入本部分"],
+                            "slide_type": "transition",
+                            "type": "transition",
+                            "description": "章节过渡页（自动补齐）",
+                        })
+                    last_chapter_key = key
+            new_slide = dict(slide)
+            new_slide["page_number"] = len(out) + 1
+            out.append(new_slide)
+        return out
+
     @classmethod
     def _normalize_outline_root(cls, outline_data: Any) -> Dict[str, Any]:
         """兼容数组、嵌套 outline、pages 等多种根结构。"""

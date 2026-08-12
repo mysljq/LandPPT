@@ -184,7 +184,8 @@ def create_outline_from_file_content(content: str, request: Any) -> Dict[str, An
         include_transition_pages = bool(getattr(request, "include_transition_pages", False))
         max_sections = 10
         for section_index, section in enumerate(sections[:max_sections], start=1):
-            if include_transition_pages and section_index > 1:
+            # 每个章节（含第一章）前都插过渡页：不要用 section_index > 1 跳过第一章
+            if include_transition_pages:
                 slides.append(
                     {
                         "page_number": len(slides) + 1,

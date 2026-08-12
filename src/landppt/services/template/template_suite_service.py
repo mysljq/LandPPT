@@ -141,6 +141,10 @@ class TemplateSuiteService:
             # 大纲智能套件：不依赖母版模板，直接生效。
             if suite.get("template_mode") == "outline":
                 return suite
+            # 仅使用套件模式：项目不绑定母版模板，套件自包含直接生效
+            # （header_footer 已被回填为内联 :root 变量，无需与模板做 template_hash 校验）。
+            if metadata.get("template_mode") == "suite":
+                return suite
             template = await self.get_selected_global_template(project_id)
             if not template:
                 # No template selected — treat the suite as inapplicable.
@@ -153,10 +157,8 @@ class TemplateSuiteService:
                 )
                 return None
 
-            # 自包含兜底：若 header_footer 引用母版 :root 变量或骨架不完整
-            # （缺 canvas 容器 / 缺装饰 CSS / 存在残缺标签），则补齐并回写
-            # （旧套件无需重新生成即自动修复）。_ensure_header_footer_complete
-            # 内部会做严格的骨架完整性检测。
+            # 自包含兜底 + A2 标准化内容舞台 backfill：若 header_footer 引用母版
+            # :root 变量、骨架不完整，或缺少标准 .suite-stage 容器，则补齐并回写。
             try:
                 hf = str(suite.get("header_footer") or "")
                 import re as _re
@@ -166,15 +168,25 @@ class TemplateSuiteService:
                     or not _re.search(r'\.(?:canvas|bg-paper|bg-grid|frame-corner)\s*\{', hf)
                     or bool(_re.search(r'<div class="[^"]*$', hf, _re.MULTILINE))
                 )
+                # 标准化内容舞台容器（每页免重生成即生效）
+                standardized = self._ensure_standard_content_stage(hf)
+                if standardized != hf:
+                    needs_fix = True
+                    header_footer_standardized = standardized
+                else:
+                    header_footer_standardized = None
                 if needs_fix:
                     extracted = MasterLayoutExtractor.extract_header_footer(
                         template.get("html_template") or ""
                     )
+                    hf_current = header_footer_standardized if header_footer_standardized is not None else hf
                     fixed = self._ensure_header_footer_complete(
-                        hf,
+                        hf_current,
                         template.get("html_template") or "",
                         extracted.get("root_variables") or "",
                     )
+                    # 完整性 backfill 可能未含标准舞台，再标准化一次确保 .suite-stage 在
+                    fixed = self._ensure_standard_content_stage(fixed)
                     if fixed and fixed != hf:
                         updated = dict(suite)
                         updated["header_footer"] = fixed
@@ -443,6 +455,90 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             "<style>\n:root {\n" + "\n".join(missing_lines) + "\n}\n</style>\n"
         )
         return inline + header_footer
+
+    # 标准内容舞台容器：度量、约束 prompt、LLM 视觉三方正此锚定。
+    # 必须固定 px 边界（含安全间距）+ overflow:hidden 兜住溢出，使内容不覆盖
+    # 页头分割线 / 页脚，并让 measure_content_overflow 能选对容器测出真实溢出。
+    _STAGE_CLASS = "suite-stage"
+    _STAGE_TOP_MIN = 116        # ≥ 页头底边（实测 ~115px）+ 4px 安全间距
+    _STAGE_BOTTOM_MIN = 60      # ≥ 页脚顶边
+    _STAGE_LEFT_MAX = 1220      # ≤ 1280 - 60
+    _STAGE_RIGHT_MIN = 60       # left ≥ 60
+    _STANDARD_STAGE_CSS = (
+        ".suite-stage{position:absolute;top:130px;left:60px;right:60px;"
+        "bottom:60px;z-index:5;overflow:hidden}"
+    )
+    # 已知可识别为"内容区"的类名（含 suite 自由发挥的常见命名）
+    # —— 仅作文档说明；实际匹配在 _ensure_standard_content_stage 里用局部正则。
+
+    @classmethod
+    def _ensure_standard_content_stage(cls, header_footer: str) -> str:
+        """A2：标准化套件内容区标识——保证 header_footer 含一个标准、可测量的
+        正文舞台容器 `.suite-stage`，固定 px 边界、overflow:hidden 兜住溢出。
+
+        三种情况统一收敛到 `.suite-stage`：
+        1. 已有 `.suite-stage` 或 CSS 规则：跳过（已标准化）；
+        2. 有现成内容区 div（.page-content/.page-body/.main-stage 等）：
+           追加 `suite-stage` class，并注入标准 CSS 覆盖错误的 top/bottom；
+        3. 无内容区容器、`{{page_content}}` 散落：包一个新 `.suite-stage` div。
+
+        设计为只加规则、不破坏现有视觉结构与 :root 变量引用。
+        """
+        import re as _re
+
+        if not header_footer:
+            return header_footer
+        hf = header_footer
+        stage = cls._STAGE_CLASS
+
+        # 情况 1：已标准化（CSS 规则 + div class 都在）
+        if (
+            _re.search(r'\.' + stage + r'\s*\{', hf)
+            and (f'"{stage}"' in hf or f"'{stage}'" in hf or f' {stage}"' in hf or f' {stage}\'' in hf)
+        ):
+            return hf
+
+        # 情况 2：已有现成内容区 div → 追加 suite-stage class
+        # 匹配 class 含内容区关键词的 div 开标签（双引号或单引号）
+        content_div_re = _re.compile(
+            r'(<div\b[^>]*class=["\'])([^"\']*(?:page-content|page-body|main-stage|hf-stage|content-area|content-main|body-area|stage|canvas|slide-page|hf-canvas|slide)\b[^"\']*)(["\'])',
+            _re.IGNORECASE,
+        )
+        m = content_div_re.search(hf)
+        if m:
+            old_classes = m.group(2)
+            if stage not in old_classes.split():
+                new_classes = old_classes.rstrip() + (" " if old_classes.strip() else "") + stage
+                hf = hf[: m.start(1)] + m.group(1) + new_classes + m.group(3) + hf[m.end():]
+        else:
+            # 情况 3：无内容区容器 → 把 {{page_content}} 包进新 div（保留单/双大括号写法）
+            if "{{ page_content }}" in hf or "{{page_content}}" in hf:
+                for token in ("{{ page_content }}", "{{page_content}}"):
+                    if token in hf:
+                        hf = hf.replace(
+                            token,
+                            f'<div class="{stage}">{token}</div>',
+                            1,
+                        )
+                        break
+            else:
+                # 既无容器也无占位槽：什么都不做，避免破坏结构
+                return hf
+
+        # 注入标准边界 CSS（若片段已有 <style> 块就追加到末尾块，否则新增一块）
+        standard_css = cls._STANDARD_STAGE_CSS
+        if _re.search(r"<style[^>]*>", hf):
+            # 追加到片段里最后一个 </style> 之前
+            last_close = hf.rfind("</style>")
+            if last_close != -1:
+                # 避免重复插入（虽然前面已 check，但追加时再守一次）
+                if not _re.search(r'\.' + stage + r'\s*\{', hf):
+                    hf = hf[:last_close] + standard_css + "\n" + hf[last_close:]
+        else:
+            if not _re.search(r'\.' + stage + r'\s*\{', hf):
+                hf = hf + f"\n<style>{standard_css}</style>"
+
+        return hf
 
     @staticmethod
     def _ensure_header_footer_complete(header_footer: str, template_html: str, root_variables: str) -> str:

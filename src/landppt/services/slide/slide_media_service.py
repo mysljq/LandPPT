@@ -54,19 +54,15 @@ class SlideMediaService:
         try:
             if not project_id:
                 project_id = confirmed_requirements.get('project_id')
-            selected_template = None
-            if project_id:
-                try:
-                    selected_template = await self.get_selected_global_template(project_id)
-                    if selected_template:
-                        logger.info(f"为第{page_number}页使用全局母版: {selected_template['template_name']}")
-                except Exception as e:
-                    logger.warning(f'获取全局母版失败，使用默认生成方式: {e}')
-
-            # 模板套件：封面/过渡页优先用套件模板填充槽位；内容页注入页头页脚强约束；
+            # 套件优先：封面/过渡页用套件模板填充槽位；内容页注入页头页脚强约束；
             # 目录页不直接模板填充，改为让 LLM 参考套件里的目录页设计生成完整目录页。
             # get_effective_suite 优先用项目显式选择的全局套件库套件，否则回退到项目内生成套件。
+            # 有有效套件的项目不再拉取/使用任何全局模板（模板仅作为生成套件的可选来源）。
+            from ..template.template_suite_renderer import TemplateSuiteRenderer as _TSR
+            page_type = _TSR.normalize_page_type(slide_data, page_number, total_pages)
+            suite_skeleton_marker = ""  # 套件 header_footer 的特征标记，用于校验内容页是否使用了套件骨架
             suite_constraint = ""
+            selected_template = None  # 仅在无有效套件时使用全局模板
             if project_id:
                 try:
                     suite = await self.template_suite.get_effective_suite(project_id)
@@ -74,12 +70,12 @@ class SlideMediaService:
                     logger.warning(f'获取模板套件失败，按现状生成: {e}')
                     suite = None
                 if suite:
-                    from ..template.template_suite_renderer import TemplateSuiteRenderer as _TSR
-                    page_type = _TSR.normalize_page_type(slide_data, page_number, total_pages)
                     if page_type == "catalog" and str(suite.get("catalog") or "").strip():
                         suite_constraint = self._build_catalog_suite_constraint(suite)
+                        suite_skeleton_marker = self._extract_suite_skeleton_marker(
+                            str(suite.get("catalog") or "")
+                        )
                         # 目录页：只参考套件目录设计，忽略母版模板
-                        selected_template = None
                     else:
                         filled = await self._try_fill_suite_slide(
                             suite, slide_data, page_number, total_pages, system_prompt
@@ -87,13 +83,23 @@ class SlideMediaService:
                         if filled:
                             return filled
                         suite_constraint = self._build_content_suite_constraint(suite)
+                        suite_skeleton_marker = self._extract_suite_skeleton_marker(
+                            str(suite.get("header_footer") or "")
+                        )
                         # 内容页：有套件时只按套件设计（页头页脚 + 设计令牌），忽略母版模板
                         if page_type == "content":
-                            selected_template = None
                             logger.info(
                                 "第%s页使用套件设计（忽略母版模板），仅按套件页头页脚/设计令牌生成内容页",
                                 page_number,
                             )
+                else:
+                    # 无有效套件（纯模板 / 无模板项目）才拉取全局母版。
+                    try:
+                        selected_template = await self.get_selected_global_template(project_id)
+                        if selected_template:
+                            logger.info(f"为第{page_number}页使用全局母版: {selected_template['template_name']}")
+                    except Exception as e:
+                        logger.warning(f'获取全局母版失败，使用默认生成方式: {e}')
 
             if selected_template:
                 return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id, content_suite_constraint=suite_constraint)
@@ -119,6 +125,34 @@ class SlideMediaService:
                 content_suite_constraint=suite_constraint,
             )
             html_content = await self._generate_html_with_retry(context, system_prompt, slide_data, page_number, total_pages, max_retries=5)
+            # 套件内容/目录页安全网：若输出未包含套件骨架标记，重试一次并强调必须用套件骨架整页。
+            if page_type in ("content", "catalog") and suite_skeleton_marker and suite_skeleton_marker not in html_content:
+                logger.warning(
+                    "第%s页未使用套件骨架（缺 %s），重试生成一次...",
+                    page_number,
+                    suite_skeleton_marker,
+                )
+                context_retry = (
+                    f"{context}\n\n注意：上一次输出未包含套件骨架（缺 {suite_skeleton_marker}）。"
+                    "本页必须使用上方「内容页强约束/目录页强约束」中的套件骨架作为整页，"
+                    "只替换槽位、沿用其设计语言与类名，不得自行设计整页骨架。"
+                )
+                html_content = await self._generate_html_with_retry(
+                    context_retry, system_prompt, slide_data, page_number, total_pages, max_retries=2
+                )
+            # C1：内容页/目录页 LLM 输出后兜底替换残留的套件占位符（{{page_title}} 等），
+            # 避免 LLM 未替换的槽位原样进最终页面（用户报告 6/7/8 页占位符残留）。
+            if page_type in ("content", "catalog") and suite:
+                html_content = self._replace_remaining_content_slots(
+                    html_content, slide_data, page_number, total_pages
+                )
+                # D1：内容页样式全丢兜底——若 LLM 保留了骨架 div 却丢掉了套件 <style> 块，
+                # 从套件 header_footer 里把 CSS 补回 head（用户报告 4/5/9/10 页样式丢失）。
+                if page_type == "content":
+                    html_content = self._ensure_content_suite_style_injected(html_content, suite)
+                    # A：body 默认 8px margin 兜底清零——内容页 HTML 必须 1280×720 无滚动条
+                    # （套件 header_footer 是内层片段，多数不带 body reset）。
+                    html_content = self._ensure_suite_body_reset(html_content)
             return html_content
         except Exception as e:
             logger.error(f'Error generating single slide HTML with prompts: {e}')
@@ -131,14 +165,251 @@ class SlideMediaService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _extract_suite_skeleton_marker(header_footer: str) -> str:
+        """从套件 header_footer/catalog 提取一个特征标记（首个 class 名），
+        用于校验生成页是否使用了套件骨架。
+
+        注意：套件 HTML 的 class 既可能用双引号 `class="..."`，也可能用单引号
+        `class='...'`（大纲智能套件库实测为单引号）。同时匹配两种引号，否则
+        正则恒不命中、退化为取前 20 字符（如 `<!DOCTYPE html><html`），导致
+        重试安全网永不触发。
+        """
+        import re as _re
+
+        hf = header_footer or ""
+        m = _re.search(r"class=[\"']([A-Za-z0-9_-]+)", hf)
+        if m:
+            return m.group(1)
+        stripped = hf.strip()
+        return stripped[:20] if stripped else ""
+
+    @staticmethod
+    def _build_deterministic_page_content(slide_data: Dict[str, Any], page_number: int) -> str:
+        """兜底正文：用卡片化结构呈现本页 content_points，自带可读样式。
+
+        当 LLM 未填 `{{page_content}}` 槽位时用这段确定性正文填入，避免页面出现
+        空占位或正文沉底。设计为自包含内联样式、不依赖套件 CSS 也能成立。
+        """
+        slide_data = slide_data or {}
+        title = str(slide_data.get("title") or "").strip() or f"第{page_number}页"
+        content_points = slide_data.get("content_points") or slide_data.get("content") or []
+        if isinstance(content_points, str):
+            points = [p.strip() for p in content_points.split("\n") if p.strip()]
+        elif isinstance(content_points, list):
+            points = [str(p).strip() for p in content_points if str(p).strip()]
+        else:
+            points = []
+        if not points:
+            points = [title]
+        cards = []
+        for i, pt in enumerate(points, 1):
+            cards.append(
+                f'<div style="display:flex;align-items:flex-start;gap:14px;'
+                f'padding:14px 18px;border-left:3px solid currentColor;'
+                f'background:rgba(127,127,127,0.04);border-radius:6px;">'
+                f'<span style="font-size:15px;font-weight:700;line-height:1.4;'
+                f'flex-shrink:0;">{i:02d}</span>'
+                f'<span style="font-size:16px;line-height:1.55;">{pt}</span>'
+                f'</div>'
+            )
+        return (
+            f'<div style="display:flex;flex-direction:column;gap:12px;'
+            f'padding:8px 4px;">' + "".join(cards) + '</div>'
+        )
+
+    @staticmethod
+    def _replace_remaining_content_slots(
+        html: str, slide_data: Dict[str, Any], page_number: int, total_pages: int
+    ) -> str:
+        """C1 兜底：替换内容页 LLM 输出里残留的套件槽位。
+
+        内容页不走 _try_fill_suite_slide 的确定性填充，全靠 LLM 自己替换
+        `{{page_title}}`/`{{page_content}}`/`{{current_page_number}}`/
+        `{{total_page_count}}`。LLM 偶尔保留原始 token，需这里兜底替换，
+        否则占位符原样进最终 HTML（用户报告 6/7/8 页现象）。
+
+        仅替换这四个内容页已知槽位；其它未知槽位（如套件特有的额外槽位）保留，
+        避免误伤。
+        """
+        if not html:
+            return html
+        import re as _re
+        slide_data = slide_data or {}
+        title = str(slide_data.get("title") or "").strip() or f"第{page_number}页"
+        body = SlideMediaService._build_deterministic_page_content(slide_data, page_number)
+        mapping = {
+            "page_title": title,
+            "page_content": body,
+            "current_page_number": str(page_number),
+            "total_page_count": str(total_pages),
+        }
+        def _sub(m: _re.Match) -> str:
+            name = m.group(1).strip()
+            if name in mapping:
+                return str(mapping[name])
+            return m.group(0)
+        return _re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", _sub, html)
+
+    @staticmethod
+    def _ensure_content_suite_style_injected(html: str, suite: Dict[str, Any]) -> str:
+        """D1 兜底：若生成页缺失套件 header_footer 的 `<style>` 块，从套件里补回。
+
+        用户报告 4/5/9/10 页"样式全丢"：LLM 保留了骨架 div、却丢掉了尾部
+        `<style>` 块，导致无布局样式。这里检测输出是否含套件 header_footer 的
+        首条 CSS 规则（如 `.slide-page{`），缺失则把套件 header_footer 里的
+        整个 `<style>` 块注入到生成页的 `</head>` 前。
+
+        若连 `</head>` 都没有（LLM 输出结构异常），退一步注入到 `</body>` 前；
+        再不行原样追加。不重写整个页面，只补 CSS，避免破坏 LLM 的正文内容。
+        """
+        if not html or not suite:
+            return html
+        import re as _re
+        hf = str(suite.get("header_footer") or "")
+        if not hf:
+            return html
+        # 取套件 header_footer 里的 <style>...</style>（可能多个，全收）
+        style_blocks = _re.findall(r"<style[^>]*>(.*?)</style>", hf, flags=_re.DOTALL)
+        if not style_blocks:
+            return html
+        # 选一条最具代表性的 CSS：含页头页脚/骨架类规则的那块（通常最大）。
+        target_block_style = max(style_blocks, key=len)
+        # 判断注入点：优先 </head>，其次 </body>，最后直接 append。
+        # 用第一个 CSS 选择器第一条规则名做存在性探测（如 .slide-page{ / .page-header{）
+        first_rule = _re.search(r"([.#][A-Za-z0-9_-]+)\s*\{", target_block_style)
+        probe = first_rule.group(1) if first_rule else None
+        if probe and probe in html:
+            # 生成页已经含有这条套件骨架 CSS 选择器 → 认为样式在，无需注入。
+            return html
+        inject = f'<style id="suite-style-backfill">{target_block_style}</style>'
+        lowered = html.lower()
+        idx_head = lowered.rfind("</head>")
+        if idx_head != -1:
+            return html[:idx_head].rstrip() + "\n" + inject + "\n" + html[idx_head:]
+        idx_body = lowered.rfind("</body>")
+        if idx_body != -1:
+            return html[:idx_body].rstrip() + "\n" + inject + "\n" + html[idx_body:]
+        return html.rstrip() + "\n" + inject
+
+    @staticmethod
+    def _ensure_suite_body_reset(html: str) -> str:
+        """A 兜底：内容页 body 默认 8px margin 会把 1280×720 骨架撑到 1296×736，产生滚动条。
+
+        套件 header_footer 是内层片段，多数（如库套件 id=14）不带头部 html/body reset，
+        LLM 自包 <body> 时继承浏览器默认 margin。这里无论套件/LLM 输出如何，确定性注入
+        body reset（html/body 1280×720 + margin:0 + overflow:hidden）。若页面已含等效
+        reset（`*{margin:0}` 或 `html,body{margin:0}` / `body{margin:0}`）则跳过。
+        """
+        if not html:
+            return html
+        import re as _re
+        lowered = html.lower()
+        if (
+            _re.search(r"html\s*,\s*body\s*\{[^}]*margin\s*:\s*0", lowered)
+            or _re.search(r"(?<![A-Za-z0-9_-])body\s*\{[^}]*margin\s*:\s*0", lowered)
+            or _re.search(r"\*\s*\{[^}]*margin\s*:\s*0", lowered)
+        ):
+            return html
+        inject = (
+            '<style id="suite-body-reset">'
+            "html,body{width:1280px;height:720px;margin:0!important;overflow:hidden!important;"
+            "box-sizing:border-box}"
+            "</style>"
+        )
+        idx_head = lowered.rfind("</head>")
+        if idx_head != -1:
+            return html[:idx_head].rstrip() + "\n" + inject + "\n" + html[idx_head:]
+        idx_body = lowered.rfind("</body>")
+        if idx_body != -1:
+            return html[:idx_body].rstrip() + "\n" + inject + "\n" + html[idx_body:]
+        return html.rstrip() + "\n" + inject
+
+    @staticmethod
+    def _extract_suite_design_language(suite: Dict[str, Any]) -> str:
+        """从套件各页面提取整体设计语言（配色 + 字体），供内容页保持一致。
+
+        标题页/过渡/目录/结尾与内容页常为互补色系，只参考内容页会导致内容页
+        另造一套颜色；这里汇总整套配色与字体，让内容页沿用整体色板。
+        """
+        import re as _re
+        from collections import Counter
+
+        parts = []
+        for key in ("cover", "transition", "catalog", "ending", "header_footer"):
+            html = str(suite.get(key) or "")
+            if html:
+                parts.append(html)
+        if not parts:
+            return ""
+        all_html = "\n".join(parts)
+
+        # 提取 6 位/3 位 hex 颜色
+        colors = _re.findall(r"#[0-9a-fA-F]{6}\b", all_html)
+        colors += [
+            _re.sub(r"#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])\b", r"#\1\1\2\2\3\3", m)
+            for m in _re.findall(r"#[0-9a-fA-F]{3}\b", all_html)
+        ]
+        counter = Counter(c.lower() for c in colors)
+        # 过滤纯黑/纯白/透明，取出现最多的颜色作为色板
+        ignored = {"#000000", "#ffffff"}
+        palette = [c for c, _ in counter.most_common(16) if c.lower() not in ignored][:10]
+
+        # 字体（取前几个 font-family 的字面量）
+        fonts = _re.findall(r"font-family\s*:\s*([^;}{]+)", all_html)
+        font_pool = []
+        for f in fonts:
+            for name in f.split(","):
+                name = name.strip().strip("'\"")
+                if name and name not in font_pool and not name.startswith("var("):
+                    font_pool.append(name)
+            if len(font_pool) >= 3:
+                break
+
+        lines = []
+        if palette:
+            lines.append("套件整体配色（内容页选色必须从以下色板中取，不得另造新色）：" + "、".join(palette))
+        if font_pool:
+            lines.append("套件字体：" + "、".join(font_pool[:3]))
+        return "\n".join(lines)
+
+    @staticmethod
     def _build_content_suite_constraint(suite: Dict[str, Any]) -> str:
-        """Build the strong header/footer constraint text for content pages."""
+        """Build the strong content-page constraint text.
+
+        让 LLM 把套件的 header_footer 当作内容页的整页骨架逐字保留，只替换槽位；
+        正文放 {{page_content}}，避免出现双标题 / 层级错乱 / 风格不一的页面。
+        """
         header_footer = str(suite.get("header_footer") or "").strip()
         if not header_footer:
             return ""
         tokens = str(suite.get("design_tokens") or "").strip()
+        design_lang = SlideMediaService._extract_suite_design_language(suite)
         lines = [
-            "**页头页脚强约束（必须逐字保留以下 HTML 片段，仅替换其中槽位，不得改写其结构与样式）**",
+            "**内容页强约束（必须把下面这段 HTML 作为本页的整页骨架，逐字保留，不得重新设计、不得丢弃任何元素——尤其 `<style>` 块必须整段保留，缺了样式整页就废了）**",
+            "页头与页脚（含高度、位置、背景、装饰、样式）必须与套件**完全一致**，禁止改动高度/位置/配色；"
+            "**只有 `{{page_content}}` 内容区域随每页内容变化**。",
+            "本页 HTML 输出为 `<!DOCTYPE html>...<body>` 包裹该骨架；骨架通常是 1280×720 的容器"
+            "（含背景/装饰/页头/页脚/正文占位）；**套件骨架里的 `<style>` 块必须整段照抄进本页 `<head>`，不得省略、不得改写规则**。",
+            "**必须把以下槽位用真实内容替换，不得保留 `{{...}}` 原样**（双大括号是占位符，不是装饰）：",
+            "  - `{{page_title}}` → 本页标题（**标题只出现在这里**；正文内容里不要再出现与页头重复的大标题/标题块）；",
+            "  - `{{current_page_number}}` / `{{total_page_count}}` → 页码（数字）；",
+            "  - `{{page_content}}` → 本页正文内容（**填在该槽位处，作为页头与页脚之间的正文占位区；正文不得放到该槽位之外、不得在骨架外另起内容块、不得放在页面底部**）。排版沿用骨架的配色/字体。",
+            "层级与布局：背景/装饰层绝对定位铺满整页且 z-index 低；正文内容容器 z-index 必须**高于**背景/装饰层，"
+            "正文不能被背景图案盖住；正文不要溢出到页头/页脚区域。",
+            "配色/字体：正文排版必须从套件整体色板中选色（见下方「套件整体设计语言」），不得另造新色；"
+            "让整页与套件风格完全一致。",
+            "**标准正文舞台 `.suite-stage`**：套件骨架里已含 `<div class=\"suite-stage\">...{{ page_content }}...</div>`，"
+            "其位置固定（top:130px/bottom:60px/left:60px/right:60px、overflow:hidden、内宽 1160px）。"
+            "**所有正文内容必须写在 `.suite-stage` 容器内**——它已避开页头分割线、不压页脚；超出会被容器 overflow:hidden 兜住，"
+            "所以请通过优化布局密度让内容落进 1160×~530px 区域，而不是溢出到页头页脚。",
+            "**布局列宽基准为 `.suite-stage` 内宽 1160px**：flex/grid 多列时 `gap + 各列宽 ≤ 1160px`；"
+            "用 `flex:1` 自适应或 `calc(100% - Npx)` 计算列宽，禁用 `45%+55%+gap` 这种必然超出容器右沿的组合；"
+            "百分比列宽以容器内宽为基准，而非 1280px。",
+        ]
+        if design_lang:
+            lines.append(f"\n**套件整体设计语言（内容页配色/字体必须沿用）**\n{design_lang}")
+        lines += [
+            "**骨架 HTML（逐字保留，仅替换槽位）**",
             "```html",
             header_footer,
             "```",
@@ -151,22 +422,30 @@ class SlideMediaService:
     def _build_catalog_suite_constraint(suite: Dict[str, Any]) -> str:
         """Build the catalog-page reference constraint for LLM generation.
 
-        目录页不再做确定性模板填充：把套件里的目录页当作设计参考，让 LLM
-        按真实章节（content_points）生成完整目录页，遵循其视觉与条目排版。
+        目录页不再做确定性模板填充：把套件里的目录页当作设计骨架，让 LLM
+        按真实章节（content_points）生成完整目录页，**整页沿用其视觉/布局/条目排版**，
+        并显式锚定套件整体配色/字体，避免 LLM 私自换色。
         """
         catalog = str(suite.get("catalog") or "").strip()
         if not catalog:
             return ""
-        return (
-            "**目录页参考设计（严格遵循该目录页的视觉风格与目录条目排版来生成本页）**\n"
-            "- 目录条目必须使用本页真实章节（slide_data 的 content_points / content），"
-            "逐条套用参考页条目区（编号、分隔、布局）的样式呈现。\n"
-            "- 参考页中的 {{...}} 槽位是占位符，请用本页真实内容替换（如 {{catalog_title}} 用本页标题）。\n"
-            "- 不要照抄参考页里的示例章节文案，也不要逐字复用参考页整段 HTML——只遵循其设计语言。\n"
-            "```html\n"
-            f"{catalog}\n"
-            "```"
-        )
+        design_lang = SlideMediaService._extract_suite_design_language(suite)
+        lines = [
+            "**目录页强约束（必须以套件里的目录页为整页设计骨架，沿用其视觉/布局/条目排版，不得重新设计整页）**",
+            "- 用套件目录页作为本页骨架：保留其背景/装饰/标题样式/目录条目区的整体结构与类名（编号、分隔线、行布局、配色）。",
+            "- 只替换槽位：`{{catalog_title}}`→本页标题（如“目录”）、`{{catalog_subtitle}}`→副标题、`{{catalog_extra}}`→（可空）。",
+            "- 目录条目用本页真实章节（slide_data 的 content_points），逐条套用参考页条目区的样式（编号/分隔/布局/配色）呈现。",
+            "- 不要照抄参考页里的示例章节文案，但**整页的设计语言、类名、结构、配色必须沿用参考页**（不得改成其它配色/布局）。",
+            "- **配色/字体必须与套件整本一致**：背景、标题色、编号色、分隔色等都从套件整体色板取色，严禁另造新色（如套件是红主题就不能生成蓝色目录页）。",
+        ]
+        if design_lang:
+            lines.append(f"\n**套件整体设计语言（目录页配色/字体必须沿用）**\n{design_lang}")
+        lines += [
+            "```html",
+            catalog,
+            "```",
+        ]
+        return "\n".join(lines)
 
     async def _try_fill_suite_slide(
         self,

@@ -382,11 +382,12 @@ class AestheticPreFlightChecker:
         if not html or not html.strip():
             return hard_fails, warnings
 
-        # 只剥掉系统注入的防溢出样式块（id="anti-overflow-fix"，含对正文可见性无影响的
-        # 注释/CSS），避免把系统注入内容误判为 LLM 套路指纹。LLM 自己写的 <style>
-        # 块（配色、accent）仍参与检查。套件页头页脚的既定配色通过 excluded_colors 排除。
+        # 只剥掉系统注入的样式块（anti-overflow-fix 防溢出、suite-style-backfill 套件
+        # style 兜底注入、suite-body-reset body 兜底清零），避免把系统/套件既定内容
+        # 误判为 LLM 套路指纹。LLM 自己写的 <style> 块（配色、accent）仍参与检查。
+        # 套件页头页脚的既定配色通过 excluded_colors 排除。
         visible_html = re.sub(
-            r'<style[^>]*id=["\']anti-overflow-fix["\'][^>]*>.*?</style>',
+            r'<style[^>]*id=["\'](?:anti-overflow-fix|suite-style-backfill|suite-body-reset)["\'][^>]*>.*?</style>',
             '',
             html,
             flags=re.IGNORECASE | re.DOTALL,

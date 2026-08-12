@@ -85,6 +85,12 @@ class ProjectOutlineStreamingService:
             structured_outline = json.loads(json_str)
             structured_outline = self._standardize_outline_format(structured_outline)
             structured_outline = await self._validate_and_repair_outline_json(structured_outline, confirmed_requirements)
+            # 开启过渡页时保证每个一级章节（含第一章）前都有 transition 页
+            from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+            structured_outline["slides"] = _Normalizer._ensure_transition_slides(
+                structured_outline.get("slides", []),
+                bool(confirmed_requirements.get("include_transition_pages", False)),
+            )
             return structured_outline, False
         except Exception as parse_error:
             json_parse_error = parse_error
@@ -92,6 +98,11 @@ class ProjectOutlineStreamingService:
         logger.warning('Streaming outline JSON parse failed, falling back to text outline parsing: %s', json_parse_error)
         structured_outline = self._parse_outline_content(content, project)
         structured_outline = await self._validate_and_repair_outline_json(structured_outline, confirmed_requirements)
+        from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+        structured_outline["slides"] = _Normalizer._ensure_transition_slides(
+            structured_outline.get("slides", []),
+            bool(confirmed_requirements.get("include_transition_pages", False)),
+        )
         return structured_outline, True
 
     async def _build_streaming_research_status_event(self, step: str, message: str, progress: float) -> str:

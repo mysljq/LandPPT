@@ -43,7 +43,9 @@ class OutlinePrompts:
         if not include_transition_pages:
             return "过渡页：未开启；不要生成 transition 类型页面。"
         return (
-            "过渡页：已开启；请在主要章节或逻辑模块之间插入 slide_type=\"transition\" 的页面。"
+            "过渡页：已开启；**每个一级章节（含第一个章节）都必须有过渡页**——在每个一级章节"
+            "（如\"一、xxx\"\"二、xxx\"）的第一个内容页之前，都插入 slide_type=\"transition\" 的"
+            "章节过渡页；**第一个章节（紧跟封面/目录之后）也要有过渡页**。"
             "过渡页用于章节分隔、承上启下和节奏控制，content_points 只保留章节名、转场语或下一章提示。"
             "过渡页计入总页数，固定页数或范围页数下不得额外超页。"
         )
@@ -53,7 +55,9 @@ class OutlinePrompts:
         if not include_transition_pages:
             return "Transition slides: disabled; do not generate `transition` slides."
         return (
-            "Transition slides: enabled; insert slide_type=\"transition\" pages between major sections or logical modules. "
+            "Transition slides: enabled; **every top-level section (including the first one) must have a transition slide** — "
+            "insert a slide_type=\"transition\" page before the first content slide of each top-level section "
+            "(e.g. \"1. xxx\", \"2. xxx\"); **the first section (right after cover/agenda) also needs one**. "
             "Use them for section separation, bridging, and pacing. Keep content_points limited to the section title, a bridge phrase, or next-section cues. "
             "Transition slides count toward the requested page count."
         )

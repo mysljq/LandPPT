@@ -126,6 +126,13 @@ class OutlineWorkflowService:
                     }
 
                     outline = svc._standardize_summeryfile_outline(outline_obj.to_dict())
+                    # 开启过渡页时保证每个一级章节（含第一章）前都有 transition 页（确定性补齐）。
+                    # 在页数校验/修复之前插入，使过渡页计入页数约束，避免超页。
+                    from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+                    outline["slides"] = _Normalizer._ensure_transition_slides(
+                        outline.get("slides", []),
+                        bool(getattr(request, "include_transition_pages", False)),
+                    )
                     outline = await svc._validate_and_repair_outline_json(
                         outline,
                         build_validation_requirements(
@@ -208,6 +215,13 @@ class OutlineWorkflowService:
                 )
 
                 outline = svc._standardize_summeryfile_outline(outline_obj.to_dict())
+                # 开启过渡页时保证每个一级章节（含第一章）前都有 transition 页（确定性补齐）。
+                # 在页数校验/修复之前插入，使过渡页计入页数约束，避免超页。
+                from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+                outline["slides"] = _Normalizer._ensure_transition_slides(
+                    outline.get("slides", []),
+                    bool(getattr(request, "include_transition_pages", False)),
+                )
                 outline = await svc._validate_and_repair_outline_json(
                     outline,
                     build_validation_requirements(

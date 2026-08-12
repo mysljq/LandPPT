@@ -215,3 +215,100 @@ async def test_update_project_outline_uses_normalized_parser():
     assert project.outline["title"] == "少样本过拟合：挑战与应对策略"
     assert len(project.outline["slides"]) == 11
     assert project.outline["slides"][1]["slide_type"] == "agenda"
+
+
+def _mk_slide(page_number, title, slide_type):
+    return {
+        "page_number": page_number,
+        "title": title,
+        "content_points": [title],
+        "slide_type": slide_type,
+        "type": slide_type,
+        "description": "",
+    }
+
+
+def _chapter_outline():
+    """模拟真实项目 a4f19559：一/二/三 三章，仅第二章原有过渡页。"""
+    return [
+        _mk_slide(1, "部门工作情况汇报", "title"),
+        _mk_slide(2, "目录", "agenda"),
+        _mk_slide(3, "一、室组人员管理", "content"),
+        _mk_slide(4, "二、大模型方向概览", "transition"),
+        _mk_slide(5, "ZA38使用情况", "content"),
+        _mk_slide(6, "ZA38功能建设——Skill能力体系", "content"),
+        _mk_slide(7, "低代码方向——安全合规与模板建设", "content"),
+        _mk_slide(8, "低代码方向——用户牵引与现状洞察", "content"),
+        _mk_slide(9, "总结与展望", "conclusion"),
+    ]
+
+
+def test_ensure_transition_slides_backfills_every_chapter():
+    """开启过渡页：每个一级章节（含第一章）前补过渡页；同一章子页不重复插；已有过渡不重复。"""
+    slides = _chapter_outline()
+    slides[1]["content_points"] = ["一、室组人员管理", "二、大模型方向", "三、低代码方向"]
+
+    fixed = ProjectOutlineNormalizationService._ensure_transition_slides(slides, True)
+
+    types = [s["slide_type"] for s in fixed]
+    # title → agenda → transition(一) → content → transition(二, 原有) → content → content
+    #        → transition(三) → content → content → conclusion
+    assert types == [
+        "title", "agenda",
+        "transition", "content",                     # 第一章：一、室组人员管理（自动补）
+        "transition", "content", "content",          # 第二章：二、大模型方向（原有过渡保留，ZA38 两子页不补）
+        "transition", "content", "content",          # 第三章：三、低代码方向（自动补，两子页只补一次）
+        "conclusion",
+    ], types
+    # 页码连续重排
+    assert [s["page_number"] for s in fixed] == list(range(1, len(fixed) + 1))
+    # 三个一级章节各有一个过渡页
+    assert types.count("transition") == 3
+    # 同章第二个子页（低代码方向——用户牵引）不重复补过渡，仍为 content
+    assert fixed[9]["slide_type"] == "content"
+    assert fixed[9]["title"] == "低代码方向——用户牵引与现状洞察"
+
+
+def test_ensure_transition_slides_respects_disabled_and_existing():
+    """未开启过渡页时原样返回；已有过渡的章节前不再插入。"""
+    slides = _chapter_outline()
+    slides[1]["content_points"] = ["一、室组人员管理", "二、大模型方向", "三、低代码方向"]
+
+    unchanged = ProjectOutlineNormalizationService._ensure_transition_slides(slides, False)
+    assert len(unchanged) == len(slides)
+    assert [s["slide_type"] for s in unchanged] == [
+        "title", "agenda", "content", "transition", "content", "content", "content", "content", "conclusion",
+    ]
+
+    # 第一章前已有过渡（LLM 已插）→ 不重复插
+    first_content = 2  # 目录后第一个 content 的下标
+    pre = _chapter_outline()
+    pre[1]["content_points"] = ["一、室组人员管理", "二、大模型方向", "三、低代码方向"]
+    pre.insert(first_content, _mk_slide(4, "一、室组人员管理", "transition"))  # 插在第一章 content 之前
+    # 重新编号
+    for i, s in enumerate(pre, 1):
+        s["page_number"] = i
+    fixed = ProjectOutlineNormalizationService._ensure_transition_slides(pre, True)
+    types = [s["slide_type"] for s in fixed]
+    assert types.count("transition") == 3, types
+
+
+def test_ensure_transition_slides_chapter_start_by_number_prefix():
+    """无 agenda 时，带编号前缀（一、/1、/第X章）的 content 也识别为章节起始。"""
+    slides = [
+        _mk_slide(1, "报告", "title"),
+        _mk_slide(2, "一、背景", "content"),
+        _mk_slide(3, "背景细节", "content"),
+        _mk_slide(4, "二、方案", "content"),
+        _mk_slide(5, "三、落地", "content"),
+        _mk_slide(6, "结束", "conclusion"),
+    ]
+    fixed = ProjectOutlineNormalizationService._ensure_transition_slides(slides, True)
+    types = [s["slide_type"] for s in fixed]
+    # title → transition(一) → content → content → transition(二) → content → transition(三) → content → conclusion
+    assert types == [
+        "title", "transition", "content", "content",
+        "transition", "content",
+        "transition", "content",
+        "conclusion",
+    ], types

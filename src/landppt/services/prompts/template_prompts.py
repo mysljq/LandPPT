@@ -14,6 +14,19 @@ from .system_prompts import SystemPrompts
 class TemplatePrompts:
     """模板生成提示词构建器。"""
 
+    # header_footer 片段必须自带的全局 reset 与画布约束。
+    # build_template_suite_prompt 是 f-string，直接写 CSS 花括号会被当作表达式求值，
+    # 故抽成常量引用。内容页骨架是内层片段，若不自带这些规则，body 默认 8px margin
+    # 会把 1280×720 撑到 1296×736、出现滚动条（套件库 id=14 事故）。
+    HF_RESET_CSS = "*{margin:0;padding:0;box-sizing:border-box}"
+    HF_CANVAS_RULE = "html,body{width:1280px;height:720px;margin:0;overflow:hidden}"
+    # A2 标准内容舞台容器——度量与约束 prompt 共同锚定 .suite-stage。
+    # 固定 px 边界、overflow:hidden 兜住溢出；top 避开页头底边、bottom 不压页脚。
+    HF_STAGE_RULE = (
+        ".suite-stage{position:absolute;top:130px;left:60px;right:60px;"
+        "bottom:60px;z-index:5;overflow:hidden}"
+    )
+
     @staticmethod
     def build_outline_slide_lines(slides: List[Dict[str, Any]]) -> List[str]:
         """从大纲中提取少量摘要行，用于感知内容类型。"""
@@ -465,6 +478,17 @@ class TemplatePrompts:
    - 一个正文占位容器 `{{{{ page_content }}}}`（供后续填充正文）；
    - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）。
    样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
+   **片段自带 `<style>` 块必须同时包含全局 reset 与画布约束**（与封面/过渡页一致）：
+   ```css
+   {TemplatePrompts.HF_RESET_CSS}
+   {TemplatePrompts.HF_CANVAS_RULE}
+   ```
+   （这段会被逐字嵌入内容页，保证内容页 body 无默认 8px margin、无滚动条。内层画布元素仍可用 `position:relative/absolute` 排版。）
+   **必须含一个标准正文舞台容器 `<div class="suite-stage">{{ page_content }}</div>`**，其 `<style>` 规则固定为（标准化边界，让度量与约束锚定同一容器）：
+   ```css
+   {TemplatePrompts.HF_STAGE_RULE}
+   ```
+   （`top:130px` 避开页头底边、`bottom:60px` 不压页脚、`overflow:hidden` 兜住溢出。`left/right:60px` 与页头页脚对齐，内宽 1160px——所有 flex/grid 列宽基准由此固定。）
 6. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
 7. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
 8. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
@@ -510,7 +534,7 @@ class TemplatePrompts:
         "header_footer": {
             "key": "header_footer",
             "label": "内容页页头页脚",
-            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。",
+            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。**片段自带 <style> 必须包含全局 reset 与画布约束**：`*{margin:0;padding:0;box-sizing:border-box}` 和 `html,body{width:1280px;height:720px;margin:0;overflow:hidden}`（保证内容页 body 无默认 margin、无滚动条）。**必须含标准正文舞台容器 `<div class=\"suite-stage\">{{ page_content }}</div>`，规则固定为 `.suite-stage{position:absolute;top:130px;left:60px;right:60px;bottom:60px;z-index:5;overflow:hidden}`**（top 避开页头底边、bottom 不压页脚、内宽 1160px 作为 flex/grid 列宽基准）。",
         },
     }
 
@@ -614,7 +638,7 @@ class TemplatePrompts:
 
 **本次输出约束**
 - 只重新设计并输出 `{meta['key']}` 这一种：{meta['desc']}
-- 必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale；封面/过渡页用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
+- 必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale；封面/过渡页用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段（但片段自带的 `<style>` 必须包含 `{TemplatePrompts.HF_RESET_CSS}` 与 `{TemplatePrompts.HF_CANVAS_RULE}`，保证内容页 body 无默认 margin、无滚动条）。
 - 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
 - 沿用现有套件的 design_tokens 与其余部分的视觉语言，保持同一套设计系统。
 {TemplatePrompts._build_creativity_guidance(creativity) if part in ("cover", "transition", "catalog", "ending") else ""}

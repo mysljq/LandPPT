@@ -77,5 +77,9 @@ class ProjectOutlineValidationService:
     def _standardize_outline_format(self, outline_data: Dict[str, Any]) -> Dict[str, Any]:
         return self._normalization_service._standardize_outline_format(outline_data)
 
+    def _ensure_transition_slides(self, slides: List[Dict[str, Any]], include_transition_pages: bool) -> List[Dict[str, Any]]:
+        """开启过渡页时保证每个一级章节（含第一章）前都有 transition 页。"""
+        return self._normalization_service._ensure_transition_slides(slides, include_transition_pages)
+
     def _create_default_slides_from_content(self, content: str, project: PPTProject) -> List[Dict[str, Any]]:
         return self._normalization_service._create_default_slides_from_content(content, project)

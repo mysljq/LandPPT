@@ -131,6 +131,12 @@ class ProjectOutlinePromptService:
                     topic=request.topic,
                 ),
             )
+            # 开启过渡页时保证每个一级章节（含第一章）前都有 transition 页（确定性补齐）
+            from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+            standardized_data["slides"] = _Normalizer._ensure_transition_slides(
+                standardized_data.get("slides", []),
+                bool(getattr(request, "include_transition_pages", False)),
+            )
             metadata = standardized_data.get('metadata', {})
             metadata.update({
                 'scenario': request.scenario,

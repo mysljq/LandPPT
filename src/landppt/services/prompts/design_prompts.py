@@ -236,8 +236,15 @@ class DesignPrompts:
     @staticmethod
     def _build_locked_zones_context(template_html: str, page_number: int,
                                      total_pages: int, slide_type: str,
-                                      slide_title: str = "") -> str:
-        """普通内容页给出稳定区域的理解方向，不解析模板 HTML。"""
+                                      slide_title: str = "",
+                                      suite_mode: bool = False) -> str:
+        """普通内容页给出稳定区域的理解方向，不解析模板 HTML。
+
+        suite_mode=True（套件驱动：封面/过渡/目录/结尾都有对应套件模板，内容页有
+        套件 header_footer 骨架）：特殊页不再发"另起构图/骨架不是继承项"那段，
+        改为"本页以套件对应页为骨架"，避免与套件强约束里的"必须以套件目录页为整页骨架"
+        直接冲突导致的 LLM 自由发挥配色。
+        """
         is_first = page_number == 1
         is_last = page_number == total_pages
         is_catalog = slide_type in ("outline", "catalog", "directory", "agenda")
@@ -249,6 +256,13 @@ class DesignPrompts:
 
         is_special = is_first or is_last or is_catalog or is_transition
         if is_special:
+            if suite_mode:
+                return (
+                    "**套件模式特殊页**\n"
+                    "本页（封面/过渡/目录/结尾）已有套件对应页作为整页骨架：上方「套件强约束」已给出"
+                    "完整的套件页面 HTML，必须以其为整页骨架逐字保留、仅替换槽位，**不要另起构图、"
+                    "不要舍弃套件骨架结构、不要改色**。套件的配色/字体/版式是继承项，必须沿用。"
+                )
             return """
 **本页为特殊页面，不要套用模板的页头/正文/页尾三段骨架**
 模板是给普通内容页用的三段结构（顶部页头含标题、中部正文、底部页码）。本页不要原样沿用这套骨架、不要把标题塞进模板的页头槽位。请为该特殊页另起构图：标题作为全画面焦点（不受页头高度约束、可大幅放大、可居中或全屏铺排），主动舍弃"页头标题块 + 正文容器 + 页尾"的结构惯性。可保留模板的配色、字体、材质气质作为视觉延续，但版式骨架不是继承项。
@@ -630,7 +644,8 @@ color: <页码文字色 #hex，全册普通页统一>
         """创意模板上下文 HTML 生成提示词。"""
         template_context = DesignPrompts._build_template_html_context(template_html)
         locked_zones = DesignPrompts._build_locked_zones_context(
-            template_html, page_number, total_pages, slide_type, slide_title)
+            template_html, page_number, total_pages, slide_type, slide_title,
+            suite_mode=bool(content_suite_constraint))
         images_info = ""
         if _is_image_service_enabled() and 'images_summary' in slide_data:
             images_info = "\n\n" + DesignPrompts._build_image_usage_context()
@@ -713,7 +728,8 @@ color: <页码文字色 #hex，全册普通页统一>
         slide_title = slide_data.get("title", "") if isinstance(slide_data, dict) else ""
         template_context = DesignPrompts._build_template_html_context(template_html)
         locked_zones = DesignPrompts._build_locked_zones_context(
-            template_html, page_number, total_pages, slide_type, slide_title)
+            template_html, page_number, total_pages, slide_type, slide_title,
+            suite_mode=bool(content_suite_constraint))
         images_info = ""
         if _is_image_service_enabled() and 'images_summary' in slide_data:
             images_info = "\n\n" + DesignPrompts._build_image_usage_context()

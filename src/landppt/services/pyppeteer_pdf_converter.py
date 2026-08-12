@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -27,6 +28,33 @@ except ImportError:
         pass
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_windows_proactor_policy() -> None:
+    """Windows 下强制 Proactor 事件循环（唯一支持子进程，Playwright 需要）。
+
+    run.py / main.py 已设置；这里在转换器被导入时兜底再设一次，
+    覆盖"转换器先于主循环创建被导入"的时序情况。
+    """
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except Exception:
+            pass
+
+
+_ensure_windows_proactor_policy()
+
+
+def _loop_supports_subprocess() -> bool:
+    """判断当前运行循环是否支持子进程（Windows 上仅 Proactor 支持）。"""
+    if sys.platform != "win32":
+        return True
+    try:
+        loop = asyncio.get_running_loop()
+        return isinstance(loop, asyncio.ProactorEventLoop)
+    except RuntimeError:
+        return True
 
 
 class PlaywrightPDFConverter:
@@ -2603,6 +2631,10 @@ class PlaywrightPDFConverter:
         """
         logger.info(f"📸 Taking screenshot: {html_file_path} -> {screenshot_path}")
 
+        if not _loop_supports_subprocess():
+            logger.warning("当前事件循环不支持子进程（Windows 需 Proactor），跳过截图")
+            return False
+
         if not os.path.exists(html_file_path):
             logger.error(f"❌ HTML file not found: {html_file_path}")
             return False
@@ -2811,6 +2843,9 @@ class PlaywrightPDFConverter:
         回退到 body。容器高取该主区域的 rect 高度（受画布上限），内容高取其 scrollHeight。
         """
         logger.info(f"📏 Measuring content overflow: {html_file_path}")
+        if not _loop_supports_subprocess():
+            logger.warning("当前事件循环不支持子进程（Windows 需 Proactor），跳过溢出测量")
+            return None
         if not os.path.exists(html_file_path):
             logger.warning(f"measure_content_overflow: HTML file not found: {html_file_path}")
             return None
@@ -2843,7 +2878,7 @@ class PlaywrightPDFConverter:
                 """
                 () => {
                   const pick = () => {
-                    const sels = ['main', '[role="main"]', '[data-content-layer]',
+                    const sels = ['.suite-stage', 'main', '[role="main"]', '[data-content-layer]',
                                   '[class*="main-content"]', '[class*="content-layer"]',
                                   '[class*="slide-root"]', 'body > div'];
                     for (const s of sels) {
@@ -2879,7 +2914,50 @@ class PlaywrightPDFConverter:
                       overflows_x.push({ tag: k.tagName.toLowerCase(), cls, item_w: Math.round(kw), box_w: Math.round(kr.width) });
                     }
                   }
-                  return { container_h, container_w, content_h, content_w, overflow_px, overflow_x_px, overflow_ratio, overflow_x_ratio, overflows, overflows_x };
+                  // 页脚遮挡探测：正文/目录列表区（常为 absolute 定位，不贡献父容器
+                  // scrollHeight，顶层 overflow 测不到）内容底边越过页脚顶边 → 覆盖页尾。
+                  // 覆盖套件内容页 .page-body（top:104/bottom:72）与目录页 .items（top:206）。
+                  const zone_overlap = (() => {
+                    const footers = Array.from(document.querySelectorAll('[class*="footer"]'))
+                      .filter(function (f) {
+                        const r = f.getBoundingClientRect();
+                        const cls = (f.className && f.className.toString) ? f.className.toString() : '';
+                        if (/footer-(text|page|dot|divider|note)/.test(cls)) return false; // 页脚内部元素非页脚条
+                        return r.height >= 12 && r.width >= 50; // 真实页脚条
+                      });
+                    if (!footers.length) return null;
+                    const footer = footers.reduce(function (a, b) {
+                      return b.getBoundingClientRect().top > a.getBoundingClientRect().top ? b : a;
+                    });
+                    const frect = footer.getBoundingClientRect();
+                    if (frect.height <= 0) return null;
+                    const zones = document.querySelectorAll(
+                      '[class*="items"],[class*="page-body"],[class*="main-stage"],[class*="body"],[class*="content"],[class*="stage"]'
+                    );
+                    const skip = /(bg-|paper|grid|deco|accent|mark|dot|line|seal|corner|shadow|overlay)/;
+                    let worst = null;
+                    for (const z of zones) {
+                      if (z.contains(footer) || footer.contains(z)) continue;
+                      const zcls = (z.className && z.className.toString) ? z.className.toString() : '';
+                      if (skip.test(zcls)) continue;
+                      const zr = z.getBoundingClientRect();
+                      if (zr.height <= 0) continue;
+                      const zBottom = zr.top + (z.scrollHeight || zr.height);
+                      const overlap = zBottom - frect.top;
+                      if (overlap > 12 && (!worst || overlap > worst.overlap_px)) {
+                        worst = {
+                          zone_cls: zcls.slice(0, 60),
+                          item_h: Math.round(z.scrollHeight || 0),
+                          box_h: Math.round(zr.height),
+                          zone_bottom: Math.round(zBottom),
+                          footer_top: Math.round(frect.top),
+                          overlap_px: Math.round(overlap),
+                        };
+                      }
+                    }
+                    return worst;
+                  })();
+                  return { container_h, container_w, content_h, content_w, overflow_px, overflow_x_px, overflow_ratio, overflow_x_ratio, overflows, overflows_x, zone_overlap };
                 }
                 """
             )

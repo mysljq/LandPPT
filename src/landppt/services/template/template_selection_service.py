@@ -220,6 +220,13 @@ class TemplateSelectionService:
                 return None
 
             project_metadata = project.project_metadata or {}
+            # suite 模式 / 已有生效套件：只按套件生成，不强制选模板、不保存默认模板。
+            if (
+                project_metadata.get("template_mode") == "suite"
+                or project_metadata.get("selected_global_suite_id")
+                or project_metadata.get("template_suite")
+            ):
+                return None
             if project_metadata.get("template_mode") == "free":
                 free_template = await self.get_selected_global_template(project_id)
                 if free_template:
@@ -396,6 +403,20 @@ class TemplateSelectionService:
 
             project_metadata = project.project_metadata or {}
             template_mode = project_metadata.get("template_mode")
+
+            # 套件驱动项目不返回任何全局模板：
+            # - template_mode == "suite"：显式仅使用套件
+            # - selected_global_suite_id：选了套件库套件
+            # - template_suite 为 outline 套件：大纲智能套件（自包含，不依赖母版）
+            # 这些项目即使 metadata 残留 selected_global_template_id（旧逻辑强制写入过
+            # 默认模板），也不能让模板参与 PPT 生成 / 设计基因提取。
+            suite_meta = project_metadata.get("template_suite")
+            if (
+                template_mode == "suite"
+                or project_metadata.get("selected_global_suite_id")
+                or (isinstance(suite_meta, dict) and suite_meta.get("template_mode") == "outline")
+            ):
+                return None
 
             if template_mode == "free":
                 free_html = project_metadata.get("free_template_html")

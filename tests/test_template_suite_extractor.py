@@ -1,5 +1,6 @@
 """Tests for the template-suite extractor and renderer."""
 import json
+import re
 
 from landppt.services.template.master_layout_extractor import MasterLayoutExtractor
 from landppt.services.template.template_suite_renderer import TemplateSuiteRenderer
@@ -800,7 +801,7 @@ def test_build_catalog_suite_constraint():
     c = SlideMediaService._build_catalog_suite_constraint({
         "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1><div>01 示例章节</div></body></html>",
     })
-    assert "目录页参考设计" in c
+    assert "目录页强约束" in c
     assert "示例章节" in c
     assert "{{ catalog_title }}" in c
 
@@ -867,7 +868,7 @@ def test_catalog_page_uses_reference_not_template_fill():
         )
 
     result = asyncio.run(run())
-    assert "目录页参考设计" in captured["context"], "目录页参考设计应注入生成 prompt"
+    assert "目录页强约束" in captured["context"], "目录页强约束应注入生成 prompt"
     assert "示例章节" in captured["context"], "套件目录页 HTML 应作为参考注入"
     assert result and "目录" in result
 
@@ -936,10 +937,115 @@ def test_content_page_with_suite_ignores_template():
 
     result = asyncio.run(run())
     assert called_generate_with_template["called"] is False, "有套件的内容页不应使用模板生成"
-    assert "页头页脚强约束" in captured["context"], "内容页应注入套件页头页脚约束"
+    assert "内容页强约束" in captured["context"], "内容页应注入套件页头页脚约束"
     assert "{{ page_title }}" in captured["context"]
     assert "Toy风" not in captured["context"], "模板不应进入内容页 prompt"
     assert result and "内容页" in result
+
+
+def test_content_page_retries_when_suite_skeleton_missing():
+    """内容页生成未包含套件骨架标记时，自动重试一次并注入强提示。"""
+    import asyncio
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": (
+            '<div class="cmb-slide">{{ page_title }}{{ page_content }}'
+            "{{ current_page_number }}/{{ total_page_count }}</div>"
+        ),
+    }
+    calls = {"n": 0}
+
+    class FakeTemplateSuite:
+        async def get_effective_suite(self, project_id):
+            return suite
+
+    class FakeMedia:
+        template_suite = FakeTemplateSuite()
+
+        async def get_selected_global_template(self, project_id):
+            return None
+
+        async def _try_fill_suite_slide(self, *a, **k):
+            return None
+
+        async def _generate_slide_with_template(self, *a, **k):
+            raise AssertionError("不应调用")
+
+        async def _ensure_slide_images_context(self, *a, **k):
+            return None
+
+        async def _get_creative_design_inputs(self, *a, **k):
+            return ("", "", "")
+
+        async def _process_slide_image(self, *a, **k):
+            return None
+
+        def _build_slide_context(self, *a, **k):
+            return ""
+
+        async def _generate_html_with_retry(self, context, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "<!DOCTYPE html><html><body>没有套件骨架</body></html>"
+            return '<!DOCTYPE html><html><body><div class="cmb-slide">{{ page_content }}</div></body></html>'
+
+        async def _generate_fallback_slide_html(self, *a, **k):
+            return "fallback"
+
+        async def _apply_auto_layout_repair(self, html, *a, **k):
+            return html
+
+    media = SlideMediaService(FakeMedia())
+
+    async def run():
+        return await media._generate_single_slide_html_with_prompts(
+            {"title": "内容", "slide_type": "content"},
+            {"project_id": "p1", "topic": "T"},
+            "sys", 2, 5, project_id="p1",
+        )
+
+    result = asyncio.run(run())
+    assert calls["n"] == 2, "首次未含套件骨架应触发一次重试"
+    assert "cmb-slide" in result
+
+
+def test_ensure_global_master_template_selected_skips_for_suite_mode():
+    """suite 模式：重新生成/生成时不强制选默认模板，返回 None（套件驱动一切）。"""
+    import asyncio
+    from landppt.services.template.template_selection_service import TemplateSelectionService
+
+    saved = {"called": False}
+
+    class FakePM:
+        async def get_project(self, pid, user_id=None):
+            return type("P", (), {"project_metadata": {"template_mode": "suite", "selected_global_suite_id": 12}})()
+
+        async def update_project_metadata(self, pid, meta, user_id=None):
+            saved["called"] = True
+
+    class FakeGlobalTpl:
+        async def get_default_template(self):
+            return {"id": 999, "template_name": "Toy风"}
+
+        async def get_template_by_id(self, tid):
+            return {"id": tid, "template_name": "X"}
+
+    class FakeService:
+        project_manager = FakePM()
+        global_template_service = FakeGlobalTpl()
+
+        def clear_cached_style_genes(self, pid):
+            pass
+
+    svc = TemplateSelectionService(FakeService())
+
+    async def run():
+        return await svc._ensure_global_master_template_selected("p1")
+
+    result = asyncio.run(run())
+    assert result is None, "suite 模式不应强制选默认模板"
+    assert saved["called"] is False, "suite 模式不应把默认模板保存到项目"
 
 
 def test_extract_json_from_response_robust():
@@ -1350,3 +1456,693 @@ def test_generate_suite_free_outline_mode_and_get_suite():
     # get_suite 无需选中模板即可读取大纲套件
     assert read_back is not None
     assert read_back["template_mode"] == "outline"
+
+
+def test_get_selected_global_template_none_for_suite_driven_projects():
+    """套件驱动项目（suite 模式 / 套件库套件 / outline 套件）不返回任何全局模板，
+    即使 metadata 残留 selected_global_template_id（旧逻辑强制写入过默认模板）。"""
+    import asyncio
+    from landppt.services.template.template_selection_service import TemplateSelectionService
+
+    template = {"id": 1, "template_name": "Toy风", "html_template": "<html>t</html>"}
+    fetched = {"count": 0}
+
+    class FakePM:
+        def __init__(self, meta):
+            self.meta = meta
+
+        async def get_project(self, pid, user_id=None):
+            return type("P", (), {"project_metadata": dict(self.meta)})()
+
+    class FakeGlobalTpl:
+        async def get_template_by_id(self, tid):
+            fetched["count"] += 1
+            return template
+
+        async def get_default_template(self):
+            return template
+
+    class FakeService:
+        def __init__(self, meta):
+            self.project_manager = FakePM(meta)
+            self.global_template_service = FakeGlobalTpl()
+
+        def clear_cached_style_genes(self, pid):
+            pass
+
+    cases = [
+        # (metadata, 说明) —— 均带残留 selected_global_template_id=1
+        ({"template_mode": "suite", "selected_global_template_id": 1}, "suite 模式"),
+        ({"template_mode": "global", "selected_global_suite_id": 12, "selected_global_template_id": 1}, "套件库套件"),
+        ({"template_mode": "global", "template_suite": {"template_mode": "outline", "cover": "x"}, "selected_global_template_id": 1}, "大纲智能套件"),
+        ({"template_mode": "global", "selected_global_template_id": 1}, "纯模板项目（应返回模板）"),
+    ]
+    for meta, label in cases:
+        svc = TemplateSelectionService(FakeService(meta))
+
+        async def run():
+            return await svc.get_selected_global_template("p1")
+
+        result = asyncio.run(run())
+        if label == "纯模板项目（应返回模板）":
+            assert result == template, label
+        else:
+            assert result is None, f"{label} 不应返回残留的全局模板"
+
+
+def test_get_suite_works_in_suite_mode_without_template():
+    """仅使用套件模式：项目内模板型套件自包含生效，不再要求母版模板（template_hash 校验）。"""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    suite_payload = {
+        "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+        "header_footer": (
+            '<div class="hf-canvas"><div class="bg-paper"></div><style>.hf-canvas{}</style>'
+            '<div class="main-stage">{{ page_content }}</div>'
+            "<header>{{ page_title }}</header>"
+            "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+        ),
+        "design_tokens": "t",
+        "template_mode": "global",  # 模板型套件（非 outline）
+        "template_id": 7,
+        "template_hash": "abc",
+    }
+
+    class FakePM:
+        def __init__(self):
+            self.meta = {"template_mode": "suite", "template_suite": dict(suite_payload)}
+
+        async def get_project(self, pid, user_id=None):
+            return type("P", (), {"project_metadata": dict(self.meta)})()
+
+    fetched_template = {"called": False}
+
+    class FakeService:
+        project_manager = FakePM()
+
+        async def get_selected_global_template(self, pid, user_id=None):
+            # suite 模式下不应被调用（不需要模板做校验）
+            fetched_template["called"] = True
+            return None
+
+        def clear_cached_style_genes(self, pid):
+            pass
+
+    svc = TemplateSuiteService(FakeService())
+
+    async def run():
+        return await svc.get_suite("p1")
+
+    result = asyncio.run(run())
+    assert result is not None, "suite 模式的项目内套件应自包含生效"
+    assert result["template_mode"] == "global"
+    assert fetched_template["called"] is False, "suite 模式读取套件不应去取全局模板"
+
+
+def test_single_slide_regeneration_suite_project_never_fetches_template():
+    """重新生成单页：有有效套件时根本不调用 get_selected_global_template（不绑定、不打日志）。"""
+    import asyncio
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "cover": "<!DOCTYPE html><html><body>{{ cover_title }}{{ cover_subtitle }}</body></html>",
+        "header_footer": "<header>{{ page_title }}</header><footer>{{ current_page_number }}/{{ total_page_count }}</footer>",
+        "design_tokens": "字体栈：X；强调色：#123456",
+    }
+    fetched_template = {"called": False}
+
+    class FakeTemplateSuite:
+        async def get_effective_suite(self, project_id):
+            return suite
+
+    class FakeMedia:
+        template_suite = FakeTemplateSuite()
+
+        async def get_selected_global_template(self, project_id):
+            # 有有效套件的项目不应拉取全局模板
+            fetched_template["called"] = True
+            return {"id": 1, "template_name": "Toy风", "html_template": "<html>tpl</html>"}
+
+        async def _try_fill_suite_slide(self, *args, **kwargs):
+            return None  # 内容页不走套件模板填充
+
+        async def _ensure_slide_images_context(self, *a, **k):
+            return None
+
+        async def _get_creative_design_inputs(self, *a, **k):
+            return ("", "", "")
+
+        async def _process_slide_image(self, *a, **k):
+            return None
+
+        def _build_slide_context(self, *a, **k):
+            return ""
+
+        async def _generate_html_with_retry(self, context, *a, **k):
+            return "<!DOCTYPE html><html><body><div class='hf-canvas'>内容页</div></body></html>"
+
+        async def _generate_fallback_slide_html(self, *a, **k):
+            return "fallback"
+
+        async def _apply_auto_layout_repair(self, html, *a, **k):
+            return html
+
+    media = SlideMediaService(FakeMedia())
+
+    async def run():
+        return await media._generate_single_slide_html_with_prompts(
+            {"title": "背景介绍", "slide_type": "content", "content_points": ["要点"]},
+            {"project_id": "p1", "topic": "T"},
+            "sys", 2, 10, project_id="p1",
+        )
+
+    result = asyncio.run(run())
+    assert fetched_template["called"] is False, "有有效套件的单页重新生成不应拉取/使用全局模板"
+    assert result and "内容页" in result
+
+
+def test_extract_suite_locked_colors_matches_renamed_constraint_titles():
+    """A1 回归：_extract_suite_locked_colors 必须能识别改名后的约束标题
+    （内容页强约束 / 目录页强约束），否则 excluded_colors 恒为 None，套件
+    自身红/金配色被审美预检当 multi-accent 误杀，内容页反复重生成改色。"""
+    from landppt.services.slide.slide_html_recovery_service import SlideHtmlRecoveryService
+
+    hf = (
+        "<!DOCTYPE html><html><head><style>"
+        ".hf-canvas{background:#C8102E}.page-footer{color:#8B1A1A}"
+        "</style></head><body><div class='hf-canvas'>{{ page_title }}</div></body></html>"
+    )
+
+    # 旧标题（兼容）
+    ctx_old = f"**页头页脚强约束（...）**\n```html\n{hf}\n```"
+    new = SlideHtmlRecoveryService._extract_suite_locked_colors(ctx_old)
+    assert new and {"#C8102E", "#8B1A1A"} <= new, "旧标题应能提取套件锁定色"
+
+    # 新标题（本次回归）
+    ctx_new = f"**内容页强约束（...）**\n```html\n{hf}\n```"
+    new2 = SlideHtmlRecoveryService._extract_suite_locked_colors(ctx_new)
+    assert new2 and {"#C8102E", "#8B1A1A"} <= new2, "新标题「内容页强约束」必须能提取套件锁定色"
+
+    # 目录页新标题
+    ctx_cat = f"**目录页强约束（...）**\n```html\n{hf}\n```"
+    new3 = SlideHtmlRecoveryService._extract_suite_locked_colors(ctx_cat)
+    assert new3 and "#C8102E" in new3, "目录页强约束也应能提取套件锁定色"
+
+    # 无任何约束
+    assert SlideHtmlRecoveryService._extract_suite_locked_colors("普通上下文，无强约束") is None
+
+
+def test_build_catalog_suite_constraint_injects_palette():
+    """B1：目录页约束必须注入套件整体配色/字体（避免 LLM 私自换色）。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "catalog": "<!DOCTYPE html><html><body><h1>{{ catalog_title }}</h1></body></html>",
+        "header_footer": "<div class='hf-canvas'>{{ page_title }}{{ page_content }}</div>",
+        "cover": "<div style='color:#C8102E'>封面</div>",
+        "design_tokens": "主色 #C8102E",
+    }
+    c = SlideMediaService._build_catalog_suite_constraint(suite)
+    assert "目录页强约束" in c
+    assert "套件整体设计语言" in c, "应注入套件整体设计语言（配色/字体）"
+    assert "#c8102e" in c.lower(), "套件红色应进入目录页约束"
+    assert "不得改成其它配色" in c or "另造新色" in c, "应有禁止换色的强约束"
+
+
+def test_build_locked_zones_context_suite_mode_no_blank_canvas_for_special_page():
+    """B2：套件模式特殊页不应发"另起构图/骨架不是继承项"，避免与套件约束互斥。"""
+    from landppt.services.prompts.design_prompts import DesignPrompts
+
+    # 普通模式特殊页（目录）——保留"另起构图"
+    plain = DesignPrompts._build_locked_zones_context("<html>x</html>", 2, 10, "catalog", "目录")
+    assert "另起构图" in plain and "骨架不是继承项" in plain
+
+    # 套件模式特殊页——不发"骨架不是继承项"那条互斥指令，改为"以套件为骨架"
+    suite = DesignPrompts._build_locked_zones_context(
+        "<html>x</html>", 2, 10, "catalog", "目录", suite_mode=True
+    )
+    assert "骨架不是继承项" not in suite, "套件模式不应让特殊页'骨架不是继承项'"
+    assert "不要原样沿用这套骨架" not in suite, "套件模式不应让特殊页舍弃套件骨架"
+    assert "套件" in suite and "骨架" in suite, "套件模式应改为以套件对应页为骨架"
+
+
+def test_extract_suite_skeleton_marker_supports_single_quote_class():
+    """修正：套件 HTML 常用单引号 class='...'，marker 正则必须命中，否则
+    退化为取前 20 字符、重试安全网永不触发。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    assert SlideMediaService._extract_suite_skeleton_marker("<div class='slide-page'>x</div>") == "slide-page"
+    assert SlideMediaService._extract_suite_skeleton_marker('<div class="slide-page">x</div>') == "slide-page"
+    # 大纲智能套件库实测形态（DOCTYPE + html 开头，但含 class）
+    hf = "<!DOCTYPE html><html><body><div class='page-body'>{{ page_content }}</div></body></html>"
+    assert SlideMediaService._extract_suite_skeleton_marker(hf) == "page-body"
+    # 仍含 class 的 fragment
+    assert SlideMediaService._extract_suite_skeleton_marker("<div class='hf-canvas'>") == "hf-canvas"
+
+
+def test_replace_remaining_content_slots_fills_resident_tokens():
+    """C1：内容页 LLM 输出残留的 {{page_title}}/{{page_content}}/页码槽位
+    必须被确定性替换为本页真实内容。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = (
+        "<!DOCTYPE html><html><body>"
+        "<div class='page-header'><span class='page-title'>{{ page_title }}</span></div>"
+        "<div class='page-body'>{{ page_content }}</div>"
+        "<div class='page-footer'>{{ current_page_number }} / {{ total_page_count }}</div>"
+        "<div class='unknown-slot'>{{ some_other_slot }}</div>"
+        "</body></html>"
+    )
+    slide_data = {"title": "核心方案", "content_points": ["要点一", "要点二"]}
+    out = SlideMediaService._replace_remaining_content_slots(html, slide_data, 4, 10)
+
+    assert "{{ page_title }}" not in out and "核心方案" in out, "page_title 应被替换"
+    assert "{{ page_content }}" not in out, "page_content 占位应被替换"
+    assert "要点一" in out and "要点二" in out, "正文应来自 content_points"
+    assert "{{ current_page_number }}" not in out and "4" in out
+    assert "{{ total_page_count }}" not in out and "10" in out
+    # 未知槽位保留（避免误伤套件特有槽位）
+    assert "{{ some_other_slot }}" in out, "未知槽位应保留不替换"
+
+
+def test_ensure_content_suite_style_injected_when_style_missing():
+    """D1：内容页保留了骨架 div 但丢了套件 <style> 块时，应从套件补回 CSS。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": (
+            "<div class='slide-page'>{{ page_title }}{{ page_content }}</div>"
+            "<style>.slide-page{background:#C8102E}.page-footer{color:#8B1A1A}</style>"
+        ),
+    }
+    # LLM 输出：骨架 div 在，但 <style> 丢了
+    html = (
+        "<!DOCTYPE html><html><head></head><body>"
+        "<div class='slide-page'>标题正文</div>"
+        "</body></html>"
+    )
+    out = SlideMediaService._ensure_content_suite_style_injected(html, suite)
+    assert "<style" in out, "应补回 <style> 块"
+    assert "suite-style-backfill" in out
+    assert ".slide-page" in out and "#C8102E" in out, "套件 CSS 规则应被注入"
+    # 注入到 </head> 前
+    assert out.index("<style") < out.index("</head>")
+
+    # 输出已含套件骨架 CSS 选择器 → 不重复注入
+    already = (
+        "<!DOCTYPE html><html><head><style>.slide-page{background:#C8102E}</style></head>"
+        "<body><div class='slide-page'>x</div></body></html>"
+    )
+    out2 = SlideMediaService._ensure_content_suite_style_injected(already, suite)
+    assert out2 == already, "已有套件骨架 CSS 时不重复注入"
+
+    # 套件无 <style> → 原样返回
+    out3 = SlideMediaService._ensure_content_suite_style_injected(html, {"header_footer": "<div>x</div>"})
+    assert out3 == html
+
+
+def test_content_page_placeholder_and_style_backfill_wired():
+    """C1+D1 接线：内容页 LLM 输出占位符残留且丢 <style> 时，最终输出被确定性补全
+    （占位符替换 + 套件 CSS 注入）。模拟用户报告的 6/7/8 + 4/5/9/10 两种现象。"""
+    import asyncio
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": (
+            "<div class='slide-page'>"
+            "<div class='page-header'><span class='page-title'>{{ page_title }}</span></div>"
+            "<div class='page-body'>{{ page_content }}</div>"
+            "<div class='page-footer'>{{ current_page_number }} / {{ total_page_count }}</div>"
+            "</div>"
+            "<style>.slide-page{background:#C8102E}.page-footer{color:#8B1A1A}</style>"
+        ),
+        "design_tokens": "t",
+    }
+
+    class FakeTemplateSuite:
+        async def get_effective_suite(self, project_id):
+            return suite
+
+    bad_llm_output = (
+        "<!DOCTYPE html><html><head></head><body>"
+        "<div class='slide-page'>"
+        "<div class='page-header'><span class='page-title'>{{ page_title }}</span></div>"
+        "<div class='page-body'>{{ page_content }}</div>"
+        "<div class='page-footer'>{{ current_page_number }} / {{ total_page_count }}</div>"
+        "</div>"
+        "</body></html>"
+    )
+
+    class FakeMedia:
+        template_suite = FakeTemplateSuite()
+
+        async def get_selected_global_template(self, project_id):
+            return None
+
+        async def _try_fill_suite_slide(self, *a, **k):
+            return None
+
+        async def _ensure_slide_images_context(self, *a, **k):
+            return None
+
+        async def _get_creative_design_inputs(self, *a, **k):
+            return ("", "", "")
+
+        async def _process_slide_image(self, *a, **k):
+            return None
+
+        def _build_slide_context(self, *a, **k):
+            return ""
+
+        async def _generate_html_with_retry(self, context, *a, **k):
+            return bad_llm_output
+
+        async def _generate_fallback_slide_html(self, *a, **k):
+            return "fallback"
+
+        async def _apply_auto_layout_repair(self, html, *a, **k):
+            return html
+
+    media = SlideMediaService(FakeMedia())
+
+    async def run():
+        return await media._generate_single_slide_html_with_prompts(
+            {"title": "实施路径", "slide_type": "content", "content_points": ["第一阶段", "第二阶段"]},
+            {"project_id": "p1", "topic": "T"},
+            "sys", 7, 10, project_id="p1",
+        )
+
+    result = asyncio.run(run())
+    # C1：占位符全部替换
+    assert "{{ page_title }}" not in result
+    assert "{{ page_content }}" not in result
+    assert "{{ current_page_number }}" not in result
+    assert "{{ total_page_count }}" not in result
+    assert "实施路径" in result
+    assert "第一阶段" in result and "第二阶段" in result
+    assert "7" in result and "10" in result
+    # D1：套件 <style> 被补回
+    assert "suite-style-backfill" in result
+    assert ".slide-page" in result and "#C8102E" in result
+    # A：body 默认 margin 兜底清零（套件 id=14 的 header_footer 无 reset → 注入）
+    assert "suite-body-reset" in result
+    assert "html,body{width:1280px;height:720px;margin:0!important;overflow:hidden!important" in result
+
+
+def test_ensure_suite_body_reset_injects_when_missing():
+    """A：内容页 body 无 reset 时注入 1280×720 + margin:0；已有等效 reset 不重复注入。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    # 无 reset → 注入 suite-body-reset 到 </head> 前
+    html = (
+        "<!DOCTYPE html><html><head></head><body>"
+        "<div class='slide-page'>内容</div></body></html>"
+    )
+    out = SlideMediaService._ensure_suite_body_reset(html)
+    assert "suite-body-reset" in out
+    assert "html,body{width:1280px;height:720px;margin:0!important;overflow:hidden!important" in out
+    assert out.index("<style") < out.index("</head>"), "应注入到 </head> 前"
+
+    # 已有 *{margin:0} → 不重复注入（cmb 系列套件）
+    has_star = (
+        "<!DOCTYPE html><html><head><style>*{margin:0;padding:0}</style></head>"
+        "<body><div class='slide-page'>x</div></body></html>"
+    )
+    assert SlideMediaService._ensure_suite_body_reset(has_star) == has_star
+
+    # 已有 html,body{margin:0} → 不重复注入
+    has_html_body = (
+        "<!DOCTYPE html><html><head><style>html,body{width:1280px;height:720px;margin:0;overflow:hidden}</style></head>"
+        "<body><div>x</div></body></html>"
+    )
+    assert SlideMediaService._ensure_suite_body_reset(has_html_body) == has_html_body
+
+    # 已有 body{margin:0} → 不重复注入
+    has_body = (
+        "<!DOCTYPE html><html><head><style>body{margin:0;padding:0}</style></head>"
+        "<body><div>x</div></body></html>"
+    )
+    assert SlideMediaService._ensure_suite_body_reset(has_body) == has_body
+
+    # .page-body{...} 不应误判为 body reset（lookbehind 防子串误匹配）
+    has_page_body = (
+        "<!DOCTYPE html><html><head><style>.page-body{position:absolute;top:104px}</style></head>"
+        "<body><div class='page-body'>x</div></body></html>"
+    )
+    out2 = SlideMediaService._ensure_suite_body_reset(has_page_body)
+    assert "suite-body-reset" in out2, ".page-body 不应被视为 body reset"
+
+    # 无 </head> 时注入到 </body> 前
+    no_head = "<!DOCTYPE html><html><body><div>x</div></body></html>"
+    out3 = SlideMediaService._ensure_suite_body_reset(no_head)
+    assert "suite-body-reset" in out3
+    assert out3.index("suite-body-reset") < out3.index("</body>")
+
+
+def test_suite_prompt_header_footer_requires_body_reset():
+    """B：生成 header_footer 的提示词（完整生成 + 单类型重生）必须要求片段自带
+    `*{margin:0}` + `html,body{1280×720;margin:0;overflow:hidden}`。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI大模型行业趋势"
+        scenario = "峰会"
+
+    outline = {"title": "T", "slides": [{"title": "a", "slide_type": "title"}]}
+    confirmed = {"target_audience": "高管"}
+
+    base = dict(project=P(), outline=outline, confirmed=confirmed,
+                template_html="<div>tpl</div>", creativity=5)
+    p = TemplatePrompts.build_template_suite_prompt(**base)
+    assert "html,body{width:1280px;height:720px;margin:0;overflow:hidden}" in p, \
+        "完整生成 prompt 应要求 header_footer 自带 body reset"
+
+    pp = TemplatePrompts.build_template_suite_part_prompt(
+        part="header_footer", outline=outline, confirmed=confirmed,
+        template_html="<div>t</div>", existing_suite={"design_tokens": "t"}, creativity=5,
+    )
+    assert "*{margin:0;padding:0;box-sizing:border-box}" in pp, \
+        "单类型重生 prompt 应要求 header_footer 自带 * reset"
+    assert "html,body{width:1280px;height:720px;margin:0;overflow:hidden}" in pp, \
+        "单类型重生 prompt 应要求 header_footer 自带 body 画布约束"
+
+
+def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
+    """A+B：正文/目录区盖页脚（zone_overlap）或局部容器溢出（overflows）必须触发
+    重生成，并把"盖住页脚/超出 px"写进重试 feedback。模拟项目 a4f19559 的
+    page 2（目录 items 盖页脚 66px）与 page 13（page-body 局部溢出 42px）。"""
+    import asyncio
+    from landppt.services.slide.slide_html_recovery_service import SlideHtmlRecoveryService
+
+    # 场景 1：目录页盖页脚（zone_overlap）
+    calls = {"n": 0, "contexts": []}
+    zone_results = [
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0, "overflows": [],
+         "zone_overlap": {"zone_cls": "items", "item_h": 520, "box_h": 514, "overlap_px": 66}},
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0, "overflows": [],
+         "zone_overlap": None},
+    ]
+    ok_html = "<!DOCTYPE html><html><head></head><body><div>ok</div></body></html>"
+
+    def make_host(counter):
+        class Host:
+            def _parse_header_lock(self, context):
+                return None
+
+            def _parse_footer_lock(self, context):
+                return None
+
+            async def _text_completion_for_role(self, role, *, prompt, **kw):
+                counter["n"] += 1
+                counter["contexts"].append(prompt)
+                if counter["n"] == 1:
+                    return type("R", (), {"content": "<!DOCTYPE html><html><head></head><body><div class='items'>超高内容超高内容超高内容超高内容</div></body></html>"})()
+                return type("R", (), {"content": ok_html})()
+
+            def _clean_html_response(self, content):
+                return content
+
+            def _inject_anti_overflow_css(self, html):
+                return html
+
+            def _validate_html_completeness(self, html):
+                return {"is_complete": True, "errors": [], "missing_elements": []}
+
+            def _aesthetic_preflight_check(self, *a, **k):
+                return [], []
+
+            async def _apply_auto_layout_repair(self, html, *a, **k):
+                return html
+
+            async def _generate_fallback_slide_html(self, *a, **k):
+                return ok_html
+
+        return Host()
+
+    def make_svc(overflow_results, counter):
+        host = make_host(counter)
+        svc = SlideHtmlRecoveryService(host)
+        # _measure_overflow 是 SlideHtmlRecoveryService 自己的方法，不走 __getattr__，
+        # 需挂到实例上覆盖。
+        async def _fake_measure(html, page_number):
+            return overflow_results.pop(0)
+        svc._measure_overflow = _fake_measure
+        return svc
+
+    svc = make_svc(zone_results, calls)
+
+    async def run():
+        return await svc._generate_html_with_retry("基础上下文", "sys", {"title": "t"}, 2, 10, max_retries=3)
+
+    result = asyncio.run(run())
+    assert calls["n"] == 2, f"盖页脚应触发一次重生成，实际调用 {calls['n']} 次"
+    assert result == ok_html
+    assert "盖住页脚" in calls["contexts"][1], "重试 feedback 应告知盖住页脚"
+    assert "66px" in calls["contexts"][1], "重试 feedback 应写明超出像素数"
+
+    # 场景 2：内容页局部容器溢出（overflows），顶层 overflow_px=0
+    calls2 = {"n": 0, "contexts": []}
+    local_results = [
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0,
+         "overflows": [{"tag": "div", "cls": "page-body", "item_h": 586, "box_h": 544}],
+         "zone_overlap": None},
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0,
+         "overflows": [], "zone_overlap": None},
+    ]
+    svc2 = make_svc(local_results, calls2)
+
+    async def run2():
+        return await svc2._generate_html_with_retry("基础上下文", "sys", {"title": "t"}, 13, 18, max_retries=3)
+
+    result2 = asyncio.run(run2())
+    assert calls2["n"] == 2, f"局部溢出应触发一次重生成，实际 {calls2['n']} 次"
+    assert result2 == ok_html
+    assert "42px" in calls2["contexts"][1], "局部溢出 feedback 应写明超出像素数"
+
+    # 场景 3：无溢出 → 不重试
+    calls3 = {"n": 0, "contexts": []}
+    clean_results = [
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0,
+         "overflows": [], "zone_overlap": None},
+    ]
+    svc3 = make_svc(clean_results, calls3)
+
+    async def run3():
+        return await svc3._generate_html_with_retry("基础上下文", "sys", {"title": "t"}, 5, 10, max_retries=3)
+
+    result3 = asyncio.run(run3())
+    assert calls3["n"] == 1, "无溢出不应重试"
+
+
+def test_ensure_standard_content_stage_backfills_existing_and_missing():
+    """A2：_ensure_standard_content_stage 三种情况收敛到 .suite-stage 标准容器。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    # 1) 已有 .page-content（套件 id=13 形态）→ 追加 suite-stage class + 注入标准 CSS
+    hf_with_pc = (
+        "<style>.page-content{position:absolute;top:96px;left:60px;right:60px;bottom:68px;z-index:5}"
+        ".page-header{position:absolute;top:34px;left:60px;right:60px}</style>"
+        '<div class="page-header"><span class="page-title">{{ page_title }}</span></div>'
+        '<div class="page-content">{{ page_content }}</div>'
+        '<div class="page-footer">{{ current_page_number }}/{{ total_page_count }}</div>'
+    )
+    out1 = T._ensure_standard_content_stage(hf_with_pc)
+    assert "page-content suite-stage" in out1, "应在 page-content div 上追加 suite-stage class"
+    m = re.search(r"\.suite-stage\s*\{([^}]*)\}", out1)
+    assert m and "top:130px" in m.group(1) and "overflow:hidden" in m.group(1), "应注入标准 CSS 覆盖错误 top"
+
+    # 2) 无内容容器、{{page_content}} 散落（id=1 形态）→ 包新 .suite-stage div
+    hf_no_container = (
+        '<div class="page-bg"></div><div class="page-header">{{ page_title }}</div>'
+        "{{ page_content }}"
+        '<div class="page-footer">{{ current_page_number }}</div>'
+    )
+    out2 = T._ensure_standard_content_stage(hf_no_container)
+    assert '<div class="suite-stage">{{ page_content }}</div>' in out2, "应包建 .suite-stage div"
+    m2 = re.search(r"\.suite-stage\s*\{([^}]*)\}", out2)
+    assert m2, "应注入 .suite-stage CSS 规则"
+
+    # 3) 已标准化（流水线上一轮 backfill 过）→ 幂等，不重复处理
+    out3 = T._ensure_standard_content_stage(out1)
+    assert out3 == out1, "已标准化的 header_footer 应幂等"
+    # 注：.suite-stage CSS 规则只出现一次
+    assert out3.count(".suite-stage{") == 1
+
+
+def test_suite_prompt_requires_standard_stage():
+    """A2 B1：生成 header_footer 的提示词（完整生成）必须要求标准 .suite-stage 容器。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI大模型"
+        scenario = "峰会"
+
+    outline = {"title": "T", "slides": [{"title": "a", "slide_type": "title"}]}
+    p = TemplatePrompts.build_template_suite_prompt(
+        project=P(), outline=outline, confirmed={"target_audience": "高管"},
+        template_html="<div>tpl</div>", creativity=5,
+    )
+    assert "suite-stage" in p, "完整生成 prompt 应要求 .suite-stage 标准容器"
+    assert ".suite-stage{position:absolute;top:130px" in p or "top:130px" in p
+    assert "overflow:hidden" in p
+
+
+def test_content_suite_constraint_mentions_standard_stage_and_column_basis():
+    """A2 B4 + A3：内容页约束 prompt 应说明 .suite-stage 容器与列宽基准 1160px。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": '<div class="suite-stage">{{ page_content }}</div>'
+                         "<style>.suite-stage{position:absolute;top:130px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>",
+        "design_tokens": "t",
+    }
+    c = SlideMediaService._build_content_suite_constraint(suite)
+    assert "suite-stage" in c
+    assert "1160px" in c, "应说明列宽基准为内宽 1160px"
+    assert "45%+55%+gap" in c, "应明示 prohibited 列宽组合"
+
+
+def test_overflow_feedback_optimizes_layout_not_reduces_content():
+    """A4 测量层：溢出重试的 feedback 应说'优化布局密度（min-height/缩字号/收紧行距）'，
+    **不应**出现'减少内容/删次要项'（按用户要求：不删内容、不裁切）。"""
+    import asyncio
+    from landppt.services.slide.slide_html_recovery_service import SlideHtmlRecoveryService
+
+    overflow_results = [
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0,
+         "overflows": [{"tag": "div", "cls": "section-card", "item_h": 266, "box_h": 198}],
+         "zone_overlap": None},
+        {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0, "overflows": [], "zone_overlap": None},
+    ]
+    calls = {"contexts": []}
+    ok_html = "<!DOCTYPE html><html><head></head><body><div>ok</div></body></html>"
+
+    class Host:
+        def _parse_header_lock(self, c): return None
+        def _parse_footer_lock(self, c): return None
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            calls["contexts"].append(prompt)
+            return type("R", (), {"content": ok_html if len(calls["contexts"]) > 1 else "<!DOCTYPE html><html><head></head><body><div class='section-card'>长内容</div></body></html>"})()
+        def _clean_html_response(self, content): return content
+        def _inject_anti_overflow_css(self, html): return html
+        def _validate_html_completeness(self, html):
+            return {"is_complete": True, "errors": [], "missing_elements": []}
+        def _aesthetic_preflight_check(self, *a, **k): return [], []
+        async def _apply_auto_layout_repair(self, html, *a, **k): return html
+        async def _generate_fallback_slide_html(self, *a, **k): return ok_html
+
+    svc = SlideHtmlRecoveryService(Host())
+    async def _m(html, page_number): return overflow_results.pop(0)
+    svc._measure_overflow = _m
+
+    async def run():
+        return await svc._generate_html_with_retry("ctx", "sys", {"title": "t"}, 11, 18, max_retries=3)
+
+    asyncio.run(run())
+    retry_ctx = calls["contexts"][1]
+    assert "优化布局密度" in retry_ctx
+    assert "min-height" in retry_ctx, "应建议用 min-height 代替固定 height"
+    assert "不要减少内容" in retry_ctx, "应明确告知不要减少内容"
+    assert "overflow:hidden 裁切" in retry_ctx, "应明确告知不要用 overflow:hidden 裁切"
+    assert "删次要项" not in retry_ctx, "不应再出现'减少内容/删次要项'导向"

@@ -12,6 +12,10 @@
     let outlineSuite = null;
     // 是否已选用套件库套件（无模板也能开始生成PPT）
     let librarySuiteSelected = false;
+    // 套件库列表缓存（选择弹窗内预览用）
+    let librarySuitesCache = [];
+    // 当前套件预览是否来自套件库（库套件不支持"重新生成此类型"）
+    let suitePreviewIsLibrary = false;
 
     // Extract project ID from URL path: /projects/{project_id}/template-selection
     let pathParts = window.location.pathname.split('/');
@@ -429,6 +433,80 @@
     }
 
     // 套件库选择
+    function escHtml(str) {
+        return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    // created_at 后端存的是 unix 秒（Float），也兼容 ISO 字符串
+    function formatSuiteDate(value) {
+        if (!value && value !== 0) return '';
+        const d = (typeof value === 'number') ? new Date(value * 1000) : new Date(value);
+        if (isNaN(d.getTime())) return '';
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function renderLibrarySuiteCard(s) {
+        const name = escHtml(s.suite_name || '未命名套件');
+        const hasCover = !!(s.cover || '').trim();
+        const previewInner = hasCover
+            ? `<iframe class="template-preview-iframe" id="lib-iframe-${s.id}"
+                   style="transform: translate(-50%, -50%) scale(0.20);"></iframe>
+               <div class="preview-overlay" onclick="event.stopPropagation(); previewLibrarySuite(${s.id})">
+                   <div class="preview-overlay-text">🔍 点击预览</div>
+               </div>`
+            : `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);font-size:0.8rem;text-align:center;padding:8px;">${name}</div>`;
+        return `
+            <div class="template-card" style="cursor:pointer;" onclick="selectLibrarySuite(${s.id})">
+                <div class="template-preview" id="lib-preview-${s.id}" style="height:120px;">
+                    ${previewInner}
+                </div>
+                <div class="template-info" style="padding:10px 12px;">
+                    <div style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">${name}</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">来源：${escHtml(s.template_name || '独立套件')} · 使用${s.usage_count || 0}次</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px;">创建时间：${formatSuiteDate(s.created_at) || '未知'}</div>
+                </div>
+            </div>`;
+    }
+
+    // 封面缩略图：把套件 cover HTML 塞进卡片 iframe，onload 后隐藏加载动画
+    function loadLibrarySuiteCover(s) {
+        const preview = document.getElementById(`lib-preview-${s.id}`);
+        const iframe = document.getElementById(`lib-iframe-${s.id}`);
+        if (!preview) return;
+        let cover = (s.cover || '').trim();
+        if (!iframe || !cover) {
+            preview.classList.add('loaded');
+            return;
+        }
+        // 轻量填充封面槽位，缩略图不显示原始占位符
+        cover = cover
+            .replace(/\{\{\s*cover_title\s*\}\}/g, s.suite_name || '套件预览')
+            .replace(/\{\{\s*cover_subtitle\s*\}\}/g, '')
+            .replace(/\{\{\s*cover_extra\s*\}\}/g, '')
+            .replace(/\{\{\s*[a-zA-Z_]+\s*\}\}/g, '');
+        if (!/<!DOCTYPE/i.test(cover) && !/<\/?html/i.test(cover)) {
+            cover = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>html,body{margin:0;padding:0;width:1280px;height:720px;overflow:hidden}</style></head><body>${cover}</body></html>`;
+        }
+        try {
+            const blob = new Blob([cover], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            iframe.onload = function () {
+                preview.classList.add('loaded');
+                setTimeout(() => URL.revokeObjectURL(url), 3000);
+            };
+            iframe.onerror = function () {
+                preview.classList.add('loaded');
+                URL.revokeObjectURL(url);
+            };
+            iframe.src = url;
+        } catch (err) {
+            preview.classList.add('loaded');
+        }
+    }
+
     async function openLibrarySuitePicker() {
         const libraryBtn = document.getElementById('useLibrarySuiteBtn');
         if (!libraryBtn || libraryBtn.disabled) return;
@@ -441,23 +519,14 @@
             const resp = await fetch('/api/template-suites/all');
             const data = await resp.json();
             const suites = data.suites || [];
+            librarySuitesCache = suites;
             if (!suites.length) {
                 list.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-secondary);">套件库为空。请先在「套件管理」页面从模板生成套件。</div>';
                 return;
             }
-            list.innerHTML = suites.map(s => `
-                <div class="template-card" style="cursor:pointer;" onclick="selectLibrarySuite(${s.id})">
-                    <div class="template-preview" style="height:120px;">
-                        <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);font-size:0.8rem;text-align:center;padding:8px;">
-                            ${s.suite_name}
-                        </div>
-                    </div>
-                    <div class="template-info" style="padding:10px 12px;">
-                        <div style="font-size:0.85rem;font-weight:700;color:var(--text-primary);">${s.suite_name}</div>
-                        <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">来源：${s.template_name || '独立套件'} · 使用${s.usage_count || 0}次</div>
-                    </div>
-                </div>
-            `).join('');
+            list.innerHTML = suites.map(s => renderLibrarySuiteCard(s)).join('');
+            // 等 iframe 挂载后逐卡加载封面缩略图（隐藏加载动画）
+            setTimeout(() => suites.forEach(s => loadLibrarySuiteCover(s)), 50);
         } catch (error) {
             list.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:32px; color:var(--text-secondary);">加载失败：${error.message}</div>`;
         }
@@ -495,6 +564,41 @@
         }
     }
 
+    // 库套件整页预览（封面/过渡/目录/内容页/结尾页）
+    async function previewLibrarySuite(suiteId) {
+        const modal = document.getElementById('suitePreviewModal');
+        const loading = document.getElementById('suitePreviewLoading');
+        const title = document.getElementById('suitePreviewTitle');
+        if (!modal) return;
+        const suite = (librarySuitesCache || []).find(x => x.id === suiteId);
+        modal.style.display = 'flex';
+        if (loading) loading.style.display = 'block';
+        suitePreviewIsLibrary = true;
+        // 库套件不支持"重新生成此类型"（那只对项目内套件生效），隐藏相关控件
+        const regenBtn = document.getElementById('regenerateSuitePartBtn');
+        if (regenBtn) regenBtn.style.display = 'none';
+        const regenInput = document.getElementById('regenerateSuitePartInput');
+        if (regenInput) regenInput.style.display = 'none';
+        if (title) title.textContent = `套件预览 - ${(suite && suite.suite_name) || '套件库套件'}`;
+        try {
+            const resp = await fetch(`/api/template-suites/${suiteId}/preview`);
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data?.detail || data?.message || '预览加载失败');
+            }
+            const data = await resp.json();
+            if (!data?.success || !data?.preview) throw new Error(data?.error || '套件数据为空');
+            suitePreviewData = data.preview;
+            showSuiteTab(currentSuiteTab);
+        } catch (error) {
+            console.error('Suite preview error:', error);
+            alert(`预览失败：${error.message}`);
+            closeSuitePreviewModal();
+        } finally {
+            if (loading) loading.style.display = 'none';
+        }
+    }
+
     // 套件预览
     let suitePreviewData = null;
     let currentSuiteTab = 'cover';
@@ -521,6 +625,7 @@
                 throw new Error(data?.error || '套件数据为空');
             }
             suitePreviewData = data.preview;
+            suitePreviewIsLibrary = false; // 项目内套件预览：恢复"重新生成此类型"
             if (data.template_name) {
                 document.getElementById('suitePreviewTitle').textContent = `套件预览 - ${data.template_name}`;
             }
@@ -546,9 +651,9 @@
         });
         if (loading) loading.style.display = 'block';
 
-        // 显示"重新生成此类型"按钮
+        // 显示"重新生成此类型"按钮（库套件预览时隐藏，仅项目内套件可重生）
         const regenBtn = document.getElementById('regenerateSuitePartBtn');
-        if (regenBtn) regenBtn.style.display = 'inline-flex';
+        if (regenBtn) regenBtn.style.display = suitePreviewIsLibrary ? 'none' : 'inline-flex';
         const regenInput = document.getElementById('regenerateSuitePartInput');
         if (regenInput) regenInput.style.display = 'none';
 
@@ -679,6 +784,7 @@
         const modal = document.getElementById('suitePreviewModal');
         if (modal) modal.style.display = 'none';
         suitePreviewData = null;
+        suitePreviewIsLibrary = false;
     }
 
     // 套件创意度：0=严格遵循母版，10=最具创意

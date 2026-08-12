@@ -50,20 +50,20 @@ class SlideHtmlRecoveryService:
 
     @staticmethod
     def _extract_suite_locked_colors(context: str) -> Optional[set]:
-        """从生成上下文提取模板套件"页头页脚强约束"块中锁定区的既定配色。
+        """从生成上下文提取模板套件"强约束"块中锁定区的既定配色。
 
-        套件模式下，prompt 上下文会包含 `**页头页脚强约束**` 及其 ```html``` 片段
-        （套件 header_footer 原文）。这些颜色是设计既定值，审美预检应跳过，
-        避免把套件自身的页头红/页脚黄误判为 LLM 的多 accent 套路。
-        解析失败返回 None（等价于不排除任何颜色）。
+        套件模式下，prompt 上下文会包含 `**页头页脚强约束**`/`**内容页强约束**`/
+        `**目录页强约束**` 及其 ```html``` 片段（套件 header_footer/catalog 原文）。
+        这些颜色是设计既定值，审美预检应跳过，避免把套件自身的页头红/页脚黄误判为
+        LLM 的多 accent 套路。解析失败返回 None（等价于不排除任何颜色）。
         """
-        if not context or "页头页脚强约束" not in context:
+        if not context or "强约束" not in context:
             return None
         try:
             import re as _re
-            # 提取页头页脚强约束代码块
+            # 提取强约束代码块（兼容"页头页脚强约束/内容页强约束/目录页强约束"三种标题）
             match = _re.search(
-                r"页头页脚强约束.*?```html\s*(.*?)```",
+                r"强约束.*?```html\s*(.*?)```",
                 context,
                 flags=_re.DOTALL,
             )
@@ -199,36 +199,68 @@ class SlideHtmlRecoveryService:
                     # 不触发重生成，避免不必要地反复烧 token。
                     ov_px = int(overflow.get('overflow_px', 0)) if overflow else 0
                     ov_ratio = float(overflow.get('overflow_ratio', 0)) if overflow else 0.0
-                    significant_overflow = overflow is not None and ov_px > 0 and (ov_px > 12 or ov_ratio > 0.02)
+                    # 局部溢出：正文/列表容器内容高超过容器高（如套件 .page-body 586 vs 544），
+                    # 顶层容器 absolute 定位不贡献 scrollHeight，只靠子元素 overflows 可感知。
+                    local_items = (overflow or {}).get('overflows') or []
+                    local_ov_px = max(
+                        [int(it.get('item_h', 0)) - int(it.get('box_h', 0)) for it in local_items] or [0]
+                    )
+                    # 页脚遮挡：正文/目录列表区（absolute 定位）内容底边越过页脚顶边 → 覆盖页尾
+                    # （套件内容页 .page-body / 目录页 .items 都有此问题，顶层 overflow 测不到）。
+                    zone = (overflow or {}).get('zone_overlap') or {}
+                    zone_ov_px = int(zone.get('overlap_px', 0)) if isinstance(zone, dict) else 0
+                    zone_cls = zone.get('zone_cls', '') if isinstance(zone, dict) else ''
+                    significant_overflow = overflow is not None and (
+                        (ov_px > 0 and (ov_px > 12 or ov_ratio > 0.02))
+                        or local_ov_px > 12
+                        or zone_ov_px > 12
+                    )
                     if significant_overflow:
                         ov_pct = round(ov_ratio * 100, 1)
-                        logger.info(f'📏 内容溢出 (slide {page_number}, attempt {attempt + 1}): 超出 {ov_px}px ({ov_pct}%)')
+                        logger.info(
+                            f'📏 内容溢出 (slide {page_number}, attempt {attempt + 1}): '
+                            f'顶层 {ov_px}px / 局部 {local_ov_px}px / 盖页脚 {zone_ov_px}px'
+                        )
                         # 把溢出摘要反馈给模型，让其主动减负；仅有重试次数才退回重生成
                         detail_items = overflow.get('overflows') or []
                         detail_text = ''
+                        reason_parts = []
+                        if zone_ov_px > 12:
+                            reason_parts.append(
+                                f"正文/目录区（{zone_cls[:30]}）内容底边超出页脚 {zone_ov_px}px，会盖住页脚——请优化布局密度（缩字号 1 级/收紧行距/转横向排列），使正文区不越过页脚"
+                            )
+                        elif ov_px > 0:
+                            reason_parts.append(f"主内容区总高度超出 1280×720 可用空间 {ov_px}px，底部内容会被裁切看不到——请优化布局密度")
+                        elif local_ov_px > 12:
+                            reason_parts.append(
+                                f"某个块/卡片内容高超出其容器 {local_ov_px}px，文字超出块底——"
+                                "**不要减少内容**：块改用 `min-height`/不写死 `height` 让其自适应内容高度；"
+                                "或缩小字号 1 级、收紧行距、增加列数/转横向堆叠，让同样信息量落在更紧凑空间"
+                            )
                         if detail_items:
                             parts = [f"{it.get('tag')}#{(it.get('cls') or '')[:30]}(子内容高{it.get('item_h')}px vs 容器高{it.get('box_h')}px)" for it in detail_items[:5]]
-                            detail_text = '\n    超出元素示例：' + '；'.join(parts)
+                            reason_parts.append('超出元素示例：' + '；'.join(parts))
+                        detail_text = '\n    ' + '\n    '.join(reason_parts)
                         if attempt < max_retries - 1:
                             logger.info(f'🔄 内容溢出，重新生成 slide {page_number}...')
                             await notify_retry_progress(
                                 page_number=page_number, total_pages=total_pages,
                                 attempt=attempt + 2, max_retries=max_retries,
                                 stage="overflow_retry",
-                                detail=f"第 {page_number} 页内容溢出 {ov_px}px（{ov_pct}%），重试（{attempt + 2}/{max_retries}）",
+                                detail=f"第 {page_number} 页内容溢出（顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px），重试（{attempt + 2}/{max_retries}）",
                             )
                             context = context + (
-                                f'\n\n    **上一轮主内容区溢出 {ov_px}px（约 {ov_pct}%），请修正：**\n    '
-                                f'- 主内容区总高度超出 1280×720 可用空间，底部内容会被裁切看不到。\n    '
-                                f'- 请减少内容/收紧布局：删次要项、缩字号 1 级、减行距、减少嵌套、转横向滚动或卡片堆叠、用 min-height 而非固定 height。\n    '
-                                f'- 宁可减少展示内容，也不可让总高超出容器被裁切。\n    '
+                                f'\n\n    **上一轮内容区域溢出（顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px），请修正：**\n'
+                                f'- **不要减少内容、不要加 overflow:hidden 裁切**；通过优化布局密度让已有信息量落进可用空间。\n'
+                                f'- 优化手段（按优先级）：块用 `min-height` 而非固定 `height` 让其自适应内容；缩字号 1 级 / 收紧行距 0.05~0.1；'
+                                f'增加列数或转横向排列；卡片堆叠用 flex+gap 自分配空间；左右空时收缩空侧列宽。\n'
                                 f'{detail_text}\n    '
                             )
                             continue
                         else:
-                            logger.warning(f'⚠️ 内容溢出 {ov_px}px 但已用尽重试次数，交付当前 slide {page_number}（靠防溢出 CSS 兜底）')
-                    elif ov_px > 0:
-                        logger.info(f'📏 轻微溢出 {ov_px}px (slide {page_number})，在阈值内，靠防溢出 CSS 自处理，不重生成')
+                            logger.warning(f'⚠️ 内容溢出 {max(ov_px, local_ov_px, zone_ov_px)}px 但已用尽重试次数，交付当前 slide {page_number}（靠防溢出 CSS 兜底）')
+                    elif ov_px > 0 or local_ov_px > 0 or zone_ov_px > 0:
+                        logger.info(f'📏 轻微溢出 (slide {page_number}): 顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px，在阈值内，不重生成')
                     # 7. 横向溢出检测（内容超出 1280px 宽度）
                     ovx_px = int(overflow.get('overflow_x_px', 0)) if overflow else 0
                     ovx_ratio = float(overflow.get('overflow_x_ratio', 0)) if overflow else 0.0
