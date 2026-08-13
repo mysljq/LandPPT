@@ -2146,3 +2146,114 @@ def test_overflow_feedback_optimizes_layout_not_reduces_content():
     assert "不要减少内容" in retry_ctx, "应明确告知不要减少内容"
     assert "overflow:hidden 裁切" in retry_ctx, "应明确告知不要用 overflow:hidden 裁切"
     assert "删次要项" not in retry_ctx, "不应再出现'减少内容/删次要项'导向"
+
+
+def test_brand_context_extracts_from_project_and_requirements():
+    """品牌上下文：topic/title/audience 从 confirmed_requirements；year 优先 project.created_at。"""
+    import asyncio
+    from types import SimpleNamespace
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    class FakePM:
+        def __init__(self, project):
+            self._p = project
+
+        async def get_project(self, project_id):
+            return self._p
+
+    class Host:
+        pass
+
+    # 有 project + created_at（2026-08-11 时间戳 ≈ 1786446950 → 2026 年）
+    project = SimpleNamespace(
+        topic="部门工作情况汇报", title="部门工作情况汇报 - general",
+        created_at=1786446950.66,
+    )
+    svc = SlideMediaService(Host())
+    svc.project_manager = FakePM(project)
+
+    async def run():
+        return await svc._get_brand_context("p1", {"topic": "部门工作情况汇报", "target_audience": "企业管理层"})
+
+    ctx = asyncio.run(run())
+    assert ctx["topic"] == "部门工作情况汇报"
+    assert ctx["year"] == "2026", "应从 created_at 推导年份"
+    assert ctx["audience"] == "企业管理层"
+
+    # 无 project（project_id=None）→ year 用当前年份，仍返回结构
+    svc2 = SlideMediaService(Host())
+    ctx2 = asyncio.run(svc2._get_brand_context(None, {"topic": "T"}))
+    assert ctx2["topic"] == "T"
+    assert ctx2["year"], "无 project 时也应给当前年份"
+
+
+def test_brand_replace_instruction_lists_year_topic_and_department():
+    """品牌替换指令：包含年份/部门/主题语义化替换要求，且明确不动结构/正文。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    ctx = {"topic": "部门工作情况汇报", "title": "部门工作情况汇报", "year": "2026", "audience": "企业管理层"}
+    inst = SlideMediaService._build_brand_replace_instruction(ctx)
+    assert "2026" in inst
+    assert "部门工作情况汇报" in inst
+    assert "DEPARTMENT · WORK REPORT" in inst, "应点名常见部门英文标识示例"
+    assert "只替换品牌装饰区" in inst or "不动正文" in inst
+    assert "不要臆造" in inst
+
+    assert SlideMediaService._build_brand_replace_instruction(None) == ""
+    assert SlideMediaService._build_brand_replace_instruction({}) == ""
+
+
+def test_content_constraint_injects_brand_instruction_when_context_given():
+    """内容页约束：传 brand_context 时注入品牌替换指令，不传时不影响。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {"header_footer": '<div class="suite-stage">{{ page_content }}</div>', "design_tokens": "t"}
+    base = SlideMediaService._build_content_suite_constraint(suite)
+    assert "品牌装饰文案语义化替换" not in base
+
+    with_brand = SlideMediaService._build_content_suite_constraint(
+        suite, {"topic": "T", "title": "T", "year": "2026"}
+    )
+    assert "品牌装饰文案语义化替换" in with_brand
+    assert "2026" in with_brand
+
+
+def test_extract_html_from_response_handles_code_fence():
+    """从 LLM 响应提取 HTML：兼容 ```html ... ``` 包裹与裸 HTML。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    fenced = "```html\n<!DOCTYPE html><html><head></head><body>x</body></html>\n```"
+    out = SlideMediaService._extract_html_from_response(fenced)
+    assert out.startswith("<!DOCTYPE html>") and "</html>" in out and "```" not in out
+
+    bare = "<!DOCTYPE html><html><body>y</body></html>"
+    assert SlideMediaService._extract_html_from_response(bare).startswith("<!DOCTYPE html>")
+
+    assert SlideMediaService._extract_html_from_response("") == ""
+    assert SlideMediaService._extract_html_from_response("没有 HTML") == ""
+
+
+def test_semantic_brand_replace_respects_flag_and_empty_context():
+    """品牌语义化替换：brand_context 为空或开关关闭时原样返回（不调 LLM）。"""
+    import asyncio
+    import os
+    from types import SimpleNamespace
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = "<!DOCTYPE html><html><body>2024</body></html>"
+    svc = SlideMediaService(SimpleNamespace())
+
+    # 空上下文 → 原样
+    assert asyncio.run(svc._semantic_brand_replace(html, None, 1)) == html
+
+    # 开关关闭 → 原样
+    old = os.getenv("ENABLE_BRAND_SEMANTIC_REPLACE")
+    os.environ["ENABLE_BRAND_SEMANTIC_REPLACE"] = "false"
+    try:
+        ctx = {"topic": "T", "title": "T", "year": "2026"}
+        assert asyncio.run(svc._semantic_brand_replace(html, ctx, 1)) == html
+    finally:
+        if old is None:
+            os.environ.pop("ENABLE_BRAND_SEMANTIC_REPLACE", None)
+        else:
+            os.environ["ENABLE_BRAND_SEMANTIC_REPLACE"] = old

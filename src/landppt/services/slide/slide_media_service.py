@@ -70,19 +70,22 @@ class SlideMediaService:
                     logger.warning(f'获取模板套件失败，按现状生成: {e}')
                     suite = None
                 if suite:
+                    # 品牌上下文：主题/标题/年份/受众，供内容页约束与封面/过渡品牌替换使用。
+                    brand_context = await self._get_brand_context(project_id, confirmed_requirements)
                     if page_type == "catalog" and str(suite.get("catalog") or "").strip():
-                        suite_constraint = self._build_catalog_suite_constraint(suite)
+                        suite_constraint = self._build_catalog_suite_constraint(suite, brand_context)
                         suite_skeleton_marker = self._extract_suite_skeleton_marker(
                             str(suite.get("catalog") or "")
                         )
                         # 目录页：只参考套件目录设计，忽略母版模板
                     else:
                         filled = await self._try_fill_suite_slide(
-                            suite, slide_data, page_number, total_pages, system_prompt
+                            suite, slide_data, page_number, total_pages, system_prompt,
+                            brand_context=brand_context,
                         )
                         if filled:
                             return filled
-                        suite_constraint = self._build_content_suite_constraint(suite)
+                        suite_constraint = self._build_content_suite_constraint(suite, brand_context)
                         suite_skeleton_marker = self._extract_suite_skeleton_marker(
                             str(suite.get("header_footer") or "")
                         )
@@ -372,8 +375,155 @@ class SlideMediaService:
             lines.append("套件字体：" + "、".join(font_pool[:3]))
         return "\n".join(lines)
 
+    async def _get_brand_context(
+        self,
+        project_id: Optional[str],
+        confirmed_requirements: Optional[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """从项目信息解析品牌替换上下文：主题/标题/年份/受众/描述。
+
+        年份优先取 project.created_at 的年份，其次当前年份；主题/标题/受众
+        取 confirmed_requirements（生成链路里最贴近当前任务的前置信息）。
+        """
+        confirmed = confirmed_requirements or {}
+        topic = str(confirmed.get("topic") or "").strip()
+        title = str(confirmed.get("title") or "").strip()
+        audience = str(confirmed.get("target_audience") or "").strip()
+        description = str(confirmed.get("description") or "").strip()
+        year = ""
+        if project_id:
+            try:
+                project = await self.project_manager.get_project(project_id)
+                if project:
+                    topic = topic or str(getattr(project, "topic", "") or "").strip()
+                    title = title or str(getattr(project, "title", "") or "").strip()
+                    created = getattr(project, "created_at", None)
+                    if isinstance(created, (int, float)) and created > 0:
+                        try:
+                            year = str(datetime.fromtimestamp(created).year)
+                        except (ValueError, OSError, OverflowError):
+                            year = ""
+            except Exception as exc:
+                logger.warning("获取项目品牌信息失败: %s", exc)
+        if not year:
+            year = str(datetime.now().year)
+        return {
+            "topic": topic or title or "",
+            "title": title or topic or "",
+            "year": year,
+            "audience": audience,
+            "description": description,
+        }
+
     @staticmethod
-    def _build_content_suite_constraint(suite: Dict[str, Any]) -> str:
+    def _build_brand_replace_instruction(brand_context: Optional[Dict[str, str]]) -> str:
+        """构建「品牌装饰文案语义化替换」指令（内容页约束 prompt 与封面/过渡 LLM 替换共用）。
+
+        核心：让 LLM 理解套件里的年份/部门英文标识/主题标语/文档号是**示例占位**，
+        替换为当前项目真实值；结构/样式/配色/正文一律不动。
+        """
+        if not brand_context:
+            return ""
+        topic = brand_context.get("topic") or ""
+        title = brand_context.get("title") or topic
+        year = brand_context.get("year") or ""
+        audience = brand_context.get("audience") or ""
+        lines = [
+            "**品牌装饰文案语义化替换**：套件骨架里的品牌装饰文案（年份数字如 `2024`/`2025`，"
+            "部门/机构英文标识如 `DEPARTMENT · WORK REPORT`、`DEPT. REPORT`、`CHINA MERCHANTS BANK`，"
+            "主题标语如 `ANNUAL REVIEW`、`ANNUAL REPORT`、`CONFIDENTIAL`、`INTERNAL USE ONLY`，"
+            "文档编号等）都是**示例占位**，不是要保留的真实内容。请理解它们的语义并替换为与当前项目一致的真实值：",
+        ]
+        if year:
+            lines.append(f"- 年份 → `{year}`（把骨架里的示例年份改成 `{year}`）")
+        if title:
+            lines.append(
+                f"- 部门/机构/主题 → 「{title}」（把 `DEPARTMENT · WORK REPORT`/`DEPT. REPORT` 等"
+                "英文部门标识，改成贴合本项目的英文或中文表述）"
+            )
+        if topic and topic != title:
+            lines.append(f"- 主题标语 → 基于「{topic}」改写（`ANNUAL REVIEW`/`ANNUAL REPORT` 等改成贴合主题的英文标语）")
+        if audience:
+            lines.append(f"- 如需体现受众，可用「{audience}」")
+        lines.append(
+            "- **只替换品牌装饰区的文字，不改结构/样式/配色/类名/CSS，也不动正文内容**。"
+            "- 无法判断的装饰文案保留原样或改成中性通用词，不要臆造。"
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_html_from_response(text: str) -> str:
+        """从 LLM 响应中提取完整 HTML（兼容 ```html ... ``` 代码块包裹）。"""
+        if not text:
+            return ""
+        t = text.strip()
+        low = t.lower()
+        for marker in ("```html", "```"):
+            if marker in low:
+                start = low.find(marker) + len(marker)
+                candidate = t[start:].strip()
+                end = candidate.rfind("```")
+                if end >= 0:
+                    candidate = candidate[:end].strip()
+                clow = candidate.lower()
+                if "<html" in clow:
+                    di = clow.find("<!doctype")
+                    hi = clow.find("<html")
+                    idx = di if di != -1 else hi
+                    return candidate[idx:].strip()
+        # 无代码块：优先 <!doctype html 起始，其次 <html
+        di = low.find("<!doctype")
+        hi = low.find("<html")
+        idx = di if di != -1 else hi
+        if idx >= 0:
+            return t[idx:].strip()
+        return ""
+
+    async def _semantic_brand_replace(
+        self,
+        html: str,
+        brand_context: Dict[str, str],
+        page_number: int,
+    ) -> str:
+        """封面/过渡/目录/结尾页的品牌装饰文案语义化替换（一次 LLM 调用）。
+
+        这些页面走确定性槽位填充（apply_suite_to_slide），没有 LLM 参与品牌理解；
+        这里在填充后加一次语义化替换。失败保留原样，不阻塞生成。
+        """
+        if not html or not brand_context:
+            return html
+        if not os.getenv("ENABLE_BRAND_SEMANTIC_REPLACE", "true").lower() in ("true", "1", "yes", "on"):
+            return html
+        instruction = self._build_brand_replace_instruction(brand_context)
+        if not instruction:
+            return html
+        try:
+            context = (
+                "下面是一页已生成好的 PPT 幻灯片 HTML。请把其中**品牌装饰文案**"
+                "（年份数字、部门/机构英文标识、主题标语、文档编号等示例占位）"
+                "理解其语义并替换为与当前项目一致的真实值。\n\n"
+                f"{instruction}\n\n"
+                "**输出要求**：\n"
+                "- 只改品牌装饰区的文字，不改结构/样式/配色/类名/CSS，也不动正文内容。\n"
+                "- 直接输出替换后的完整 HTML，不要用代码块包裹，不要附加任何解释。\n\n"
+                f"**原 HTML**：\n{html}"
+            )
+            response = await self._text_completion_for_role(
+                "creative", prompt=context, temperature=0.3, max_tokens=8000
+            )
+            raw = self._strip_think_tags((response.content or "").strip())
+            cleaned = self._extract_html_from_response(raw)
+            if cleaned and "<html" in cleaned.lower():
+                logger.info("第%s页品牌文案语义化替换完成", page_number)
+                return cleaned
+            logger.warning("第%s页品牌文案替换未返回有效 HTML，保留原样", page_number)
+            return html
+        except Exception as exc:
+            logger.warning("第%s页品牌文案语义化替换失败（保留原样）: %s", page_number, exc)
+            return html
+
+    @staticmethod
+    def _build_content_suite_constraint(suite: Dict[str, Any], brand_context: Optional[Dict[str, str]] = None) -> str:
         """Build the strong content-page constraint text.
 
         让 LLM 把套件的 header_footer 当作内容页的整页骨架逐字保留，只替换槽位；
@@ -406,6 +556,9 @@ class SlideMediaService:
             "用 `flex:1` 自适应或 `calc(100% - Npx)` 计算列宽，禁用 `45%+55%+gap` 这种必然超出容器右沿的组合；"
             "百分比列宽以容器内宽为基准，而非 1280px。",
         ]
+        brand_instruction = SlideMediaService._build_brand_replace_instruction(brand_context)
+        if brand_instruction:
+            lines.append(brand_instruction)
         if design_lang:
             lines.append(f"\n**套件整体设计语言（内容页配色/字体必须沿用）**\n{design_lang}")
         lines += [
@@ -419,7 +572,7 @@ class SlideMediaService:
         return "\n".join(lines)
 
     @staticmethod
-    def _build_catalog_suite_constraint(suite: Dict[str, Any]) -> str:
+    def _build_catalog_suite_constraint(suite: Dict[str, Any], brand_context: Optional[Dict[str, str]] = None) -> str:
         """Build the catalog-page reference constraint for LLM generation.
 
         目录页不再做确定性模板填充：把套件里的目录页当作设计骨架，让 LLM
@@ -438,6 +591,9 @@ class SlideMediaService:
             "- 不要照抄参考页里的示例章节文案，但**整页的设计语言、类名、结构、配色必须沿用参考页**（不得改成其它配色/布局）。",
             "- **配色/字体必须与套件整本一致**：背景、标题色、编号色、分隔色等都从套件整体色板取色，严禁另造新色（如套件是红主题就不能生成蓝色目录页）。",
         ]
+        brand_instruction = SlideMediaService._build_brand_replace_instruction(brand_context)
+        if brand_instruction:
+            lines.append(brand_instruction)
         if design_lang:
             lines.append(f"\n**套件整体设计语言（目录页配色/字体必须沿用）**\n{design_lang}")
         lines += [
@@ -454,6 +610,7 @@ class SlideMediaService:
         page_number: int,
         total_pages: int,
         system_prompt: str,
+        brand_context: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Fill a cover/transition slide from the suite template.
 
@@ -478,6 +635,9 @@ class SlideMediaService:
                 filled, remaining, slide_data, page_number, total_pages, system_prompt
             )
             filled = TemplateSuiteRenderer.fill_suite_template(filled, slot_values)
+        # 品牌装饰文案语义化替换：套件 cover/transition/catalog/ending 里的年份/部门/主题
+        # 标语是示例占位，这里再让 LLM 理解并替换为项目真实值（开关可关）。
+        filled = await self._semantic_brand_replace(filled, brand_context, page_number)
         logger.info("第%s页使用模板套件渲染（封面/过渡/目录/结尾）", page_number)
         return filled
 
