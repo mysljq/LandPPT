@@ -47,7 +47,7 @@
             <h3 class="section-heading" style="text-align: center; margin-bottom: 20px;">AI 提供者详情配置</h3>
 
             <div class="card" style="padding: 0; overflow: hidden;">
-                {% for provider in ["landppt", "openai", "anthropic", "google"] %}
+                {% for provider in ["landppt", "openai", "openai_backup", "anthropic", "google"] %}
                 <div class="provider-accordion-item" data-provider="{{ provider }}"
                     style="border-bottom: 1px solid #eee;">
                     <!-- 提供者标题行 -->
@@ -59,6 +59,7 @@
                             <span style="font-weight: 600; color: #333;">
                                 {% if provider == "landppt" %}LandPPT
                                 {% elif provider == "openai" %}OpenAI
+                                {% elif provider == "openai_backup" %}备用 OpenAI
                                 {% elif provider == "anthropic" %}Anthropic Claude
                                 {% elif provider == "google" %}Google Gemini
                                 {% endif %}
@@ -195,6 +196,30 @@
                                         style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 200px; overflow-y: auto; z-index: 100; margin-top: 4px;">
                                     </div>
                                 </div>
+                            </div>
+                            {% elif provider == "openai_backup" %}
+                            <div class="form-group" style="margin: 0;">
+                                <label style="font-size: 0.85em; color: #555; margin-bottom: 4px; display: block;">API
+                                    Key</label>
+                                <input type="password" name="openai_backup_api_key" placeholder="sk-..."
+                                    value="{{ current_config.get('openai_backup_api_key', '') }}"
+                                    style="width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em;">
+                            </div>
+                            <div class="form-group" style="margin: 0;">
+                                <label style="font-size: 0.85em; color: #555; margin-bottom: 4px; display: block;">Base
+                                    URL</label>
+                                <input type="text" name="openai_backup_base_url"
+                                    value="{{ current_config.get('openai_backup_base_url', '') }}"
+                                    placeholder="https://api.openai.com/v1"
+                                    style="width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em;">
+                            </div>
+                            <div class="form-group" style="margin: 0; grid-column: 1 / -1;">
+                                <label
+                                    style="font-size: 0.85em; color: #555; margin-bottom: 4px; display: block;">默认模型</label>
+                                <input type="text" name="openai_backup_model"
+                                    value="{{ current_config.get('openai_backup_model', '') }}"
+                                    placeholder="gpt-4o"
+                                    style="width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em;">
                             </div>
                             {% elif provider == "anthropic" %}
                             <div class="form-group" style="margin: 0;">
@@ -415,7 +440,7 @@
                                             {% if current_config.get(role.provider_field) == "ollama" %}
                                             <option value="ollama" selected hidden>ollama</option>
                                             {% endif %}
-                                            {% for provider in ["landppt", "openai", "anthropic", "google"] %}
+                                            {% for provider in ["landppt", "openai", "openai_backup", "anthropic", "google"] %}
                                             <option value="{{ provider }}" {% if
                                                 current_config.get(role.provider_field)==provider %}selected{% endif %}>
                                                 {{ provider }}</option>

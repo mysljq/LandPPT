@@ -21,9 +21,10 @@ class TemplatePrompts:
     HF_RESET_CSS = "*{margin:0;padding:0;box-sizing:border-box}"
     HF_CANVAS_RULE = "html,body{width:1280px;height:720px;margin:0;overflow:hidden}"
     # A2 标准内容舞台容器——度量与约束 prompt 共同锚定 .suite-stage。
-    # 固定 px 边界、overflow:hidden 兜住溢出；top 避开页头底边、bottom 不压页脚。
+    # 固定 px 边界、overflow:hidden 兜住溢出；top 避开页头底边（实测可达 135px，
+    # 统一 155px 留安全间距）、bottom 不压页脚。
     HF_STAGE_RULE = (
-        ".suite-stage{position:absolute;top:130px;left:60px;right:60px;"
+        ".suite-stage{position:absolute;top:155px;left:60px;right:60px;"
         "bottom:60px;z-index:5;overflow:hidden}"
     )
 
@@ -488,10 +489,17 @@ class TemplatePrompts:
    ```css
    {TemplatePrompts.HF_STAGE_RULE}
    ```
-   （`top:130px` 避开页头底边、`bottom:60px` 不压页脚、`overflow:hidden` 兜住溢出。`left/right:60px` 与页头页脚对齐，内宽 1160px——所有 flex/grid 列宽基准由此固定。）
-6. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
-7. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
-8. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
+   （`top:155px` 避开页头底边、`bottom:60px` 不压页脚、`overflow:hidden` 兜住溢出。`left/right:60px` 与页头页脚对齐，内宽 1160px——所有 flex/grid 列宽基准由此固定。）
+6. **品牌文案必须写成品牌槽位，不得固化具体值**（生成 PPT 时会替换为项目真实值：年份/部门/主题/标语）：
+   - 年份 → `{{{{ brand_year }}}}`
+   - 部门/单位名 → `{{{{ brand_org }}}}`
+   - 主题/标题标识 → `{{{{ brand_topic }}}}`
+   - 标语/保密标识/补充英文 → `{{{{ brand_tagline }}}}`
+   - 编号 → `{{{{ brand_code }}}}`
+   适用位置：封面页眉页脚、过渡页 footer、目录页眉、结尾页，以及 header_footer 的页头右侧/页脚左侧。**不要写死 `2024`/`DEPARTMENT`/`CHINA MERCHANTS BANK`/`ANNUAL REVIEW`/`CONFIDENTIAL` 这类示例品牌值**；保持通用设计框架即可。
+7. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
+8. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
+9. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
 
 {TemplatePrompts._build_creativity_guidance(creativity)}
 
@@ -534,7 +542,7 @@ class TemplatePrompts:
         "header_footer": {
             "key": "header_footer",
             "label": "内容页页头页脚",
-            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。**片段自带 <style> 必须包含全局 reset 与画布约束**：`*{margin:0;padding:0;box-sizing:border-box}` 和 `html,body{width:1280px;height:720px;margin:0;overflow:hidden}`（保证内容页 body 无默认 margin、无滚动条）。**必须含标准正文舞台容器 `<div class=\"suite-stage\">{{ page_content }}</div>`，规则固定为 `.suite-stage{position:absolute;top:130px;left:60px;right:60px;bottom:60px;z-index:5;overflow:hidden}`**（top 避开页头底边、bottom 不压页脚、内宽 1160px 作为 flex/grid 列宽基准）。",
+            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。**片段自带 <style> 必须包含全局 reset 与画布约束**：`*{margin:0;padding:0;box-sizing:border-box}` 和 `html,body{width:1280px;height:720px;margin:0;overflow:hidden}`（保证内容页 body 无默认 margin、无滚动条）。**必须含标准正文舞台容器 `<div class=\"suite-stage\">{{ page_content }}</div>`，规则固定为 `.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;z-index:5;overflow:hidden}`**（top 避开页头底边、bottom 不压页脚、内宽 1160px 作为 flex/grid 列宽基准）。**品牌文案（年份/部门/主题/标语）必须写成品牌槽位**：年份→{{brand_year}}、部门→{{brand_org}}、主题→{{brand_topic}}、标语→{{brand_tagline}}、编号→{{brand_code}}，不要写死 2024/DEPARTMENT/ANNUAL REVIEW/CONFIDENTIAL 等示例值。",
         },
     }
 

@@ -166,6 +166,8 @@ async def web_ai_config(
 
         if name == "openai":
             return _has_value(current_config.get("openai_api_key"))
+        if name == "openai_backup":
+            return _has_value(current_config.get("openai_backup_api_key"))
         if name == "anthropic":
             return _has_value(current_config.get("anthropic_api_key"))
         if name in {"google", "gemini"}:
@@ -181,7 +183,7 @@ async def web_ai_config(
 
     provider_status = {
         provider: _is_provider_configured(provider)
-        for provider in ["landppt", "openai", "anthropic", "google", "ollama"]
+        for provider in ["landppt", "openai", "openai_backup", "anthropic", "google", "ollama"]
     }
 
     return templates.TemplateResponse("pages/settings/ai_config.html", {
@@ -215,6 +217,9 @@ async def get_ai_providers_config(
         "openai_use_responses_api": current_config.get("openai_use_responses_api", False),
         "openai_enable_reasoning": current_config.get("openai_enable_reasoning", False),
         "openai_reasoning_effort": current_config.get("openai_reasoning_effort", "medium"),
+        "openai_backup_api_key": current_config.get("openai_backup_api_key", ""),
+        "openai_backup_base_url": current_config.get("openai_backup_base_url", ""),
+        "openai_backup_model": current_config.get("openai_backup_model", ""),
         "anthropic_api_key": current_config.get("anthropic_api_key", ""),
         "anthropic_base_url": current_config.get("anthropic_base_url", ""),
         "anthropic_model": current_config.get("anthropic_model", ""),
@@ -640,6 +645,7 @@ async def test_provider_connection(
         if not base_url:
             default_urls = {
                 'openai': 'https://api.openai.com/v1',
+                'openai_backup': 'https://api.openai.com/v1',
                 'anthropic': DEFAULT_ANTHROPIC_BASE_URL,
                 'google': DEFAULT_GOOGLE_BASE_URL,
                 'landppt': 'https://api.openai.com/v1',
@@ -651,6 +657,7 @@ async def test_provider_connection(
         if not model:
             default_models = {
                 'openai': 'gpt-3.5-turbo',
+                'openai_backup': 'gpt-4o',
                 'anthropic': DEFAULT_ANTHROPIC_MODEL,
                 'google': DEFAULT_GOOGLE_MODEL,
                 'landppt': 'gpt-4o',

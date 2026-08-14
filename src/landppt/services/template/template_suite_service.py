@@ -36,6 +36,419 @@ class TemplateSuiteService:
         return getattr(self._service, name)
 
     # ------------------------------------------------------------------
+    # 品牌槽位（生成 PPT 时用真实项目值替换套件里固化的品牌文案）
+    # ------------------------------------------------------------------
+    # 槽位名：套件（尤其新生成套件）里把年份/部门/主题/标语/编号写成这些槽位，
+    # 生成 PPT 前统一替换为项目真实值。老套件固化的文案则走 LLM 语义分析识别。
+    BRAND_SLOT_YEAR = "{{brand_year}}"
+    BRAND_SLOT_ORG = "{{brand_org}}"
+    BRAND_SLOT_TOPIC = "{{brand_topic}}"
+    BRAND_SLOT_TAGLINE = "{{brand_tagline}}"
+    BRAND_SLOT_CODE = "{{brand_code}}"
+    BRAND_SLOTS = (
+        BRAND_SLOT_YEAR, BRAND_SLOT_ORG, BRAND_SLOT_TOPIC,
+        BRAND_SLOT_TAGLINE, BRAND_SLOT_CODE,
+    )
+    # 语义分析的角色：year/org/topic/tagline/code 会被替换；skip = 通用结构标签不替换。
+    BRAND_ROLES = ("year", "org", "topic", "tagline", "code", "skip")
+    # 结构槽位（生成时有专门机制填充，不是品牌占位）——语义分析即使误归为品牌角色也不替换。
+    STRUCTURE_SLOTS = frozenset({
+        "cover_title", "cover_subtitle", "cover_extra",
+        "transition_title", "transition_subtitle", "transition_extra",
+        "catalog_title", "catalog_subtitle", "catalog_extra", "catalog_items",
+        "ending_title", "ending_subtitle", "ending_extra", "ending_items",
+        "page_title", "page_content", "current_page_number", "total_page_count",
+    })
+    # 角色 → 项目值槽位 的映射（用于把 LLM 归类的角色转成真实值来源）。
+    _ROLE_TO_SLOT = {
+        "year": BRAND_SLOT_YEAR,
+        "org": BRAND_SLOT_ORG,
+        "topic": BRAND_SLOT_TOPIC,
+        "tagline": BRAND_SLOT_TAGLINE,
+        "code": BRAND_SLOT_CODE,
+    }
+
+    @staticmethod
+    @staticmethod
+    def _brand_role_by_name(name: str) -> Optional[str]:
+        """按槽位名关键词推断品牌角色（不依赖 LLM 语义分析）。
+
+        用于 LLM 分析失败/未覆盖时的确定性兜底，让自定义品牌槽位名
+        （{{ fiscal_year }} / {{ dept }} / {{ company }} / {{ brand_year }}…）
+        也能被识别并替换为项目真实值。返回 None 表示无法判定为品牌槽位。
+        """
+        n = (name or "").strip().lower()
+        if not n:
+            return None
+        if "year" in n:
+            return "year"
+        if any(
+            k in n
+            for k in ("org", "dept", "department", "company", "bank", "team",
+                      "division", "unit", "institution", "group", "agency", "branch")
+        ):
+            return "org"
+        if any(k in n for k in ("topic", "subject", "theme")):
+            return "topic"
+        if any(k in n for k in ("tagline", "slogan", "motto", "confidential", "internal", "privacy")):
+            return "tagline"
+        if any(k in n for k in ("code", "serial", "number", "issue")) or n.startswith("no"):
+            return "code"
+        return None
+
+    @staticmethod
+    def _merge_heuristic_brand_roles(
+        suite: Dict[str, Any],
+        llm_roles: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """把 LLM 语义分析结果与名字启发式归类合并。
+
+        LLM 结果优先；对 LLM 未覆盖的自定义品牌槽位，按槽位名关键词兜底归类
+        （year/dept/company/topic/tagline/code）。结构槽位（cover_title 等）始终跳过，
+        即使名字命中关键词也不归类（如 item_1_title 含 "title" 但不含 topic 类关键词，
+        且本来就不在品牌词表）。
+        """
+        import re as _re
+
+        llm_roles = dict(llm_roles or {})
+        merged: Dict[str, str] = dict(llm_roles)
+        for key in ("header_footer", "cover", "transition", "catalog", "ending"):
+            html = str(suite.get(key) or "")
+            for m in _re.finditer(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}", html):
+                name = m.group(1)
+                if name in TemplateSuiteService.STRUCTURE_SLOTS:
+                    continue
+                # LLM 已归类（key 可能是 "{{ name }}" 或 "name"）→ 保留 LLM 结果
+                if m.group(0) in llm_roles or name in llm_roles:
+                    continue
+                role = TemplateSuiteService._brand_role_by_name(name)
+                if role:
+                    merged[m.group(0)] = role
+        return merged
+
+    @staticmethod
+    def _brand_preview_sample(name: str) -> Optional[str]:
+        """预览时按槽位名启发式推断品牌示例值（复用 _brand_role_by_name 归类）。
+
+        覆盖 {{brand_year}}/{{year}}/{{company_year}}… 及未来 LLM 发挥的各种品牌槽位名；
+        未命中的品牌槽位返回 None，由调用方回退 "[name 示例]"。
+        """
+        role = TemplateSuiteService._brand_role_by_name(name)
+        if role == "year":
+            return "2026"
+        if role == "org":
+            return "XX部门"
+        if role == "topic":
+            return "年度工作报告"
+        if role == "tagline":
+            return "DEPARTMENT WORK REPORT"
+        if role == "code":
+            return "No.01"
+        return None
+
+    @staticmethod
+    def _resolve_brand_values(project: Any, confirmed_requirements: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """从项目数据解析品牌真实值（年份/主题/部门/标语/编号）。
+
+        年份：project.created_at 优先，其次当前年；主题：project.topic/title；
+        部门：从主题常见前缀提取（部门/集团/公司/银行/团队），未命中则空；
+        标语/编号：confirmed_requirements 里的 brand_tagline / brand_code，未配置则空。
+        """
+        import datetime as _dt
+
+        confirmed = confirmed_requirements or {}
+        topic = str(
+            getattr(project, "topic", "") or confirmed.get("topic") or ""
+        ).strip()
+        if not topic:
+            topic = str(getattr(project, "title", "") or "").strip()
+
+        year = ""
+        ts = getattr(project, "created_at", None)
+        if ts:
+            try:
+                year = str(_dt.datetime.fromtimestamp(float(ts)).year)
+            except (TypeError, ValueError, OSError):
+                year = ""
+        if not year:
+            year = str(_dt.datetime.now().year)
+
+        org = ""
+        if topic:
+            for kw in ("部门", "集团", "公司", "银行", "团队", "工厂", "研究院"):
+                if topic.startswith(kw):
+                    org = kw
+                    break
+
+        return {
+            TemplateSuiteService.BRAND_SLOT_YEAR: year,
+            TemplateSuiteService.BRAND_SLOT_TOPIC: topic,
+            TemplateSuiteService.BRAND_SLOT_ORG: org,
+            TemplateSuiteService.BRAND_SLOT_TAGLINE: str(confirmed.get("brand_tagline") or "").strip(),
+            TemplateSuiteService.BRAND_SLOT_CODE: str(confirmed.get("brand_code") or "").strip(),
+        }
+
+    @staticmethod
+    def _extract_visible_texts_from_html(html: str, max_len: int = 60) -> List[str]:
+        """提取 HTML 里可见文本节点与槽位 token（跳过 <style>/<script> 与纯符号）。
+
+        槽位 {{...}} 也保留作为语义分析项——LLM 需要看到它们才能把自定义品牌槽位
+        （如 {{year}}/{{dept}}）归到对应角色；结构槽位由 prompt 与代码双保险归 skip。
+        """
+        import re as _re
+
+        if not html:
+            return []
+        stripped = _re.sub(r"<style[^>]*>.*?</style>", " ", html, flags=_re.DOTALL | _re.IGNORECASE)
+        stripped = _re.sub(r"<script[^>]*>.*?</script>", " ", stripped, flags=_re.DOTALL | _re.IGNORECASE)
+        texts = _re.findall(r">([^<>]{1," + str(max_len) + r"})<", stripped)
+        out: List[str] = []
+        for t in texts:
+            t = t.strip()
+            if not t:
+                continue
+            # 纯符号/数字不构成品牌占位（页码等）
+            if _re.fullmatch(r"[\s\d·.\-/—|:]+", t):
+                continue
+            if t not in out:
+                out.append(t)
+        return out
+
+    @staticmethod
+    def _extract_visible_texts_from_suite(suite: Dict[str, Any]) -> List[str]:
+        """汇总套件各页面可见文本（去重），供品牌语义分析。"""
+        out: List[str] = []
+        for key in ("header_footer", "cover", "transition", "catalog", "ending"):
+            for t in TemplateSuiteService._extract_visible_texts_from_html(str(suite.get(key) or "")):
+                if t not in out:
+                    out.append(t)
+        return out
+
+    @staticmethod
+    def _replace_brand_in_html(
+        html: str,
+        brand_values: Dict[str, str],
+        roles: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """在 HTML 里做品牌替换：①标准品牌槽位 {{brand_xxx}} → 真实值；②语义归类项
+        （槽位名 {{year}}/{{dept}} 或老套件固化文案 "2025"/"DEPARTMENT"）→ 真实值。
+
+        语义归类项由 LLM 给出角色（year/org/topic/tagline/code/skip）：
+        - 槽位形式（{{...}}）→ 直接全局替换（槽位不会出现在 CSS 里）；
+        - 纯文本 → 仅替换正文节点（跳过 <style>/<script>）；
+        - skip 角色 / 结构槽位（cover_title 等，即使误归为品牌角色）→ 绝不替换。
+        项目值缺失的角色（如 tagline 未配置）→ 跳过，保持原样。
+        """
+        if not html:
+            return html
+        import re as _re
+        out = html
+        # ① 标准品牌槽位：正则匹配兼容 `{{brand_year}}` 与 `{{ brand_year }}`（带空格）
+        # 写法（生成套件的 prompt 转义后常产出带空格写法）；值空也清掉，避免残留。
+        for slot, value in brand_values.items():
+            name = slot.strip("{}").strip()
+            out = _re.sub(r"{{\s*" + _re.escape(name) + r"\s*}}", value, out)
+        # ② 语义归类项（槽位名或纯文本）
+        if roles:
+            for key, role in roles.items():
+                if role == "skip" or not key:
+                    continue
+                # 结构槽位即使被误归为品牌角色也绝不替换（由专门的填充机制处理）
+                bare = key.strip()
+                if bare.startswith("{{") and bare.endswith("}}"):
+                    bare = bare[2:-2].strip()
+                if bare in TemplateSuiteService.STRUCTURE_SLOTS:
+                    continue
+                replacement = brand_values.get(TemplateSuiteService._ROLE_TO_SLOT.get(role, ""), "")
+                if not replacement:
+                    continue
+                if key.startswith("{{") and key.endswith("}}"):
+                    out = _re.sub(r"{{\s*" + _re.escape(bare) + r"\s*}}", replacement, out)
+                elif key in out:
+                    out = TemplateSuiteService._replace_text_node_safe(out, key, replacement)
+        return out
+
+    @staticmethod
+    def _replace_text_node_safe(html: str, old: str, new: str) -> str:
+        """仅替换 HTML 正文里的文本（跳过 <style>/<script>），避免误伤 CSS/JS 里的子串。"""
+        import re as _re
+
+        def _repl(m: _re.Match) -> str:
+            seg = m.group(0)
+            if seg.lstrip().lower().startswith(("<style", "<script")):
+                return seg  # CSS/JS 段原样保留，不替换
+            return seg.replace(old, new)
+
+        pattern = _re.compile(
+            r"(?s)<style[^>]*>.*?</style>|<script[^>]*>.*?</script>|" + _re.escape(old)
+        )
+        return pattern.sub(_repl, html)
+
+    @staticmethod
+    def _instantiate_suite_brand(
+        suite: Dict[str, Any],
+        brand_values: Dict[str, str],
+        roles: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """返回品牌实例化后的套件副本（只影响生成 PPT 用，不改库数据/预览）。
+        对 header_footer/cover/transition/catalog/ending 做品牌槽位 + 固化文案替换。"""
+        updated = dict(suite)
+        for key in ("header_footer", "cover", "transition", "catalog", "ending"):
+            html = str(updated.get(key) or "")
+            if not html:
+                continue
+            branded = TemplateSuiteService._replace_brand_in_html(html, brand_values, roles)
+            if branded != html:
+                updated[key] = branded
+        return updated
+
+    # 套件品牌语义分析结果缓存（按套件内容哈希）
+    _brand_roles_cache: Dict[str, Dict[str, str]] = {}
+
+    @classmethod
+    def _build_brand_analysis_prompt(cls, texts: List[str]) -> str:
+        """构建套件品牌文案语义分析提示词：识别固化文案/槽位的角色。"""
+        structure_slots = "、".join(sorted(TemplateSuiteService.STRUCTURE_SLOTS))
+        listed = "\n".join(f"- {t}" for t in texts)
+        return f"""请分析下面这套 PPT 套件里可见的文案与槽位（{{{{...}}}}）分别是什么角色。
+
+角色定义：
+- "year"：年份（如 2025、{{{{brand_year}}}}、{{{{year}}}}、{{{{company_year}}}}）
+- "org"：部门/单位/机构（如 DEPARTMENT、{{{{brand_org}}}}、{{{{dept}}}}、{{{{department}}}}、{{{{company}}}}）
+- "topic"：主题/标题标识（如 ANNUAL REVIEW、{{{{brand_topic}}}}）
+- "tagline"：标语/保密标识/补充英文（如 CONFIDENTIAL / INTERNAL USE、DEPT. REPORT、{{{{brand_tagline}}}}）
+- "code"：编号（如 No.01、{{{{brand_code}}}}）
+- "skip"：**结构槽位 / 通用结构标签，不是品牌占位，绝不替换**
+
+**以下结构槽位一律归 "skip"**（生成时有专门机制填充页面标题/页码/正文/章节，不是品牌值）：
+{structure_slots}
+
+判定原则：
+- 槽位名或文案语义上是"年份/部门/主题/标语/编号"品牌占位 → 归对应角色（无论名字是不是 brand_ 开头）。
+- 结构槽位（上面列表）或纯结构标签（SECTION/CHAPTER/PAGE/THANKS/CONTENTS/NOTE/KEY TAKEAWAYS/TRANSITION 等）→ 一律 skip。
+- 只对希望生成时替换成真实品牌值的项归类。
+
+可见文案/槽位列表：
+{listed}
+
+只输出 JSON 对象，键为原文案或槽位、值为角色，不要解释：
+{{"原文案或槽位1": "role", "原文案或槽位2": "role"}}
+"""
+
+    async def _analyze_suite_brand_roles(self, suite: Dict[str, Any]) -> Dict[str, str]:
+        """LLM 语义分析套件固化的品牌文案角色（year/org/topic/tagline/code/skip）。
+
+        结果按套件内容哈希缓存（套件不变则复用，避免每次生成都烧 LLM）。
+        分析失败/未命中返回 {}（不替换、不阻断生成）。
+        """
+        import hashlib as _h
+        import json as _j
+
+        if not suite:
+            return {}
+        key_src = "".join(str(suite.get(k) or "") for k in ("header_footer", "cover", "transition", "catalog", "ending"))
+        key = _h.md5(key_src.encode("utf-8")).hexdigest()
+        cache = type(self)._brand_roles_cache
+        if key in cache:
+            return cache[key]
+
+        texts = self._extract_visible_texts_from_suite(suite)
+        if not texts:
+            return {}
+        prompt = self._build_brand_analysis_prompt(texts)
+        try:
+            response = await self._text_completion_for_role(
+                "template", prompt=prompt, temperature=0.2
+            )
+            content = response.content if hasattr(response, "content") else str(response)
+            parsed = self._parse_brand_roles_json(content)
+            if parsed:
+                cache[key] = parsed
+                return parsed
+        except Exception as exc:
+            logger.warning("套件品牌语义分析失败（保持原样）: %s", exc)
+        return {}
+
+    @staticmethod
+    def _parse_brand_roles_json(content: str) -> Dict[str, str]:
+        """解析 LLM 输出的品牌角色 JSON（兼容代码块/前后散文/损坏引号）。"""
+        import json as _j
+        import re as _re
+
+        if not content:
+            return {}
+        text = content.strip()
+        m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=_re.DOTALL)
+        if m:
+            text = m.group(1)
+        else:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end > start:
+                text = text[start:end + 1]
+        try:
+            data = _j.loads(text)
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        valid = set(TemplateSuiteService.BRAND_ROLES)
+        return {
+            str(k).strip(): str(v).strip()
+            for k, v in data.items()
+            if str(k).strip() and str(v).strip() in valid
+        }
+
+    async def instantiate_suite_brand_for_project(
+        self,
+        project_id: str,
+        suite: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """生成 PPT 专用：把套件品牌槽位/固化文案替换为项目真实值，返回副本。
+
+        仅影响本次生成（不改库数据、不影响预览/套件编辑）。
+        - 新套件含品牌槽位 {{brand_xxx}} → 直接替换为项目值。
+        - 老套件无槽位 → LLM 语义分析识别固化文案角色（按套件缓存），非 skip 才替换。
+        - 品牌值来源：project.created_at（年份）、project.topic（主题）、标题前缀（部门）。
+        任何失败保持原套件生成，不阻断。
+        """
+        if not suite or not isinstance(suite, dict):
+            return suite
+        try:
+            project = None
+            confirmed: Dict[str, Any] = {}
+            if project_id:
+                project = await self.project_manager.get_project(project_id)
+                if project is not None:
+                    cr = getattr(project, "confirmed_requirements", None) or {}
+                    confirmed = dict(cr) if isinstance(cr, dict) else {}
+            brand_values = self._resolve_brand_values(project, confirmed)
+            # 总是跑 LLM 语义分析（按套件内容哈希缓存，套件不变不重复烧）：
+            # 覆盖 ①标准品牌槽位、②LLM 自由发挥的自定义品牌槽位（{{year}}/{{dept}}…）、
+            # ③老套件固化文案（2025/DEPARTMENT…）。结构槽位（cover_title 等）双保险归 skip。
+            roles = await self._analyze_suite_brand_roles(suite)
+            # 名字启发式兜底：LLM 分析失败/未覆盖的自定义品牌槽位，按槽位名关键词归类
+            # （fiscal_year→year、dept→org…），让品牌替换不完全依赖 LLM 成功。
+            roles = self._merge_heuristic_brand_roles(suite, roles)
+            updated = self._instantiate_suite_brand(suite, brand_values, roles)
+            # 精确适配内容区 top：按套件实测 header 底边（各套件差异大，id=13 底 115 /
+            # id=15 底 135 / id=14 底 235），用精确值覆盖 .suite-stage top，并写入
+            # `_suite_stage_top` 供生成 prompt 使用（LLM 生成内容页沿用正确 top）。
+            try:
+                stage_top = await self._measure_stage_top(updated)
+                if stage_top:
+                    updated["header_footer"] = self._ensure_standard_content_stage(
+                        updated.get("header_footer") or "", stage_top=stage_top
+                    )
+                    updated["_suite_stage_top"] = stage_top
+            except Exception as exc:
+                logger.warning("套件内容区 top 精确适配失败（用默认值）: %s", exc)
+            return updated
+        except Exception as exc:
+            logger.warning("套件品牌实例化失败（按原套件生成）: %s", exc)
+            return suite
+
+    # ------------------------------------------------------------------
     # Hash / validity
     # ------------------------------------------------------------------
 
@@ -296,9 +709,12 @@ class TemplateSuiteService:
                 # 正文占位槽位保留原样，交给 _wrap_content_preview 替换成预览占位提示。
                 if name == "page_content":
                     continue
+                # 品牌槽位（{{brand_year}}/{{year}}/{{dept}}…）按名字启发式给真实感示例值，
+                # 而非 "[name 示例]"。
+                sample = TemplateSuiteService._brand_preview_sample(name)
                 filled = _re.sub(
                     r"{{\s*" + _re.escape(name) + r"\s*}}",
-                    f"[{name} 示例]",
+                    sample if sample is not None else f"[{name} 示例]",
                     filled,
                 )
             return filled
@@ -460,85 +876,212 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
     # 必须固定 px 边界（含安全间距）+ overflow:hidden 兜住溢出，使内容不覆盖
     # 页头分割线 / 页脚，并让 measure_content_overflow 能选对容器测出真实溢出。
     _STAGE_CLASS = "suite-stage"
-    _STAGE_TOP_MIN = 116        # ≥ 页头底边（实测 ~115px）+ 4px 安全间距
+    # 标准 top：≥ 页头底边 + 20px 安全间距。实测不同套件 header 底边差异大——
+    # 套件 id=13 底 ~115px，id=15 底 ~135px（.suite-header top:60 + 内容高 + padding）。
+    # 统一 top:155 保证绝大多数套件内容区不压页头分割线。
+    _STAGE_TOP_MIN = 155
     _STAGE_BOTTOM_MIN = 60      # ≥ 页脚顶边
     _STAGE_LEFT_MAX = 1220      # ≤ 1280 - 60
     _STAGE_RIGHT_MIN = 60       # left ≥ 60
     _STANDARD_STAGE_CSS = (
-        ".suite-stage{position:absolute;top:130px;left:60px;right:60px;"
+        ".suite-stage{position:absolute;top:155px;left:60px;right:60px;"
         "bottom:60px;z-index:5;overflow:hidden}"
     )
     # 已知可识别为"内容区"的类名（含 suite 自由发挥的常见命名）
     # —— 仅作文档说明；实际匹配在 _ensure_standard_content_stage 里用局部正则。
 
     @classmethod
-    def _ensure_standard_content_stage(cls, header_footer: str) -> str:
+    def _strip_redundant_master_skeleton(cls, header_footer: str) -> str:
+        """移除套件 header_footer 里多余的母版骨架注入块。
+
+        当套件自带 suite- 前缀骨架（.suite-canvas/.suite-bg-paper 等）完整时，
+        母版骨架块是 _ensure_header_footer_complete 旧正则（不识别 suite- 前缀）
+        误判"缺骨架"后注入的 → 双骨架（body 里两个完整页面 = 上下两个完整页）。
+        这里裁掉母版块（注释 + .canvas 装饰 div），保留套件自骨架。
+
+        仅当套件确有 suite- 自骨架时才清理——避免误删 id=2/4 这类"母版骨架即套件骨架"的套件。
+        """
+        hf = header_footer or ""
+        marker = "<!-- 母版内容页骨架"
+        if marker not in hf:
+            return hf
+        # 仅当套件自带 suite- 前缀骨架才清理
+        if not (
+            "suite-canvas" in hf or "suite-bg-paper" in hf or "suite-frame-corner" in hf
+        ):
+            return hf
+        m_start = hf.find(marker)
+        if m_start == -1:
+            return hf
+        # 套件自骨架起点：母版块后的第一个 <style（套件 CSS）或 suite-canvas div
+        cut = None
+        for m in ("<style", '<div class="suite-canvas"'):
+            idx = hf.find(m, m_start)
+            if idx != -1 and (cut is None or idx < cut):
+                cut = idx
+        if cut and cut > m_start:
+            return hf[:m_start] + hf[cut:]
+        return hf
+
+    @classmethod
+    def _ensure_standard_content_stage(cls, header_footer: str, stage_top: Optional[int] = None) -> str:
         """A2：标准化套件内容区标识——保证 header_footer 含一个标准、可测量的
         正文舞台容器 `.suite-stage`，固定 px 边界、overflow:hidden 兜住溢出。
 
         三种情况统一收敛到 `.suite-stage`：
-        1. 已有 `.suite-stage` 或 CSS 规则：跳过（已标准化）；
+        1. 已有 `.suite-stage` 或 CSS 规则：校验 top，不足则覆盖；
         2. 有现成内容区 div（.page-content/.page-body/.main-stage 等）：
-           追加 `suite-stage` class，并注入标准 CSS 覆盖错误的 top/bottom；
+           追加 `suite-stage` class，并注入标准 CSS；
         3. 无内容区容器、`{{page_content}}` 散落：包一个新 `.suite-stage` div。
 
-        设计为只加规则、不破坏现有视觉结构与 :root 变量引用。
+        stage_top：精确适配值（生成前按套件实测 header 底边得到）；None 用默认
+        `_STAGE_TOP_MIN`（155）。top 不足时追加 `!important` 覆盖，不破坏原规则。
         """
         import re as _re
 
         if not header_footer:
             return header_footer
         hf = header_footer
+        # 清理重复母版骨架注入：套件自骨架（suite- 前缀）已完整时，移除生成时误注入的
+        # 母版 `.canvas` 骨架块（否则 body 里两个完整骨架 = 上下两个完整页）。
+        hf = cls._strip_redundant_master_skeleton(hf)
         stage = cls._STAGE_CLASS
-
-        # 情况 1：已标准化（CSS 规则 + div class 都在）
-        if (
-            _re.search(r'\.' + stage + r'\s*\{', hf)
-            and (f'"{stage}"' in hf or f"'{stage}'" in hf or f' {stage}"' in hf or f' {stage}\'' in hf)
-        ):
-            return hf
-
-        # 情况 2：已有现成内容区 div → 追加 suite-stage class
-        # 匹配 class 含内容区关键词的 div 开标签（双引号或单引号）
-        content_div_re = _re.compile(
-            r'(<div\b[^>]*class=["\'])([^"\']*(?:page-content|page-body|main-stage|hf-stage|content-area|content-main|body-area|stage|canvas|slide-page|hf-canvas|slide)\b[^"\']*)(["\'])',
-            _re.IGNORECASE,
+        target_top = stage_top if stage_top and stage_top > 0 else cls._STAGE_TOP_MIN
+        stage_css = (
+            f".{stage}{{position:absolute;top:{target_top}px;left:60px;right:60px;"
+            f"bottom:60px;z-index:5;overflow:hidden}}"
         )
-        m = content_div_re.search(hf)
-        if m:
-            old_classes = m.group(2)
-            if stage not in old_classes.split():
-                new_classes = old_classes.rstrip() + (" " if old_classes.strip() else "") + stage
-                hf = hf[: m.start(1)] + m.group(1) + new_classes + m.group(3) + hf[m.end():]
-        else:
-            # 情况 3：无内容区容器 → 把 {{page_content}} 包进新 div（保留单/双大括号写法）
-            if "{{ page_content }}" in hf or "{{page_content}}" in hf:
-                for token in ("{{ page_content }}", "{{page_content}}"):
-                    if token in hf:
-                        hf = hf.replace(
-                            token,
-                            f'<div class="{stage}">{token}</div>',
-                            1,
-                        )
-                        break
+
+        has_rule = bool(_re.search(r'\.' + stage + r'\s*\{', hf))
+        has_class = bool(
+            f'"{stage}"' in hf or f"'{stage}'" in hf or f' {stage}"' in hf or f' {stage}\''
+            in hf
+        )
+
+        if not has_rule or not has_class:
+            # 情况 2：已有现成内容区 div → 追加 suite-stage class
+            content_div_re = _re.compile(
+                r'(<div\b[^>]*class=["\'])([^"\']*(?:page-content|page-body|main-stage|hf-stage|content-area|content-main|body-area|stage|canvas|slide-page|hf-canvas|slide)\b[^"\']*)(["\'])',
+                _re.IGNORECASE,
+            )
+            m = content_div_re.search(hf)
+            if m:
+                old_classes = m.group(2)
+                if stage not in old_classes.split():
+                    new_classes = old_classes.rstrip() + (" " if old_classes.strip() else "") + stage
+                    hf = hf[: m.start(1)] + m.group(1) + new_classes + m.group(3) + hf[m.end():]
             else:
-                # 既无容器也无占位槽：什么都不做，避免破坏结构
-                return hf
-
-        # 注入标准边界 CSS（若片段已有 <style> 块就追加到末尾块，否则新增一块）
-        standard_css = cls._STANDARD_STAGE_CSS
-        if _re.search(r"<style[^>]*>", hf):
-            # 追加到片段里最后一个 </style> 之前
-            last_close = hf.rfind("</style>")
-            if last_close != -1:
-                # 避免重复插入（虽然前面已 check，但追加时再守一次）
-                if not _re.search(r'\.' + stage + r'\s*\{', hf):
-                    hf = hf[:last_close] + standard_css + "\n" + hf[last_close:]
-        else:
+                # 情况 3：无内容区容器 → 把 {{page_content}} 包进新 div
+                if "{{ page_content }}" in hf or "{{page_content}}" in hf:
+                    for token in ("{{ page_content }}", "{{page_content}}"):
+                        if token in hf:
+                            hf = hf.replace(token, f'<div class="{stage}">{token}</div>', 1)
+                            break
+                # 既无容器也无占位槽：只补 CSS（若缺），不破坏结构
             if not _re.search(r'\.' + stage + r'\s*\{', hf):
-                hf = hf + f"\n<style>{standard_css}</style>"
+                # 注入标准边界 CSS
+                if _re.search(r"<style[^>]*>", hf):
+                    last_close = hf.rfind("</style>")
+                    if last_close != -1:
+                        hf = hf[:last_close] + stage_css + "\n" + hf[last_close:]
+                else:
+                    hf = hf + f"\n<style>{stage_css}</style>"
 
+        # 统一末尾：确保 .suite-stage top ≥ target_top（不足则 !important 覆盖）。
+        # 覆盖老套件/LLM 生成的过小 top（如 130px < header 底边 135px → 交叉）。
+        if f"top:{target_top}px !important" not in hf:
+            m_top = _re.search(r'\.' + stage + r'\s*\{\s*[^}]*?top\s*:\s*(\d+)px', hf)
+            top_val = int(m_top.group(1)) if m_top else 0
+            if top_val < target_top:
+                last_close = hf.rfind("</style>")
+                if last_close != -1:
+                    hf = (
+                        hf[:last_close]
+                        + f".{stage}{{top:{target_top}px !important}}\n"
+                        + hf[last_close:]
+                    )
         return hf
+
+    # 套件内容区 top 测量结果缓存（按 header_footer 内容哈希；套件不变不重复渲染）
+    _stage_top_cache: Dict[str, int] = {}
+
+    async def _measure_stage_top(self, suite: Dict[str, Any]) -> Optional[int]:
+        """生成前测量套件 header 底边 → 该套件内容区 top 精确值（header_bottom + 20px 余量）。
+
+        不同套件 header 结构差异大（实测 id=13 底 115px / id=15 底 135px / id=14 底 235px），
+        固定值无法适配；按套件实测后，把该值用于①backfill 覆盖 .suite-stage top、②生成 prompt。
+        Playwright 不可用/失败返回 None（调用方回退默认 stage top）。
+        """
+        import hashlib as _h
+        import re as _re
+
+        hf = str(suite.get("header_footer") or "")
+        if not hf:
+            return None
+        key = _h.md5(hf.encode("utf-8")).hexdigest()
+        cache = type(self)._stage_top_cache
+        if key in cache:
+            return cache[key]
+        try:
+            from ..pyppeteer_pdf_converter import get_pdf_converter, _loop_supports_subprocess
+            if not _loop_supports_subprocess():
+                return None
+            converter = get_pdf_converter()
+            if converter is None:
+                return None
+            import tempfile
+            import os as _os
+            import shutil as _sh
+
+            # 代表性标题填充 {{page_title}}（空标题时 header 高度偏小）；品牌槽位已由调用方替换
+            hf_filled = _re.sub(r"{{\s*page_title\s*}}", "部门工作情况汇报", hf)
+            full = f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{hf_filled}</body></html>"
+            tmp = tempfile.mkdtemp(prefix="stage_top_")
+            fp = _os.path.join(tmp, "s.html")
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(full)
+            try:
+                await converter._get_or_create_browser()
+                page = await converter.context.new_page()
+                await page.set_viewport_size({"width": 1280, "height": 720})
+                await page.goto(f"file://{_os.path.abspath(fp)}", wait_until="domcontentloaded")
+                await converter._wait_for_fonts_and_resources(page, max_wait_time=3000)
+                header_bottom = await page.evaluate(
+                    """() => {
+                        // 以 .suite-stage 当前 top 为基准，找其上方所有块状可见元素的最大底边。
+                        // 覆盖各种 header 结构（header/.page-header/.suite-header 等，不依赖类名）；
+                        // header 若已侵入 stage 区域（bottom > stageTop）也计入，表示冲突需下移。
+                        const stage = document.querySelector('.suite-stage');
+                        const stageTop = stage ? Math.round(stage.getBoundingClientRect().top) : 155;
+                        const skip = /bg-|paper|grid|deco|corner|shadow|overlay|grain|ticks|stamp|accent|mark|dot|line|seal/;
+                        let maxBottom = 0;
+                        document.querySelectorAll('body *').forEach(function (el) {
+                            const r = el.getBoundingClientRect();
+                            // 排除装饰/小元素，也排除撑满整页的骨架容器（高度 >200 的是画布/背景层）
+                            if (r.height < 6 || r.height > 200 || r.width < 100) return;
+                            if (r.top >= stageTop - 2) return;   // 只在 stage 上方
+                            if (r.bottom <= 0) return;
+                            const cls = el.className && el.className.toString ? String(el.className) : '';
+                            if (skip.test(cls)) return;          // 纯背景/装饰
+                            if (r.bottom > maxBottom) maxBottom = r.bottom;
+                        });
+                        return maxBottom > 0 ? Math.round(maxBottom) : null;
+                    }"""
+                )
+                await page.close()
+                if not header_bottom or header_bottom <= 0:
+                    return None
+                stage_top = header_bottom + 20
+                cache[key] = stage_top
+                return stage_top
+            finally:
+                try:
+                    _sh.rmtree(tmp, ignore_errors=True)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("测量套件内容区 top 失败（用默认值）: %s", exc)
+            return None
 
     @staticmethod
     def _ensure_header_footer_complete(header_footer: str, template_html: str, root_variables: str) -> str:
@@ -568,7 +1111,10 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         )
         has_bg_layer = ("bg-paper" in hf) or ("bg-grid" in hf)
         has_skeleton_css = bool(
-            _re.search(r'\.(?:canvas|hf-canvas|bg-paper|bg-grid|frame-corner)\s*\{', hf)
+            # 兼容前缀：套件骨架类名可能是 .canvas / .bg-paper（母版风格）或
+            # .suite-canvas / .suite-bg-paper（现代 suite- 前缀）。旧正则只认无前缀
+            # 导致把完整套件骨架误判为"缺骨架"，生成时重复注入母版骨架 → 双骨架。
+            _re.search(r'\.[\w-]*(?:canvas|hf-canvas|bg-paper|bg-grid|frame-corner)\s*\{', hf)
         )
         has_stage = bool(
             _re.search(r'class="[^"]*(?:main-stage|hf-stage|main-stage-placeholder|stage|content-main|body-area|content-area)[^"]*"', hf)
@@ -856,6 +1402,11 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         raw = (response.content or "").strip()
         logger.info("套件 AI 调用完成，耗时 %.1fs，响应 %s 字符", time.time() - _t0, len(raw))
         if not raw:
+            # 思考模型可能把输出预算全花在 <think> 上被截断，think 过滤后为 0 字符。
+            logger.warning("套件 AI 返回空响应，发起免思考重试...")
+            raw = await self._retry_suite_empty(prompt) or ""
+            logger.info("套件 AI 免思考重试完成，耗时 %.1fs，响应 %s 字符", time.time() - _t0, len(raw))
+        if not raw:
             raise ValueError("AI 服务返回空响应")
 
         payload = self._extract_json_from_response(raw)
@@ -923,6 +1474,28 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             return None
         return self._extract_json_from_response(response.content or "")
 
+    async def _retry_suite_empty(self, prompt: str) -> Optional[str]:
+        """Recover from an empty AI response caused by thinking-model truncation.
+
+        MiniMax M 系列 / DeepSeek-R1 等思考模型可能把全部输出 token 花在
+        <think>…</think> 思考过程上，未及输出可见 JSON 就被截断（finish_reason=length），
+        随后 think 过滤把内容清空为 0 字符。重试时明确要求跳过思考、直接输出 JSON，
+        并放宽输出上限，让可见 JSON 有足够空间。
+        """
+        retry_prompt = (
+            prompt
+            + "\n\n【重要】请直接输出上述要求的 JSON 结果：不要输出任何思考过程，"
+            "不要输出 <think> 标签或解释文字，直接给出可被 json.loads 解析的 JSON 对象。"
+        )
+        try:
+            response = await self._text_completion_for_role(
+                "template", prompt=retry_prompt, temperature=0.2, max_output_tokens=16000
+            )
+        except Exception as exc:
+            logger.warning("套件空响应重试调用失败: %s", exc)
+            return None
+        return (response.content or "").strip()
+
     _SUITE_PART_KEYS = ("cover", "transition", "catalog", "ending", "header_footer")
 
     async def regenerate_suite_part(
@@ -979,6 +1552,9 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             "template", prompt=prompt, temperature=0.7, max_output_tokens=12000
         )
         raw = (response.content or "").strip()
+        if not raw:
+            logger.warning("套件局部重生成 AI 返回空响应，发起免思考重试...")
+            raw = await self._retry_suite_empty(prompt) or ""
         if not raw:
             raise ValueError("AI 服务返回空响应")
 

@@ -1141,6 +1141,59 @@ def test_generate_suite_payload_repairs_invalid_json():
     assert "page_title" in result["header_footer"]
 
 
+def test_generate_suite_payload_recovers_from_empty_response():
+    """思考模型输出被 think 过滤成空串时，应触发免思考重试并成功生成套件。"""
+    import asyncio
+    import json
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    calls = []
+
+    class FakeService:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            calls.append((role, kwargs.get("max_output_tokens"), kwargs.get("temperature"), "不要输出任何思考过程" in prompt))
+            if len(calls) == 1:
+                # 第一次：provider 层已把 <think> 块过滤掉，返回空串（思考模型截断）
+                return type("R", (), {"content": ""})()
+            # 第二次（免思考重试）：严格 JSON
+            content = json.dumps({
+                "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+                "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>",
+                "header_footer": (
+                    '<div class="hf-canvas"><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                ),
+                "design_tokens": "字体栈：A；强调色：#1a2b3c",
+            }, ensure_ascii=False)
+            return type("R", (), {"content": content})()
+
+    svc = TemplateSuiteService(FakeService())
+    template = {
+        "id": 2,
+        "template_name": "商务模板",
+        "html_template": (
+            "<!DOCTYPE html><html><head><style>:root{--accent:#1a2b3c}</style></head>"
+            "<body><header>H</header><main>M</main><footer>F</footer></body></html>"
+        ),
+    }
+
+    async def run():
+        return await svc._generate_suite_payload(
+            template, creativity=5, reference_outline=False, project=None
+        )
+
+    result = asyncio.run(run())
+    assert len(calls) == 2, "空响应后应触发一次免思考重试"
+    assert calls[0][2] == 0.7, "主调用应使用默认温度"
+    assert calls[1][2] == 0.2, "免思考重试应使用较低温度"
+    assert calls[1][3] is True, "重试提示词应包含免思考指令"
+    assert result["cover"].startswith("<!DOCTYPE html>")
+    assert "cover_title" in result["cover"]
+    assert "page_title" in result["header_footer"]
+
+
 def test_stream_generate_suite_from_images_uses_vision_and_missing():
     """有截图的类型走视觉生成（含图片/图标提取），缺失类型走文本补全，组装成完整套件。"""
     import asyncio
@@ -2050,7 +2103,7 @@ def test_ensure_standard_content_stage_backfills_existing_and_missing():
     out1 = T._ensure_standard_content_stage(hf_with_pc)
     assert "page-content suite-stage" in out1, "应在 page-content div 上追加 suite-stage class"
     m = re.search(r"\.suite-stage\s*\{([^}]*)\}", out1)
-    assert m and "top:130px" in m.group(1) and "overflow:hidden" in m.group(1), "应注入标准 CSS 覆盖错误 top"
+    assert m and "top:155px" in m.group(1) and "overflow:hidden" in m.group(1), "应注入标准 CSS 覆盖错误 top"
 
     # 2) 无内容容器、{{page_content}} 散落（id=1 形态）→ 包新 .suite-stage div
     hf_no_container = (
@@ -2070,6 +2123,102 @@ def test_ensure_standard_content_stage_backfills_existing_and_missing():
     assert out3.count(".suite-stage{") == 1
 
 
+def test_ensure_standard_stage_overrides_insufficient_top():
+    """回归：已有 .suite-stage 但 top 过小（如套件 id=15 的 130px < header 底边 135px，
+    内容与分割线交叉）时，backfill 追加 `top:155px !important` 覆盖；top 足够则幂等跳过。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    # top 不足（130px，套件 id=15 形态）→ 追加 !important 覆盖
+    hf_insufficient = (
+        "<style>.suite-header{position:absolute;top:60px;padding-bottom:20px;border-bottom:1px solid #000}"
+        ".suite-stage{position:absolute;top:130px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>"
+        '<div class="suite-header">{{ page_title }}</div>'
+        '<div class="suite-stage">{{ page_content }}</div>'
+    )
+    out = T._ensure_standard_content_stage(hf_insufficient)
+    assert "top:155px !important" in out, "top 不足时应追加 !important 覆盖"
+    # 幂等：再次 backfill 不重复追加
+    out2 = T._ensure_standard_content_stage(out)
+    assert out2 == out, "覆盖后应幂等"
+
+    # top 足够（160px）→ 跳过，不追加
+    hf_enough = (
+        "<style>.suite-stage{position:absolute;top:160px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>"
+        '<div class="suite-stage">{{ page_content }}</div>'
+    )
+    out3 = T._ensure_standard_content_stage(hf_enough)
+    assert out3 == hf_enough, "top 足够时保持原样"
+
+
+def test_ensure_standard_stage_accepts_exact_stage_top():
+    """动态精确适配：生成前按套件实测 header 底边得到 stage_top（如 id=14 的 108），
+    传给 backfill 时用它覆盖（而非默认 155）；未传则用默认。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    hf = (
+        "<style>.page-header{position:absolute;top:34px;padding-bottom:16px}"
+        ".suite-stage{position:absolute;top:108px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>"
+        '<div class="page-header">{{ page_title }}</div>'
+        '<div class="suite-stage">{{ page_content }}</div>'
+    )
+    # 传入精确 stage_top（=108）→ 已满足，不重复覆盖
+    out = T._ensure_standard_content_stage(hf, stage_top=108)
+    assert "top:108px !important" not in out, "top 已满足精确值时不重复覆盖"
+
+    # 传入更大的精确值（header 更高，如 200）→ 覆盖为 200
+    out2 = T._ensure_standard_content_stage(hf, stage_top=200)
+    assert "top:200px !important" in out2, "应覆盖为传入的精确 stage_top"
+
+    # 不传 → 默认 _STAGE_TOP_MIN（155）→ 108 不足则覆盖为 155
+    out3 = T._ensure_standard_content_stage(hf)
+    assert "top:155px !important" in out3, "未传 stage_top 时用默认 155 覆盖不足值"
+
+
+def test_instantiate_records_suite_stage_top(monkeypatch):
+    """instantiate 后应记录精确 stage_top 到 suite 的 _suite_stage_top（供生成 prompt 用）。"""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite = {
+        "header_footer": (
+            "<style>.page-header{position:absolute;top:34px}.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>"
+            '<div class="page-header">{{ page_title }}</div>'
+            '<div class="suite-stage">{{ page_content }}</div>'
+        ),
+        "cover": "", "transition": "", "catalog": "", "ending": "",
+    }
+
+    class P:
+        topic = "部门工作情况汇报"
+        title = "部门工作情况汇报"
+        created_at = 1786446950.6611688
+
+    class PM:
+        async def get_project(self, pid, user_id=None):
+            return P()
+
+    class Host:
+        project_manager = PM()
+
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            return type("R", (), {"content": "{}"})()
+
+    async def _fake_measure(self, suite):
+        # 模拟测量不可用 → 返回 None（回退默认），验证不崩且 _suite_stage_top 不设
+        return None
+
+    monkeypatch.setattr(T, "_measure_stage_top", _fake_measure)
+    svc = T(Host())
+
+    async def run():
+        return await svc.instantiate_suite_brand_for_project("p1", suite)
+
+    branded = asyncio.run(run())
+    # 测量不可用时保持默认 155（不设 _suite_stage_top，不崩、不覆盖）
+    assert "_suite_stage_top" not in branded
+    assert "top:155px" in branded["header_footer"]
+
+
 def test_suite_prompt_requires_standard_stage():
     """A2 B1：生成 header_footer 的提示词（完整生成）必须要求标准 .suite-stage 容器。"""
     from landppt.services.prompts.template_prompts import TemplatePrompts
@@ -2084,7 +2233,7 @@ def test_suite_prompt_requires_standard_stage():
         template_html="<div>tpl</div>", creativity=5,
     )
     assert "suite-stage" in p, "完整生成 prompt 应要求 .suite-stage 标准容器"
-    assert ".suite-stage{position:absolute;top:130px" in p or "top:130px" in p
+    assert ".suite-stage{position:absolute;top:155px" in p or "top:155px" in p
     assert "overflow:hidden" in p
 
 
@@ -2094,7 +2243,7 @@ def test_content_suite_constraint_mentions_standard_stage_and_column_basis():
 
     suite = {
         "header_footer": '<div class="suite-stage">{{ page_content }}</div>'
-                         "<style>.suite-stage{position:absolute;top:130px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>",
+                         "<style>.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>",
         "design_tokens": "t",
     }
     c = SlideMediaService._build_content_suite_constraint(suite)
@@ -2148,112 +2297,470 @@ def test_overflow_feedback_optimizes_layout_not_reduces_content():
     assert "删次要项" not in retry_ctx, "不应再出现'减少内容/删次要项'导向"
 
 
-def test_brand_context_extracts_from_project_and_requirements():
-    """品牌上下文：topic/title/audience 从 confirmed_requirements；year 优先 project.created_at。"""
+class _BrandProject:
+    topic = "部门工作情况汇报"
+    title = "部门工作情况汇报"
+    created_at = 1786446950.6611688  # 2026-08
+
+
+class _BrandProjectNoOrg:
+    topic = "AI大模型行业趋势"
+    title = "AI大模型行业趋势"
+    created_at = 1786418885.0
+
+
+def test_resolve_brand_values():
+    """品牌值解析：年份取自 created_at、主题取自 topic、部门从主题前缀提取。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    v = T._resolve_brand_values(_BrandProject())
+    assert v["{{brand_year}}"] == "2026"
+    assert v["{{brand_topic}}"] == "部门工作情况汇报"
+    assert v["{{brand_org}}"] == "部门"
+
+    v2 = T._resolve_brand_values(_BrandProjectNoOrg())
+    assert v2["{{brand_org}}"] == "", "非部门前缀主题不提取 org"
+    assert v2["{{brand_year}}"] == "2026"
+
+
+def test_replace_brand_in_html_slots_and_legacy():
+    """品牌替换：槽位替换 + 老套件固化文案（skip 保留、CSS 里的不误伤、tagline 空保留）。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    values = T._resolve_brand_values(_BrandProject())
+
+    # 槽位
+    html = '<div class="header-right">{{brand_year}} · {{brand_topic}}</div>'
+    out = T._replace_brand_in_html(html, values, {})
+    assert "{{brand_year}}" not in out and "{{brand_topic}}" not in out
+    assert "2026" in out and "部门工作情况汇报" in out
+
+    # 老套件：year 替换、skip 保留、CSS 内 2025 不替换
+    roles = {"2025": "year", "SECTION": "skip"}
+    html2 = "<span>2025</span><span>SECTION</span><style>.x{content:\"2025\"}</style>"
+    out2 = T._replace_brand_in_html(html2, values, roles)
+    assert "2026" in out2
+    assert "SECTION" in out2
+    assert 'content:"2025"' in out2, "CSS 里的年份不应被替换"
+
+    # tagline 无真实值（空）→ 固化 tagline 文案保留原样
+    out3 = T._replace_brand_in_html("<span>DEPT. REPORT</span>", values, {"DEPT. REPORT": "tagline"})
+    assert "DEPT. REPORT" in out3, "tagline 未配置真实值时保留原样"
+
+    # tagline 有真实值 → 替换
+    values_tag = dict(values)
+    values_tag["{{brand_tagline}}"] = "TEAM WORK REPORT"
+    out4 = T._replace_brand_in_html("<span>DEPT. REPORT</span>", values_tag, {"DEPT. REPORT": "tagline"})
+    assert "TEAM WORK REPORT" in out4 and "DEPT. REPORT" not in out4
+
+
+def test_analyze_suite_brand_roles_cached():
+    """LLM 语义分析识别套件固化文案角色，且按套件内容缓存（不重复烧 LLM）。"""
     import asyncio
-    from types import SimpleNamespace
-    from landppt.services.slide.slide_media_service import SlideMediaService
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
 
-    class FakePM:
-        def __init__(self, project):
-            self._p = project
-
-        async def get_project(self, project_id):
-            return self._p
+    suite = {
+        "header_footer": "<div class='header-right'>DEPT. REPORT · 2025</div><div class='footer-left'>SECTION TRANSITION</div>",
+        "cover": "<h1>ANNUAL REPORT</h1><span>CHAPTER</span>",
+        "transition": "", "catalog": "", "ending": "",
+    }
+    calls = {"n": 0}
 
     class Host:
-        pass
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            calls["n"] += 1
+            return type("R", (), {"content": '{"DEPT. REPORT": "tagline", "2025": "year", "ANNUAL REPORT": "topic", "SECTION TRANSITION": "skip", "CHAPTER": "skip"}'})()
 
-    # 有 project + created_at（2026-08-11 时间戳 ≈ 1786446950 → 2026 年）
-    project = SimpleNamespace(
-        topic="部门工作情况汇报", title="部门工作情况汇报 - general",
-        created_at=1786446950.66,
+    svc = T(Host())
+
+    async def main():
+        roles = await svc._analyze_suite_brand_roles(suite)
+        assert roles.get("2025") == "year"
+        assert roles.get("SECTION TRANSITION") == "skip"
+        assert roles.get("ANNUAL REPORT") == "topic"
+        # 缓存：第二次不再调 LLM
+        await svc._analyze_suite_brand_roles(suite)
+        return roles
+
+    roles = asyncio.run(main())
+    assert calls["n"] == 1, "缓存后不应重复调 LLM"
+
+
+def test_instantiate_suite_brand_for_project():
+    """生成前品牌实例化：老套件固化年份替换为真实值、原套件不变（不影响预览/库）。"""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite = {
+        "header_footer": "<div class='footer-left'>DEPT. REPORT · 2025</div><div class='page-content'>{{page_content}}</div>",
+        "cover": "<h1>ANNUAL REPORT 2025</h1>",
+        "transition": "", "catalog": "", "ending": "",
+    }
+
+    class PM:
+        async def get_project(self, pid, user_id=None):
+            return _BrandProject()
+
+    class Host:
+        project_manager = PM()
+
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            return type("R", (), {"content": '{"2025": "year", "DEPT. REPORT": "tagline", "ANNUAL REPORT": "topic"}'})()
+
+    svc = T(Host())
+
+    async def main():
+        return await svc.instantiate_suite_brand_for_project("p1", suite)
+
+    branded = asyncio.run(main())
+    assert "2025" not in branded["header_footer"], "年份应被替换"
+    assert "2026" in branded["header_footer"]
+    assert "2026" in branded["cover"], "封面里的年份也应替换"
+    # 原套件不变
+    assert "2025" in suite["header_footer"], "原套件应保持不变（不影响预览/库）"
+    # ANNUAL REPORT 是 topic 角色但 brand_topic=部门工作情况汇报 → 应被替换
+    assert "部门工作情况汇报" in branded["cover"] or "ANNUAL REPORT" in branded["cover"]
+
+
+def test_suite_prompt_requires_brand_slots():
+    """新套件生成 prompt 必须要求品牌文案写成品牌槽位，不得固化示例值。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI大模型"
+        scenario = "峰会"
+
+    outline = {"title": "T", "slides": [{"title": "a", "slide_type": "title"}]}
+    p = TemplatePrompts.build_template_suite_prompt(
+        project=P(), outline=outline, confirmed={"target_audience": "高管"},
+        template_html="<div>tpl</div>", creativity=5,
     )
-    svc = SlideMediaService(Host())
-    svc.project_manager = FakePM(project)
+    assert "brand_year" in p
+    assert "brand_org" in p and "brand_topic" in p and "brand_tagline" in p
+    assert "不要写死" in p, "应明确禁止固化示例品牌值"
+    assert "2024" in p and "DEPARTMENT" in p, "应举例说明禁止固化的值"
+
+
+def test_preview_html_fills_brand_slots_with_samples():
+    """套件预览：品牌槽位（{{brand_year}} 等）用真实感示例值填充，而非 '[brand_year 示例]'。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite = {
+        "cover": "<!DOCTYPE html><html><body><h1>{{cover_title}}</h1>"
+                 "<span>{{brand_year}} · {{brand_org}}</span><span>{{brand_tagline}}</span></body></html>",
+        "transition": "<!DOCTYPE html><html><body><h1>{{transition_title}}</h1><p>{{brand_topic}}</p></body></html>",
+        "catalog": "<!DOCTYPE html><html><body><h1>{{catalog_title}}</h1></body></html>",
+        "ending": "<!DOCTYPE html><html><body><h1>{{ending_title}}</h1><span>{{brand_code}}</span></body></html>",
+        "header_footer": (
+            "<div class='page-header'><span>{{brand_year}} · {{brand_topic}}</span></div>"
+            "<div class='page-body'>{{page_content}}</div>"
+            "<div class='page-footer'>{{current_page_number}}/{{total_page_count}} {{brand_org}}</div>"
+        ),
+    }
+    svc = T.__new__(T)
+    preview = svc.build_preview_html(suite)
+
+    # cover：品牌槽位被示例值填充
+    cover = preview["cover"]
+    assert "{{brand_year}}" not in cover
+    assert "[brand_year 示例]" not in cover
+    assert "2026" in cover
+    assert "XX部门" in cover
+    assert "DEPARTMENT WORK REPORT" in cover
+
+    # transition：brand_topic 示例值
+    assert "年度工作报告" in preview["transition"]
+    assert "{{brand_topic}}" not in preview["transition"]
+
+    # ending：brand_code 示例值
+    assert "No.01" in preview["ending"]
+    assert "{{brand_code}}" not in preview["ending"]
+
+    # content 页 header/footer：品牌槽位也填充
+    content = preview["content"]
+    assert "{{brand_year}}" not in content
+    assert "2026" in content
+    assert "XX部门" in content
+    # 标准槽位仍正常
+    assert "{{page_content}}" not in content
+    assert "{{current_page_number}}" not in content
+
+
+def test_replace_brand_in_html_semantic_slots_and_structure_protection():
+    """A：语义归类替换自定义品牌槽位（{{year}}/{{dept}}/{{company_year}}），
+    结构槽位（cover_title 等）即使被误归为品牌角色也绝不替换。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    values = T._resolve_brand_values(_BrandProject())
+
+    # 自定义品牌槽位 → 语义归类替换
+    html = "<span>{{year}} {{dept}} {{company_year}} {{brand_year}}</span>"
+    roles = {"{{year}}": "year", "{{dept}}": "org", "{{company_year}}": "year", "{{brand_year}}": "year"}
+    out = T._replace_brand_in_html(html, values, roles)
+    assert "{{year}}" not in out and "{{dept}}" not in out and "{{company_year}}" not in out
+    assert "2026" in out and "部门" in out
+
+    # 结构槽位保护：LLM 误归为品牌角色 → 不替换
+    html2 = "<h1>{{cover_title}}</h1><span>{{page_title}}</span><span>{{current_page_number}}</span>"
+    roles2 = {"{{cover_title}}": "topic", "{{page_title}}": "topic", "{{current_page_number}}": "year"}
+    out2 = T._replace_brand_in_html(html2, values, roles2)
+    assert "{{cover_title}}" in out2
+    assert "{{page_title}}" in out2
+    assert "{{current_page_number}}" in out2
+
+    # 固化文本 + 自定义槽位混合
+    html3 = "<span>2025</span><span>{{year}}</span><span>DEPT. REPORT</span>"
+    roles3 = {"2025": "year", "{{year}}": "year", "DEPT. REPORT": "tagline"}
+    out3 = T._replace_brand_in_html(html3, values, roles3)
+    assert "2026" in out3 and "{{year}}" not in out3
+    assert "DEPT. REPORT" in out3, "tagline 无真实值时保留原样"
+
+
+def test_brand_preview_sample_heuristic():
+    """B：预览品牌示例值按槽位名启发式推断（覆盖自定义槽位名），非品牌槽位回退 None。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    assert T._brand_preview_sample("company_year") == "2026"
+    assert T._brand_preview_sample("year") == "2026"
+    assert T._brand_preview_sample("dept") == "XX部门"
+    assert T._brand_preview_sample("department_name") == "XX部门"
+    assert T._brand_preview_sample("brand_topic") == "年度工作报告"
+    assert T._brand_preview_sample("brand_code") == "No.01"
+    assert T._brand_preview_sample("brand_tagline") == "DEPARTMENT WORK REPORT"
+    assert T._brand_preview_sample("item_1_title") is None, "非品牌槽位回退 None"
+
+    # 预览 fill 用启发式：自定义品牌槽位不显示 '[name 示例]'
+    suite = {
+        "cover": "<!DOCTYPE html><html><body><span>{{company_year}} · {{dept}}</span><h1>{{cover_title}}</h1></body></html>",
+        "transition": "", "catalog": "", "ending": "",
+        "header_footer": "<div class='page-footer'>{{year}}</div>",
+    }
+    preview = T.__new__(T).build_preview_html(suite)
+    cover = preview["cover"]
+    assert "{{company_year}}" not in cover and "[company_year 示例]" not in cover
+    assert "2026" in cover and "XX部门" in cover
+    assert "{{cover_title}}" not in cover, "cover_title 应由标准填充机制替换"
+
+
+def test_replace_brand_in_html_handles_spaced_slots():
+    """回归：套件 id=15 的品牌槽位是 `{{ brand_year }}`（带空格）写法，
+    必须被品牌替换兼容（否则品牌替换失效 → 各页 LLM 补全年份/部门不一致）。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    values = T._resolve_brand_values(_BrandProject())
+
+    # 带空格写法（生成套件 prompt 转义后常见）
+    html = "<span>{{ brand_year }} · {{ brand_org }}</span>"
+    out = T._replace_brand_in_html(html, values, None)
+    assert "{{ brand_year }}" not in out and "{{brand_year}}" not in out
+    assert "{{ brand_org }}" not in out and "{{brand_org}}" not in out
+    assert "2026" in out and "部门" in out
+
+    # 混合写法（无空格 + 带空格 + 值空清掉）
+    html2 = "<span>{{brand_year}}</span><span>{{ brand_year }}</span><span>{{ brand_code }}</span>"
+    out2 = T._replace_brand_in_html(html2, values, None)
+    assert "{{" not in out2, "所有品牌槽位（含值空的 brand_code）都应被清掉"
+    assert "2026" in out2
+
+    # 语义归类项：带空格自定义品牌槽位也能替换
+    roles = {"{{ company_year }}": "year", "{{ dept }}": "org"}
+    html3 = "<span>{{ company_year }} {{ dept }}</span>"
+    out3 = T._replace_brand_in_html(html3, values, roles)
+    assert "{{ company_year }}" not in out3 and "{{ dept }}" not in out3
+    assert "2026" in out3 and "部门" in out3
+
+
+def test_default_slot_text_brand_slot_clears():
+    """回归：品牌槽位兜底返回空串，避免 '[brand_org]' 占位残留。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    assert SlideMediaService._default_slot_text("brand_org", {"title": "x"}, 1) == ""
+    assert SlideMediaService._default_slot_text("brand_year", {"title": "x"}, 1) == ""
+    # 非品牌槽位不受影响
+    assert SlideMediaService._default_slot_text("cover_extra", {"title": "x", "content_points": ["a"]}, 1) == "a"
+
+
+def test_brand_role_by_name_heuristic():
+    """名字启发式：自定义品牌槽位名（fiscal_year/dept/company/serial_no）按关键词归类。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    assert T._brand_role_by_name("brand_year") == "year"
+    assert T._brand_role_by_name("fiscal_year") == "year"
+    assert T._brand_role_by_name("company_year") == "year"
+    assert T._brand_role_by_name("dept") == "org"
+    assert T._brand_role_by_name("department") == "org"
+    assert T._brand_role_by_name("company") == "org"
+    assert T._brand_role_by_name("bank") == "org"
+    assert T._brand_role_by_name("brand_topic") == "topic"
+    assert T._brand_role_by_name("subject") == "topic"
+    assert T._brand_role_by_name("brand_tagline") == "tagline"
+    assert T._brand_role_by_name("serial_no") == "code"
+    assert T._brand_role_by_name("item_1_title") is None, "非品牌槽位不归类"
+    assert T._brand_role_by_name("page") is None
+
+
+def test_merge_heuristic_brand_roles_llm_fail_fallback():
+    """LLM 语义分析失败（roles 空）时，名字启发式兜底归类自定义品牌槽位；
+    LLM 已归类的结果优先于启发式；结构槽位始终跳过。"""
+    import asyncio
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite = {
+        "header_footer": "",
+        "cover": "<span>{{ fiscal_year }} {{ dept }}</span><span>{{ cover_title }}</span><span>{{ brand_code }}</span>",
+        "transition": "", "catalog": "", "ending": "",
+    }
+
+    # 直接测 merge：LLM 失败
+    merged = T._merge_heuristic_brand_roles(suite, {})
+    assert merged.get("{{ fiscal_year }}") == "year"
+    assert merged.get("{{ dept }}") == "org"
+    assert merged.get("{{ brand_code }}") == "code"
+    assert "{{ cover_title }}" not in merged, "结构槽位不归类"
+
+    # LLM 已归类则优先
+    merged2 = T._merge_heuristic_brand_roles(suite, {"{{ dept }}": "topic"})
+    assert merged2.get("{{ dept }}") == "topic", "LLM 结果优先于启发式"
+
+    # 集成：instantiate 时 LLM 分析 mock 返回空，自定义品牌槽位仍被替换
+    class P:
+        topic = "部门工作情况汇报"
+        title = "部门工作情况汇报"
+        created_at = 1786446950.6611688
+
+    class PM:
+        async def get_project(self, pid, user_id=None):
+            return P()
+
+    class Host:
+        project_manager = PM()
+
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            return type("R", (), {"content": "{}"})()
+
+    svc = T(Host())
 
     async def run():
-        return await svc._get_brand_context("p1", {"topic": "部门工作情况汇报", "target_audience": "企业管理层"})
+        suite3 = {
+            "header_footer": "<div class='page-footer'>{{ fiscal_year }} {{ dept }}</div>",
+            "cover": "<h1>{{cover_title}}</h1><span>{{ company_year }}</span>",
+            "transition": "", "catalog": "", "ending": "",
+        }
+        return await svc.instantiate_suite_brand_for_project("p1", suite3)
 
-    ctx = asyncio.run(run())
-    assert ctx["topic"] == "部门工作情况汇报"
-    assert ctx["year"] == "2026", "应从 created_at 推导年份"
-    assert ctx["audience"] == "企业管理层"
-
-    # 无 project（project_id=None）→ year 用当前年份，仍返回结构
-    svc2 = SlideMediaService(Host())
-    ctx2 = asyncio.run(svc2._get_brand_context(None, {"topic": "T"}))
-    assert ctx2["topic"] == "T"
-    assert ctx2["year"], "无 project 时也应给当前年份"
-
-
-def test_brand_replace_instruction_lists_year_topic_and_department():
-    """品牌替换指令：包含年份/部门/主题语义化替换要求，且明确不动结构/正文。"""
-    from landppt.services.slide.slide_media_service import SlideMediaService
-
-    ctx = {"topic": "部门工作情况汇报", "title": "部门工作情况汇报", "year": "2026", "audience": "企业管理层"}
-    inst = SlideMediaService._build_brand_replace_instruction(ctx)
-    assert "2026" in inst
-    assert "部门工作情况汇报" in inst
-    assert "DEPARTMENT · WORK REPORT" in inst, "应点名常见部门英文标识示例"
-    assert "只替换品牌装饰区" in inst or "不动正文" in inst
-    assert "不要臆造" in inst
-
-    assert SlideMediaService._build_brand_replace_instruction(None) == ""
-    assert SlideMediaService._build_brand_replace_instruction({}) == ""
+    branded = asyncio.run(run())
+    hf = branded["header_footer"]
+    cover = branded["cover"]
+    assert "{{ fiscal_year }}" not in hf and "{{ dept }}" not in hf
+    assert "2026" in hf and "部门" in hf
+    assert "{{ company_year }}" not in cover and "2026" in cover
+    assert "{{cover_title}}" in cover or "{{ cover_title }}" in cover, "结构槽位不受影响"
 
 
-def test_content_constraint_injects_brand_instruction_when_context_given():
-    """内容页约束：传 brand_context 时注入品牌替换指令，不传时不影响。"""
-    from landppt.services.slide.slide_media_service import SlideMediaService
+def test_sanitize_slot_value_extracts_nested_structure():
+    """回归：LLM 把 cover_extra 等槽位值写成嵌套 dict/list 字符串时，净化提取为可读纯文本。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService as S
 
-    suite = {"header_footer": '<div class="suite-stage">{{ page_content }}</div>', "design_tokens": "t"}
-    base = SlideMediaService._build_content_suite_constraint(suite)
-    assert "品牌装饰文案语义化替换" not in base
+    # 用户实际遇到：嵌套单引号 Python dict
+    bad = "{'subtitle': '年度工作成果与未来展望', 'presenter': '汇报人：部门负责人', 'slogan': '务实创新，追求卓越', 'background': '全面总结过去工作成效，部署下阶段重点任务'}"
+    out = S._sanitize_slot_value(bad, "[兜底]")
+    assert "{" not in out and "[" not in out, "不应残留 JSON/Python 结构"
+    assert "年度工作成果" in out or "全面总结过去工作成效" in out, "应提取可读文案"
 
-    with_brand = SlideMediaService._build_content_suite_constraint(
-        suite, {"topic": "T", "title": "T", "year": "2026"}
-    )
-    assert "品牌装饰文案语义化替换" in with_brand
-    assert "2026" in with_brand
+    # 双引号 JSON dict
+    out2 = S._sanitize_slot_value('{"subtitle": "年度工作成果", "presenter": "汇报人"}', "[兜底]")
+    assert out2 and "{" not in out2
+
+    # 正常纯文本 → 原样
+    assert S._sanitize_slot_value("务实创新，追求卓越", "[兜底]") == "务实创新，追求卓越"
+
+    # list → 换行连接
+    out3 = S._sanitize_slot_value('["要点一", "要点二"]', "[兜底]")
+    assert out3 == "要点一\n要点二"
+
+    # 空/无法解析 → fallback
+    assert S._sanitize_slot_value("", "[兜底]") == "[兜底]"
+    assert S._sanitize_slot_value("{broken", "[兜底]") == "[兜底]"
+
+    # 值仍嵌套 → 递归提取
+    out4 = S._sanitize_slot_value('{"a": {"b": "深层文案"}}', "[兜底]")
+    assert "深层文案" in out4
 
 
-def test_extract_html_from_response_handles_code_fence():
-    """从 LLM 响应提取 HTML：兼容 ```html ... ``` 包裹与裸 HTML。"""
-    from landppt.services.slide.slide_media_service import SlideMediaService
-
-    fenced = "```html\n<!DOCTYPE html><html><head></head><body>x</body></html>\n```"
-    out = SlideMediaService._extract_html_from_response(fenced)
-    assert out.startswith("<!DOCTYPE html>") and "</html>" in out and "```" not in out
-
-    bare = "<!DOCTYPE html><html><body>y</body></html>"
-    assert SlideMediaService._extract_html_from_response(bare).startswith("<!DOCTYPE html>")
-
-    assert SlideMediaService._extract_html_from_response("") == ""
-    assert SlideMediaService._extract_html_from_response("没有 HTML") == ""
-
-
-def test_semantic_brand_replace_respects_flag_and_empty_context():
-    """品牌语义化替换：brand_context 为空或开关关闭时原样返回（不调 LLM）。"""
+def test_resolve_remaining_slots_sanitizes_nested_slot_value():
+    """集成：_resolve_remaining_slots 的 LLM 返回嵌套 dict 时，cover_extra 被净化为可读文案，
+    不再把 '{'...'}' 原样漏进页面。"""
     import asyncio
-    import os
-    from types import SimpleNamespace
     from landppt.services.slide.slide_media_service import SlideMediaService
 
-    html = "<!DOCTYPE html><html><body>2024</body></html>"
-    svc = SlideMediaService(SimpleNamespace())
+    class Host:
+        async def _text_completion_for_role(self, role, *, prompt, **kw):
+            return type("R", (), {"content": '{"cover_extra": "{\'subtitle\': \'年度工作成果\', \'presenter\': \'汇报人：部门负责人\'}"}'})()
 
-    # 空上下文 → 原样
-    assert asyncio.run(svc._semantic_brand_replace(html, None, 1)) == html
+        @staticmethod
+        def _strip_think_tags(content):
+            return content
 
-    # 开关关闭 → 原样
-    old = os.getenv("ENABLE_BRAND_SEMANTIC_REPLACE")
-    os.environ["ENABLE_BRAND_SEMANTIC_REPLACE"] = "false"
-    try:
-        ctx = {"topic": "T", "title": "T", "year": "2026"}
-        assert asyncio.run(svc._semantic_brand_replace(html, ctx, 1)) == html
-    finally:
-        if old is None:
-            os.environ.pop("ENABLE_BRAND_SEMANTIC_REPLACE", None)
-        else:
-            os.environ["ENABLE_BRAND_SEMANTIC_REPLACE"] = old
+    media = SlideMediaService(Host())
+
+    async def run():
+        return await media._resolve_remaining_slots(
+            "<div class='cover-extra'>{{cover_extra}}</div>",
+            ["cover_extra"],
+            {"title": "部门工作汇报", "content_points": ["要点一"]},
+            1, 10, "sys",
+        )
+
+    result = asyncio.run(run())
+    v = result["cover_extra"]
+    assert "{" not in v and "[" not in v, f"槽位值不应残留 JSON 结构: {v!r}"
+    assert v.strip() != "{'subtitle'"
+    assert v, "应提取出非空可读文案"
+
+
+def test_strip_redundant_master_skeleton():
+    """回归：套件自带 suite- 前缀骨架时，移除生成时误注入的母版骨架块（双骨架 → 单骨架）；
+    母版即骨架的套件（无 suite- 前缀）不清理。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    # 双重骨架形态（套件 id=15 被污染）
+    polluted = (
+        "<!-- 母版内容页骨架（背景/装饰，自包含） -->\n"
+        '<div class="canvas"><div class="bg-paper"></div><div class="bg-grid"></div></div>\n'
+        "<style>.suite-canvas{position:relative;width:1280px;height:720px}"
+        ".suite-stage{position:absolute;top:155px}</style>\n"
+        '<div class="suite-canvas"><div class="suite-bg-paper"></div>'
+        '<div class="suite-stage">{{ page_content }}</div></div>'
+    )
+    cleaned = T._strip_redundant_master_skeleton(polluted)
+    assert "母版内容页骨架" not in cleaned, "应移除母版骨架注释"
+    assert ".suite-canvas" in cleaned and "suite-stage" in cleaned, "应保留套件自骨架"
+    assert 'class="canvas"' not in cleaned or "suite-bg-paper" in cleaned, "母版 .canvas div 应被裁掉"
+
+    # 母版即骨架（无 suite- 前缀）→ 不清理
+    master_only = (
+        "<!-- 母版内容页骨架（背景/装饰，自包含） -->\n"
+        '<div class="canvas"><div class="bg-paper"></div>'
+        '<div class="main-stage">{{ page_content }}</div></div>'
+        "<style>.canvas{position:relative}.bg-paper{position:absolute}</style>"
+    )
+    out2 = T._strip_redundant_master_skeleton(master_only)
+    assert out2 == master_only, "无 suite- 自骨架的套件不应清理"
+
+
+def test_header_footer_complete_accepts_suite_prefixed_skeleton():
+    """回归：has_skeleton_css 正则兼容 suite- 前缀类名——完整 .suite-canvas 骨架的
+    header_footer 不再被误判"缺骨架"而注入母版骨架（双骨架根因）。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite_hf = (
+        "<style>.suite-canvas{position:relative;width:1280px;height:720px}"
+        ".suite-bg-paper{position:absolute;inset:0}"
+        ".suite-header{position:absolute;top:34px}</style>"
+        '<div class="suite-canvas"><div class="suite-bg-paper"></div>'
+        '<div class="suite-header">{{ page_title }}</div>'
+        '<div class="suite-stage">{{ page_content }}</div></div>'
+    )
+    out = T._ensure_header_footer_complete(suite_hf, "<div>tpl</div>", "")
+    assert "母版内容页骨架" not in out, "suite- 前缀完整骨架不应再被注入母版骨架"
+    assert "suite-canvas" in out

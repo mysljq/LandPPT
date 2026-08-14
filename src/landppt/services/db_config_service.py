@@ -47,7 +47,12 @@ class DatabaseConfigService:
             "openai_use_responses_api": {"type": "boolean", "category": "ai_providers", "default": "false"},
             "openai_enable_reasoning": {"type": "boolean", "category": "ai_providers", "default": "false"},
             "openai_reasoning_effort": {"type": "select", "category": "ai_providers", "default": "medium"},
-            
+
+            # 备用 OpenAI 兼容服务（主服务不可用时可一键切换使用）
+            "openai_backup_api_key": {"type": "password", "category": "ai_providers"},
+            "openai_backup_base_url": {"type": "url", "category": "ai_providers", "default": "https://api.openai.com/v1"},
+            "openai_backup_model": {"type": "text", "category": "ai_providers", "default": "gpt-4o"},
+
             "anthropic_api_key": {"type": "password", "category": "ai_providers"},
             "anthropic_base_url": {"type": "url", "category": "ai_providers", "default": "https://api.anthropic.com"},
             "anthropic_model": {"type": "select", "category": "ai_providers", "default": "claude-3.5-haiku-20240307"},
@@ -690,6 +695,12 @@ def _build_user_ai_provider_config(
             "use_responses_api": user_config.get("openai_use_responses_api"),
             "enable_reasoning": user_config.get("openai_enable_reasoning"),
             "reasoning_effort": user_config.get("openai_reasoning_effort"),
+            "llm_timeout_seconds": user_config.get("llm_timeout_seconds"),
+        },
+        "openai_backup": {
+            "api_key": user_config.get("openai_backup_api_key"),
+            "base_url": user_config.get("openai_backup_base_url"),
+            "model": user_config.get("openai_backup_model"),
             "llm_timeout_seconds": user_config.get("llm_timeout_seconds"),
         },
         "anthropic": {

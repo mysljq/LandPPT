@@ -360,15 +360,14 @@ class OpenAIProvider(AIProvider):
         for pattern in patterns:
             filtered_content = re.sub(pattern, '', filtered_content, flags=re.IGNORECASE)
 
-        # # Clean up any extra whitespace that might be left behind
-        # # Remove multiple consecutive empty lines
-        # filtered_content = re.sub(r'\n\s*\n\s*\n\s*\n', '', filtered_content)
-
-        # # Remove empty lines at the beginning and end
-        # filtered_content = filtered_content.strip()
-
-        # # Clean up extra spaces within lines
-        # filtered_content = re.sub(r' +', ' ', filtered_content)
+        if not filtered_content and content and content.strip():
+            # 思考模型（MiniMax M 系列 / DeepSeek-R1 等）把全部输出 token 花在
+            # <think>…</think> 上被截断时，过滤后会得到空串——这通常不是真正的
+            # 空响应，而是可见答案未及输出。调用方应据此重试而非直接判空。
+            logger.warning(
+                "think 过滤后内容为空（原始 %s 字符）——疑似思考模型输出被截断，请调用方重试",
+                len(content),
+            )
 
         return filtered_content
 
@@ -1319,6 +1318,7 @@ class AIProviderFactory:
 
     _providers = {
         "openai": OpenAIProvider,
+        "openai_backup": OpenAIProvider,  # 备用 OpenAI 兼容服务
         "azure_openai": AzureOpenAIProvider,
         "azure": AzureOpenAIProvider,  # Alias for azure_openai
         "anthropic": AnthropicProvider,
