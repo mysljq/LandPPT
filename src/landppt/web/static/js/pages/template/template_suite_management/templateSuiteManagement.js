@@ -105,9 +105,9 @@ function bindEvents() {
         if (s) s.textContent = '';
     });
 
-    // 点击遮罩层关闭弹窗
+    // 点击遮罩层关闭弹窗（「从模板生成套件」弹窗除外：生成过程/表单填写不应误关闭，需用 ✕ 或「关闭」按钮）
     document.addEventListener('click', (e) => {
-        if (e.target.classList && e.target.classList.contains('modal')) {
+        if (e.target.classList && e.target.classList.contains('modal') && e.target !== dom.generateModal) {
             e.target.style.display = 'none';
             if (e.target === dom.previewModal) state.previewData = null;
         }
