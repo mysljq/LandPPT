@@ -141,6 +141,15 @@ class DatabaseMigration:
             "down": self._migration_013_down,
         })
 
+        # Migration 014: Rewrite legacy {{brand_code}} suite slots → {{chapter_number}} (transition/header_footer) / delete (cover/catalog/ending)
+        self.migrations.append({
+            "version": "014",
+            "name": "migrate_suite_brand_code_to_chapter",
+            "description": "Rewrite legacy {{brand_code}} slots in stored suites: transition/header_footer → {{chapter_number}}; cover/catalog/ending → removed",
+            "up": self._migration_014_up,
+            "down": self._migration_014_down,
+        })
+
     @staticmethod
     def _dialect_name(session: AsyncSession) -> str:
         try:
@@ -1333,6 +1342,116 @@ class DatabaseMigration:
         await session.execute(text(create_table_sql))
         await session.commit()
     
+    async def _migration_014_up(self, session: AsyncSession):
+        """Migration 014: Rewrite legacy {{brand_code}} slots in stored suites.
+
+        - global_template_suites: transition/header_footer → {{chapter_number}};
+          cover/catalog/ending → removed (these pages must not carry any number slot).
+        - projects.project_metadata["template_suite"]: same transform on each HTML segment.
+        design_tokens is NOT touched (it may carry literal `--brand-code` CSS variable names).
+
+        Uses TemplateSuiteService._migrate_brand_code_to_chapter so DB migration and
+        runtime read-time backfill share identical transform logic.
+        """
+        import json as _json
+        import re as _re
+        try:
+            from ..services.template.template_suite_service import TemplateSuiteService as _TSS
+            migrate = _TSS._migrate_brand_code_to_chapter
+            brand_code_re = _TSS._BRAND_CODE_SLOT_RE
+        except Exception as exc:
+            logger.warning("Migration 014: TemplateSuiteService unavailable, using local regex: %s", exc)
+            brand_code_re = _re.compile(r"{{\s*brand_code\s*}}")
+
+            def migrate(html: str, page_kind: str) -> str:
+                if not html:
+                    return html
+                if page_kind in ("transition", "header_footer"):
+                    return brand_code_re.sub("{{chapter_number}}", html)
+                if page_kind in ("cover", "catalog", "ending"):
+                    return brand_code_re.sub("", html)
+                return html
+
+        logger.info("Running migration 014: migrate suite brand_code → chapter_number")
+
+        # 1) global_template_suites: rewrite each HTML column in place.
+        suite_rows = await session.execute(
+            text(
+                "SELECT id, cover, transition, catalog, ending, header_footer "
+                "FROM global_template_suites ORDER BY id"
+            )
+        )
+        suite_count = 0
+        for row in suite_rows.fetchall():
+            suite_id, cover, transition, catalog, ending, header_footer = row
+            new_cover = migrate(cover or "", "cover")
+            new_transition = migrate(transition or "", "transition")
+            new_catalog = migrate(catalog or "", "catalog")
+            new_ending = migrate(ending or "", "ending")
+            new_header_footer = migrate(header_footer or "", "header_footer")
+            if (
+                new_cover == (cover or "")
+                and new_transition == (transition or "")
+                and new_catalog == (catalog or "")
+                and new_ending == (ending or "")
+                and new_header_footer == (header_footer or "")
+            ):
+                continue
+            await session.execute(
+                text(
+                    "UPDATE global_template_suites "
+                    "SET cover=:cover, transition=:transition, catalog=:catalog, "
+                    "ending=:ending, header_footer=:header_footer WHERE id=:id"
+                ),
+                {
+                    "id": suite_id,
+                    "cover": new_cover,
+                    "transition": new_transition,
+                    "catalog": new_catalog,
+                    "ending": new_ending,
+                    "header_footer": new_header_footer,
+                },
+            )
+            suite_count += 1
+        logger.info("Migration 014: migrated %d global_template_suites rows", suite_count)
+
+        # 2) projects.project_metadata["template_suite"]: same transform on each segment.
+        #    SQLite stores JSON as text; json.loads/dumps round-trips it.
+        proj_rows = await session.execute(
+            text("SELECT id, project_metadata FROM projects ORDER BY id")
+        )
+        proj_count = 0
+        for row in proj_rows.fetchall():
+            proj_id, metadata_raw = row
+            if not metadata_raw:
+                continue
+            try:
+                metadata = _json.loads(metadata_raw) if isinstance(metadata_raw, str) else dict(metadata_raw or {})
+            except Exception:
+                continue
+            suite = metadata.get("template_suite")
+            if not isinstance(suite, dict):
+                continue
+            if not any(brand_code_re.search(str(suite.get(k) or "")) for k in ("cover", "transition", "catalog", "ending", "header_footer")):
+                continue
+            for k in ("cover", "transition", "catalog", "ending", "header_footer"):
+                suite[k] = migrate(str(suite.get(k) or ""), k)
+            metadata["template_suite"] = suite
+            await session.execute(
+                text("UPDATE projects SET project_metadata=:md WHERE id=:id"),
+                {"id": proj_id, "md": _json.dumps(metadata, ensure_ascii=False)},
+            )
+            proj_count += 1
+        logger.info("Migration 014: migrated %d projects rows", proj_count)
+
+        await session.commit()
+        logger.info("Migration 014 completed successfully")
+
+    async def _migration_014_down(self, session: AsyncSession):
+        """Migration 014 rollback: not reversible (chapter_number values would need
+        original brand_code text which is lost). No-op with a log record."""
+        logger.info("Migration 014 rollback is a no-op (brand_code → chapter_number is not reversible)")
+
     async def _get_applied_migrations(self, session: AsyncSession) -> List[str]:
         """Get list of applied migration versions"""
         try:

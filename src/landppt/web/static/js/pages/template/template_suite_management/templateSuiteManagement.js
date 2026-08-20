@@ -14,6 +14,7 @@ const state = {
     imageFiles: {},              // 已选择的上传截图：part -> File
     previewSuiteId: null,        // 当前预览的库中套件 id
     editPart: null,              // 编辑器正在编辑的套件部分（cover/transition/catalog/ending/header_footer）
+    aiGeneratedSuite: null,      // 基于需求/网页生成的套件
 };
 
 const dom = {};
@@ -70,6 +71,21 @@ function cacheDom() {
     dom.imgPreviewFrame = document.getElementById('imgPreviewFrame');
     dom.imgSuiteNameInput = document.getElementById('imgSuiteNameInput');
     dom.imgSaveStatus = document.getElementById('imgSaveStatus');
+
+    dom.aiGenerateModal = document.getElementById('aiGenerateModal');
+    dom.aiGenInput = document.getElementById('aiGenInput');
+    dom.aiGenProgress = document.getElementById('aiGenProgress');
+    dom.aiGenComplete = document.getElementById('aiGenComplete');
+    dom.aiGenStatus = document.getElementById('aiGenStatus');
+    dom.aiGenElapsed = document.getElementById('aiGenElapsed');
+    dom.aiRequirementInput = document.getElementById('aiRequirementInput');
+    dom.aiWebHtmlInput = document.getElementById('aiWebHtmlInput');
+    dom.aiCreativitySlider = document.getElementById('aiCreativitySlider');
+    dom.aiCreativityLabel = document.getElementById('aiCreativityLabel');
+    dom.aiPreviewBox = document.getElementById('aiPreviewBox');
+    dom.aiPreviewFrame = document.getElementById('aiPreviewFrame');
+    dom.aiSuiteNameInput = document.getElementById('aiSuiteNameInput');
+    dom.aiSaveStatus = document.getElementById('aiSaveStatus');
 }
 
 function bindEvents() {
@@ -98,6 +114,8 @@ function bindEvents() {
     document.getElementById('closePreviewModal').addEventListener('click', closePreviewModal);
     document.getElementById('generateSuiteFromImagesBtn').addEventListener('click', openImageGenerateModal);
     document.getElementById('closeImageGenerateModal').addEventListener('click', closeImageGenerateModal);
+    document.getElementById('generateSuiteFromAiBtn').addEventListener('click', openAiGenerateModal);
+    document.getElementById('closeAiGenerateModal').addEventListener('click', closeAiGenerateModal);
 
     dom.creativitySlider.addEventListener('input', updateCreativityLabel);
     dom.suiteNameInput.addEventListener('input', () => {
@@ -105,9 +123,10 @@ function bindEvents() {
         if (s) s.textContent = '';
     });
 
-    // 点击遮罩层关闭弹窗（「从模板生成套件」弹窗除外：生成过程/表单填写不应误关闭，需用 ✕ 或「关闭」按钮）
+    // 点击遮罩层关闭弹窗（生成类弹窗除外：生成过程/表单填写不应误关闭，需用 ✕ 或「关闭」按钮）
     document.addEventListener('click', (e) => {
-        if (e.target.classList && e.target.classList.contains('modal') && e.target !== dom.generateModal) {
+        if (e.target.classList && e.target.classList.contains('modal')
+            && e.target !== dom.generateModal && e.target !== dom.aiGenerateModal) {
             e.target.style.display = 'none';
             if (e.target === dom.previewModal) state.previewData = null;
         }
@@ -116,6 +135,7 @@ function bindEvents() {
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         if (dom.generateModal && dom.generateModal.style.display !== 'none') closeGenerateModal();
+        if (dom.aiGenerateModal && dom.aiGenerateModal.style.display !== 'none') closeAiGenerateModal();
         if (dom.previewModal && dom.previewModal.style.display !== 'none') closePreviewModal();
     });
 }
@@ -761,6 +781,159 @@ async function saveImageGeneratedSuiteToLibrary() {
     }
 }
 
+// ---------------- AI生成套件（文字需求 + 可选网页 HTML） ----------------
+
+function openAiGenerateModal() {
+    if (!dom.aiGenerateModal) return;
+    state.aiGeneratedSuite = null;
+    if (dom.aiRequirementInput) dom.aiRequirementInput.value = '';
+    if (dom.aiWebHtmlInput) dom.aiWebHtmlInput.value = '';
+    dom.aiGenInput.style.display = 'block';
+    dom.aiGenProgress.style.display = 'none';
+    dom.aiGenComplete.style.display = 'none';
+    if (dom.aiSaveStatus) dom.aiSaveStatus.textContent = '';
+    if (dom.aiCreativitySlider) dom.aiCreativitySlider.value = 5;
+    updateAiCreativityLabel();
+    dom.aiGenerateModal.style.display = 'flex';
+}
+
+function closeAiGenerateModal() {
+    if (!dom.aiGenerateModal) return;
+    dom.aiGenerateModal.style.display = 'none';
+    state.aiGeneratedSuite = null;
+}
+
+function updateAiCreativityLabel() {
+    const slider = dom.aiCreativitySlider;
+    const label = dom.aiCreativityLabel;
+    if (!slider || !label) return;
+    const val = parseInt(slider.value, 10);
+    let text = String(val);
+    if (val <= 1) text += ' · 严格沿用参考';
+    else if (val <= 3) text += ' · 以参考为主';
+    else if (val <= 6) text += ' · 参考与创意平衡';
+    else if (val <= 8) text += ' · 大胆创意';
+    else text += ' · 最具创意';
+    label.textContent = text;
+}
+
+async function startAiGenerateSuite() {
+    if (!dom.aiGenProgress) return;
+    const requirement = (dom.aiRequirementInput ? dom.aiRequirementInput.value : '').trim();
+    const webHtml = (dom.aiWebHtmlInput ? dom.aiWebHtmlInput.value : '').trim();
+    if (!requirement && !webHtml) {
+        alert('请至少填写文字需求或粘贴网页 HTML');
+        return;
+    }
+    const creativity = parseInt(dom.aiCreativitySlider.value, 10) || 5;
+    const startBtn = document.getElementById('aiStartGenerateBtn');
+    if (startBtn) startBtn.disabled = true;
+    dom.aiGenInput.style.display = 'none';
+    dom.aiGenProgress.style.display = 'block';
+    if (dom.aiGenStatus) dom.aiGenStatus.textContent = '正在提交生成请求...';
+
+    const genStart = Date.now();
+    const timer = setInterval(() => {
+        const sec = Math.floor((Date.now() - genStart) / 1000);
+        if (dom.aiGenElapsed) dom.aiGenElapsed.textContent = `已耗时 ${sec} 秒`;
+        if (sec === 90 && dom.aiGenStatus) {
+            dom.aiGenStatus.textContent = '生成耗时较长，请查看后端控制台日志确认 LLM 调用是否正常...';
+        }
+    }, 1000);
+    const finish = () => clearInterval(timer);
+
+    try {
+        const resp = await fetch('/api/template-suites/generate-from-requirements', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requirement_text: requirement, web_html: webHtml, creativity, stream: true }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+        }
+        let data;
+        if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+            data = await readSuiteGenerateStream(resp, dom.aiGenStatus);
+        } else {
+            data = await resp.json();
+        }
+        if (data && data.success === false) throw new Error(data.message || '生成失败');
+        if (!data || !data.suite) throw new Error('生成未返回套件数据');
+        state.aiGeneratedSuite = data.suite;
+        if (dom.aiSuiteNameInput) dom.aiSuiteNameInput.value = data.suite.suite_name || '';
+        await renderAiGenPreview('cover');
+        finish();
+        dom.aiGenProgress.style.display = 'none';
+        dom.aiGenComplete.style.display = 'block';
+    } catch (error) {
+        finish();
+        console.error('AI suite generation error:', error);
+        dom.aiGenProgress.style.display = 'none';
+        dom.aiGenInput.style.display = 'block';
+        alert(`生成失败：${error.message}`);
+    } finally {
+        if (startBtn) startBtn.disabled = false;
+    }
+}
+
+async function renderAiGenPreview(tab) {
+    state.currentPreviewTab = tab;
+    const s = state.aiGeneratedSuite;
+    if (!s) return;
+    let html = '';
+    if (tab === 'cover') html = s.cover;
+    else if (tab === 'transition') html = s.transition;
+    else if (tab === 'catalog') html = s.catalog || '';
+    else if (tab === 'ending') html = s.ending || '';
+    else html = wrapContentPreview(s.header_footer);
+    setPreviewDoc(dom.aiPreviewFrame, dom.aiPreviewBox, html);
+    highlightTab('aiGenComplete');
+}
+
+window.suiteMgmtShowAiGenTab = (tab) => {
+    state.currentPreviewTab = tab;
+    renderAiGenPreview(tab);
+};
+
+async function saveAiGeneratedSuiteToLibrary() {
+    const s = state.aiGeneratedSuite;
+    if (!s) {
+        alert('没有可保存的套件');
+        return;
+    }
+    const defaultName = s.suite_name || 'AI生成套件';
+    const name = (dom.aiSuiteNameInput ? dom.aiSuiteNameInput.value : '').trim() || defaultName;
+    const saveBtn = document.getElementById('aiSaveSuiteBtn');
+    if (saveBtn) saveBtn.disabled = true;
+    if (dom.aiSaveStatus) dom.aiSaveStatus.textContent = '保存中...';
+    try {
+        await api('/api/template-suites', {
+            method: 'POST',
+            body: JSON.stringify({
+                suite_name: name,
+                description: s.description || '基于需求/网页生成',
+                cover: s.cover,
+                transition: s.transition,
+                catalog: s.catalog || '',
+                ending: s.ending || '',
+                header_footer: s.header_footer,
+                design_tokens: s.design_tokens || '',
+                template_id: s.template_id || null,
+                template_hash: s.template_hash || null,
+                template_name: s.template_name || null,
+                tags: s.tags || ['AI生成'],
+            }),
+        });
+        if (dom.aiSaveStatus) dom.aiSaveStatus.textContent = '✅ 已保存到套件库';
+        loadSuites(1);
+    } catch (error) {
+        if (dom.aiSaveStatus) dom.aiSaveStatus.textContent = `❌ 保存失败：${error.message}`;
+    } finally {
+        if (saveBtn) saveBtn.disabled = false;
+    }
+}
+
 // ---------------- 套件页面 HTML 编辑器（参考 PPT 编辑器） ----------------
 
 const SUITE_PART_LABELS = {
@@ -895,6 +1068,10 @@ window.updateImgCreativityLabel = updateImgCreativityLabel;
 window.startImageGenerateSuite = startImageGenerateSuite;
 window.saveImageGeneratedSuiteToLibrary = saveImageGeneratedSuiteToLibrary;
 window.closeImageGenerateModal = closeImageGenerateModal;
+window.updateAiCreativityLabel = updateAiCreativityLabel;
+window.startAiGenerateSuite = startAiGenerateSuite;
+window.saveAiGeneratedSuiteToLibrary = saveAiGeneratedSuiteToLibrary;
+window.closeAiGenerateModal = closeAiGenerateModal;
 window.openSuiteEditor = openSuiteEditor;
 window.closeSuiteEditor = closeSuiteEditor;
 window.saveSuiteEditor = saveSuiteEditor;

@@ -125,6 +125,13 @@ class TemplateSuiteRenderer:
         if subtitle_slot:
             slots[subtitle_slot] = subtitle
 
+        # 过渡页填章节号槽位（纯数字，取自大纲后端赋的 chapter 字段）。
+        # 其他页面类型（cover/catalog/ending）不填章节号——按需求只在过渡页出现。
+        if page_type == "transition":
+            chapter = slide_data.get("chapter")
+            if chapter not in (None, ""):
+                slots["chapter_number"] = str(chapter)
+
         # For catalog pages, also try filling a chapter/items slot if the
         # template uses one (e.g. {{ catalog_items }}): join content points.
         if page_type == "catalog":

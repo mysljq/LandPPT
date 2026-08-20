@@ -49,6 +49,13 @@ class SuiteGenerateRequest(BaseModel):
     stream: bool = False
 
 
+class SuiteFromRequirementsRequest(BaseModel):
+    requirement_text: str = ""
+    web_html: str = ""
+    creativity: int = 5
+    stream: bool = True
+
+
 class SuiteUpdateRequest(BaseModel):
     suite_name: Optional[str] = None
     description: Optional[str] = None
@@ -226,6 +233,68 @@ async def generate_suite_from_template(payload: SuiteGenerateRequest, user=Depen
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.error("Error generating template suite from template: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/generate-from-requirements")
+async def generate_suite_from_requirements(
+    payload: SuiteFromRequirementsRequest, user=Depends(get_current_user_required)
+):
+    """基于文字需求 + 可选网页 HTML 生成套件（流式）。
+
+    requirement_text 与 web_html 至少填一项；都空时服务层返回 error 事件。
+    web_html 提供时，套件配色/字体/版式/背景装饰与该网页保持一致。
+    复用模板套件生成的积分检查（landppt provider 时）。
+    """
+    logger.info(
+        "收到基于需求/网页生成套件请求：user_id=%s, creativity=%s, stream=%s, "
+        "requirement_len=%s, web_html_len=%s",
+        user.id, payload.creativity, payload.stream,
+        len((payload.requirement_text or "")), len((payload.web_html or "")),
+    )
+    try:
+        svc = _suite_service_for_user(user)
+        credits_error = await _generate_credits_error(user)
+        if credits_error:
+            if payload.stream:
+                async def _credits_error_stream():
+                    yield f"data: {json.dumps({'type': 'error', 'message': credits_error['message']}, ensure_ascii=False)}\n\n"
+                return StreamingResponse(
+                    _credits_error_stream(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                )
+            return credits_error
+
+        if payload.stream:
+            async def event_stream():
+                async for event in svc.stream_generate_suite_from_requirements(
+                    payload.requirement_text, payload.web_html, creativity=payload.creativity
+                ):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(
+                event_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
+        # 非流式：收集事件，complete 取 suite，error 抛 400
+        suite = None
+        async for event in svc.stream_generate_suite_from_requirements(
+            payload.requirement_text, payload.web_html, creativity=payload.creativity
+        ):
+            if event.get("type") == "error":
+                raise HTTPException(status_code=400, detail=event.get("message", "生成失败"))
+            if event.get("type") == "complete":
+                suite = event.get("suite")
+        if not suite:
+            raise HTTPException(status_code=500, detail="生成未返回套件数据")
+        return {"success": True, "suite": suite}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error generating template suite from requirements: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

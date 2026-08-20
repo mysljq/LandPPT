@@ -478,7 +478,65 @@ class ProjectOutlineNormalizationService:
             new_slide = dict(slide)
             new_slide["page_number"] = len(out) + 1
             out.append(new_slide)
+        # 章节号随页序重排：插过渡页改变了 slides 顺序，必须在此重算 chapter。
+        out = cls._assign_chapter_numbers(out)
         return out
+
+    @classmethod
+    def _assign_chapter_numbers(cls, slides: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """给每个 slide 标注它所属的章节序号（chapter 字段，纯阿拉伯数字 1/2/3…）。
+
+        复用 `_chapter_key_of_slide` 的章节起始信号判定：
+        - 遍历 slides，首次遇到一个新的章节起始 key → current_chapter += 1；
+        - content 页 → chapter = 它触发的章节序号；
+        - transition 页 → chapter = 它"所引章节"的序号（即其后第一个 content 页的章节），
+          这样过渡页显示的就是即将进入的章节号；
+        - cover / catalog / agenda / ending / 章节起始之外的页 → chapter = 0
+          （0 表示"不属于任何章节"，生成 PPT 时 chapter_number 槽位会清空）。
+
+        与 page_number 同级、由后端确定性计算，不信任 LLM 产出的 chapter。
+        幂等：每次调用都按当前 slides 顺序重算覆盖。
+        """
+        if not slides:
+            return slides
+        chapter_titles = cls._extract_chapter_titles(slides)
+
+        # 第一遍：先确定每个 content 页的章节序号（章节起始信号触发 +1）。
+        content_chapter: Dict[int, int] = {}  # slide 下标 -> chapter
+        current_chapter = 0
+        last_chapter_key: Optional[str] = None
+        prev_slide: Optional[Dict[str, Any]] = None
+        for idx, slide in enumerate(slides):
+            slide_type = str((slide or {}).get("slide_type") or (slide or {}).get("type") or "").strip().lower()
+            if slide_type == "content":
+                key = cls._chapter_key_of_slide(slide or {}, prev_slide, chapter_titles)
+                if key and key != last_chapter_key:
+                    current_chapter += 1
+                    last_chapter_key = key
+                content_chapter[idx] = current_chapter
+            prev_slide = slide or {}
+
+        # 第二遍：给每个 slide 赋 chapter。transition 取其后第一个 content 页的章节序号
+        #（过渡页属于它即将进入的章节）；其它非 content 页为 0。
+        result: List[Dict[str, Any]] = []
+        for idx, slide in enumerate(slides):
+            slide = dict(slide or {})
+            slide_type = str(slide.get("slide_type") or slide.get("type") or "").strip().lower()
+            if slide_type == "content":
+                slide["chapter"] = content_chapter.get(idx, 0)
+            elif slide_type == "transition":
+                # 找到本 transition 之后第一个 content 页的章节序号。
+                following_chapter = 0
+                for j in range(idx + 1, len(slides)):
+                    ft = str((slides[j] or {}).get("slide_type") or (slides[j] or {}).get("type") or "").strip().lower()
+                    if ft == "content":
+                        following_chapter = content_chapter.get(j, 0)
+                        break
+                slide["chapter"] = following_chapter
+            else:
+                slide["chapter"] = 0
+            result.append(slide)
+        return result
 
     @classmethod
     def _normalize_outline_root(cls, outline_data: Any) -> Dict[str, Any]:
@@ -655,6 +713,8 @@ class ProjectOutlineNormalizationService:
 
         # Apply transition type correction based on description heuristics
         standardized_slides = self._correct_transition_slide_types(standardized_slides)
+        # 章节号赋值：与 page_number 同级，按章节起始信号确定性计算（不信任 LLM）。
+        standardized_slides = self._assign_chapter_numbers(standardized_slides)
 
         standardized_outline = {
             "title": title,

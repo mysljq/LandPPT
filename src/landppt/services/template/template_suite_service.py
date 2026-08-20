@@ -14,8 +14,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..prompts.template_prompts import TemplatePrompts
 from .master_layout_extractor import MasterLayoutExtractor
@@ -38,8 +39,10 @@ class TemplateSuiteService:
     # ------------------------------------------------------------------
     # 品牌槽位（生成 PPT 时用真实项目值替换套件里固化的品牌文案）
     # ------------------------------------------------------------------
-    # 槽位名：套件（尤其新生成套件）里把年份/部门/主题/标语/编号写成这些槽位，
-    # 生成 PPT 前统一替换为项目真实值。老套件固化的文案则走 LLM 语义分析识别。
+    # 槽位名：套件（尤其新生成套件）里把年份/部门/主题/标语写成这些槽位，生成 PPT
+    # 前统一替换为项目真实值。老套件固化的文案则走 LLM 语义分析识别。
+    # brand_code（编号）已弃用：不再指导新套件生成，仅保留常量用于把老套件残留的
+    # {{brand_code}} 槽位清空——PPT 只要章节编号/页码，不要整份文档的整体编号。
     BRAND_SLOT_YEAR = "{{brand_year}}"
     BRAND_SLOT_ORG = "{{brand_org}}"
     BRAND_SLOT_TOPIC = "{{brand_topic}}"
@@ -50,7 +53,12 @@ class TemplateSuiteService:
         BRAND_SLOT_TAGLINE, BRAND_SLOT_CODE,
     )
     # 语义分析的角色：year/org/topic/tagline/code 会被替换；skip = 通用结构标签不替换。
+    # code（编号）角色仅对老套件生效：brand_code 真实值恒空，槽位会被标准替换清掉，
+    # 固化的编号文本（No.01）因无值保持原样 —— 与"PPT 不要整体编号"一致。
     BRAND_ROLES = ("year", "org", "topic", "tagline", "code", "skip")
+    # 章节号槽位（结构槽位性质）：过渡页/内容页 header_footer 用，生成 PPT 时填真实章节号。
+    # 不是品牌槽位（每页变、生成时才知道），故不进 BRAND_SLOTS/_ROLE_TO_SLOT。
+    CHAPTER_SLOT = "{{chapter_number}}"
     # 结构槽位（生成时有专门机制填充，不是品牌占位）——语义分析即使误归为品牌角色也不替换。
     STRUCTURE_SLOTS = frozenset({
         "cover_title", "cover_subtitle", "cover_extra",
@@ -58,6 +66,7 @@ class TemplateSuiteService:
         "catalog_title", "catalog_subtitle", "catalog_extra", "catalog_items",
         "ending_title", "ending_subtitle", "ending_extra", "ending_items",
         "page_title", "page_content", "current_page_number", "total_page_count",
+        "chapter_number",
     })
     # 角色 → 项目值槽位 的映射（用于把 LLM 归类的角色转成真实值来源）。
     _ROLE_TO_SLOT = {
@@ -92,6 +101,10 @@ class TemplateSuiteService:
             return "topic"
         if any(k in n for k in ("tagline", "slogan", "motto", "confidential", "internal", "privacy")):
             return "tagline"
+        # 章节号槽位（chapter_number/chapter 等）是结构槽位，不是品牌"编号"角色——
+        # 其值由大纲 chapter 字段在生成时填充，绝不能被启发式归为 code 以用空值清掉。
+        if "chapter" in n:
+            return None
         if any(k in n for k in ("code", "serial", "number", "issue")) or n.startswith("no"):
             return "code"
         return None
@@ -152,7 +165,9 @@ class TemplateSuiteService:
 
         年份：project.created_at 优先，其次当前年；主题：project.topic/title；
         部门：从主题常见前缀提取（部门/集团/公司/银行/团队），未命中则空；
-        标语/编号：confirmed_requirements 里的 brand_tagline / brand_code，未配置则空。
+        标语：confirmed_requirements 里的 brand_tagline，未配置则空。
+        brand_code（编号）已移除：不再从 confirmed 读取，恒为空串——只会把老套件
+        残留的 {{brand_code}} 槽位清空（PPT 只要章节编号/页码，不要整体文档编号）。
         """
         import datetime as _dt
 
@@ -185,7 +200,8 @@ class TemplateSuiteService:
             TemplateSuiteService.BRAND_SLOT_TOPIC: topic,
             TemplateSuiteService.BRAND_SLOT_ORG: org,
             TemplateSuiteService.BRAND_SLOT_TAGLINE: str(confirmed.get("brand_tagline") or "").strip(),
-            TemplateSuiteService.BRAND_SLOT_CODE: str(confirmed.get("brand_code") or "").strip(),
+            # brand_code（编号）不再生成/配置：恒空串，仅用于把老套件残留槽位替换为空（清除）。
+            TemplateSuiteService.BRAND_SLOT_CODE: "",
         }
 
     @staticmethod
@@ -551,6 +567,16 @@ class TemplateSuiteService:
             suite = metadata.get(self._METADATA_KEY)
             if not isinstance(suite, dict) or not suite:
                 return None
+            # 历史 brand_code → chapter_number 迁移（读时 backfill 安全网）：老项目套件
+            # 可能在 migration 014 落库前仍含 {{brand_code}}，读取时即时转换并回写库，
+            # 与下面 header_footer 自包含 backfill 同风格（变换 + 回写 _persist_suite）。
+            try:
+                migrated = self._migrate_suite_brand_code(suite)
+                if migrated is not suite and migrated != suite:
+                    await self._persist_suite(project_id, migrated)
+                    suite = migrated
+            except Exception as exc:
+                logger.warning("Migrate brand_code for project suite %s failed: %s", project_id, exc)
             # 大纲智能套件：不依赖母版模板，直接生效。
             if suite.get("template_mode") == "outline":
                 return suite
@@ -728,13 +754,14 @@ class TemplateSuiteService:
                 "cover_extra": "汇报人：张三 · 2026年8月",
             },
         )
-        # 过渡页：章节标题 + 引导语 + 章节说明
+        # 过渡页：章节标题 + 引导语 + 章节说明 + 章节号示例
         transition = _fill(
             suite.get("transition"),
             {
                 "transition_title": "第二章 · 核心方案",
                 "transition_subtitle": "从规划到落地，本部分介绍具体实施方案",
                 "transition_extra": "核心章节 · 敬请期待",
+                "chapter_number": "2",
             },
         )
         # 目录页：有样式的目录行示例（圆点 + 分隔线 + 双栏网格），而非纯段落文本
@@ -766,6 +793,7 @@ class TemplateSuiteService:
                 "page_title": "内容页标题（示例）",
                 "current_page_number": "3",
                 "total_page_count": "10",
+                "chapter_number": "2",
             },
         )
         content = self._wrap_content_preview(hf)
@@ -832,6 +860,54 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 </body>
 </html>"""
 
+
+    # ------------------------------------------------------------------
+    # 历史 brand_code → chapter_number 迁移（读时 backfill 安全网 + migration 014 落库共用）
+    # ------------------------------------------------------------------
+    # 老套件把"整体编号"写在 {{brand_code}}。新体系改为：过渡页/内容页用 {{chapter_number}}
+    # 表示当前章节序号；封面/目录/结尾页不要任何编号槽位。这里把老套件残留的 brand_code
+    # 槽位 token 按页面类型转换：transition/header_footer → chapter_number；其余 → 删除。
+    _BRAND_CODE_SLOT_RE = re.compile(r"{{\s*brand_code\s*}}")
+
+    @classmethod
+    def _migrate_brand_code_to_chapter(cls, html: str, page_kind: str) -> str:
+        """把一段套件 HTML 里的 {{brand_code}} 槽位按页面类型转换。
+
+        - page_kind in ("transition", "header_footer") → 替换成 {{chapter_number}}（章节号槽位）；
+        - page_kind in ("cover", "catalog", "ending") → 删除（这些页面不该有编号槽位）；
+        - 其它/无 brand_code → 原样返回。
+
+        兼容 {{brand_code}} 与 {{ brand_code }} 两种写法（与品牌替换正则一致）。
+        幂等：不含 brand_code 的 HTML 原样返回；已迁移过的不会重复处理。
+        """
+        if not html:
+            return html
+        if page_kind in ("transition", "header_footer"):
+            return cls._BRAND_CODE_SLOT_RE.sub("{{chapter_number}}", html)
+        if page_kind in ("cover", "catalog", "ending"):
+            return cls._BRAND_CODE_SLOT_RE.sub("", html)
+        return html
+
+    @classmethod
+    def _migrate_suite_brand_code(cls, suite: Dict[str, Any]) -> Dict[str, Any]:
+        """对一份套件 dict 的 5 段 HTML 各自做 brand_code→chapter 迁移，返回新副本。
+
+        只在含 brand_code 时改动；幂等。design_tokens 不动（非 HTML，含 CSS 变量字面量）。
+        """
+        if not isinstance(suite, dict):
+            return suite
+        if not any(
+            cls._BRAND_CODE_SLOT_RE.search(str(suite.get(k) or ""))
+            for k in ("cover", "transition", "catalog", "ending", "header_footer")
+        ):
+            return suite
+        updated = dict(suite)
+        for k in ("cover", "transition", "catalog", "ending", "header_footer"):
+            html = str(suite.get(k) or "")
+            migrated = cls._migrate_brand_code_to_chapter(html, k)
+            if migrated != html:
+                updated[k] = migrated
+        return updated
 
     def _clear_caches(self, project_id: str) -> None:
         try:
@@ -1355,6 +1431,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         project: Any = None,
         allow_no_template: bool = False,
         custom_requirements: str = "",
+        source_kind: str = "master",
     ) -> Dict[str, Any]:
         """Generate a suite dict via one LLM call (no project persistence).
 
@@ -1362,6 +1439,10 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         creativity：0-10 刻度；reference_outline：为 True 时把项目主题/大纲传入模型。
         allow_no_template=True：无母版（大纲智能套件）——模型根据项目大纲/主题自行设计一套。
         custom_requirements：用户自定义要求（如主题色/风格），注入 prompt 让模型遵循。
+        source_kind："master"=基于 PPT 母版（默认）；"web"=基于用户粘贴的网页 HTML，
+        此时 template["html_template"] 即网页 HTML，套件风格须与该网页一致。web 模式下
+        生成 header_footer 时传空 template_html 给 _ensure_header_footer_complete——网页
+        DOM 不适合当内容页母版骨架注入，避免把网页结构硬塞进内容页。
         """
         template = template or {}
         html = (template.get("html_template") or "") if template else ""
@@ -1390,6 +1471,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             creativity=creativity,
             reference_outline=reference_outline,
             custom_requirements=custom_requirements,
+            source_kind=source_kind,
         )
         logger.info("套件提示词构建完成（%s 字符），开始调用 AI...", len(prompt))
 
@@ -1424,8 +1506,11 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
         identity = self._template_identity(template)
         header_footer = validated["header_footer"]
+        # web 模式：网页 DOM 不适合当内容页母版骨架，传空 html 跳过骨架注入
+        # （仍保留 :root 变量内联与 main-stage 兜底）。master 模式沿用原逻辑。
+        hf_template_html = "" if source_kind == "web" else html
         header_footer = self._ensure_header_footer_complete(
-            header_footer, html, extracted.get("root_variables") or ""
+            header_footer, hf_template_html, extracted.get("root_variables") or ""
         )
         suite = {
             "cover": validated["cover"],

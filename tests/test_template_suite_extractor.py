@@ -2310,13 +2310,15 @@ class _BrandProjectNoOrg:
 
 
 def test_resolve_brand_values():
-    """品牌值解析：年份取自 created_at、主题取自 topic、部门从主题前缀提取。"""
+    """品牌值解析：年份取自 created_at、主题取自 topic、部门从主题前缀提取。
+    brand_code（编号）恒为空——不再生成/配置，老套件残留槽位仅被清空。"""
     from landppt.services.template.template_suite_service import TemplateSuiteService as T
 
     v = T._resolve_brand_values(_BrandProject())
     assert v["{{brand_year}}"] == "2026"
     assert v["{{brand_topic}}"] == "部门工作情况汇报"
     assert v["{{brand_org}}"] == "部门"
+    assert v["{{brand_code}}"] == "", "brand_code 恒为空串（不读取 confirmed['brand_code']）"
 
     v2 = T._resolve_brand_values(_BrandProjectNoOrg())
     assert v2["{{brand_org}}"] == "", "非部门前缀主题不提取 org"
@@ -2437,6 +2439,8 @@ def test_suite_prompt_requires_brand_slots():
     )
     assert "brand_year" in p
     assert "brand_org" in p and "brand_topic" in p and "brand_tagline" in p
+    assert "- 编号 → {{ brand_code }}" not in p, "新套件生成 prompt 不应再要求 brand_code 编号槽位"
+    assert "不要生成整份文档的整体编号" in p, "应明确禁止整体编号、只保留章节编号/页码"
     assert "不要写死" in p, "应明确禁止固化示例品牌值"
     assert "2024" in p and "DEPARTMENT" in p, "应举例说明禁止固化的值"
 
@@ -2448,11 +2452,13 @@ def test_preview_html_fills_brand_slots_with_samples():
     suite = {
         "cover": "<!DOCTYPE html><html><body><h1>{{cover_title}}</h1>"
                  "<span>{{brand_year}} · {{brand_org}}</span><span>{{brand_tagline}}</span></body></html>",
-        "transition": "<!DOCTYPE html><html><body><h1>{{transition_title}}</h1><p>{{brand_topic}}</p></body></html>",
+        "transition": "<!DOCTYPE html><html><body><h1>{{transition_title}}</h1>"
+                      "<p>{{brand_topic}}</p><span>{{chapter_number}}</span></body></html>",
         "catalog": "<!DOCTYPE html><html><body><h1>{{catalog_title}}</h1></body></html>",
         "ending": "<!DOCTYPE html><html><body><h1>{{ending_title}}</h1><span>{{brand_code}}</span></body></html>",
         "header_footer": (
-            "<div class='page-header'><span>{{brand_year}} · {{brand_topic}}</span></div>"
+            "<div class='page-header'><span>{{brand_year}} · {{brand_topic}}</span>"
+            "<span>{{chapter_number}}</span></div>"
             "<div class='page-body'>{{page_content}}</div>"
             "<div class='page-footer'>{{current_page_number}}/{{total_page_count}} {{brand_org}}</div>"
         ),
@@ -2468,19 +2474,22 @@ def test_preview_html_fills_brand_slots_with_samples():
     assert "XX部门" in cover
     assert "DEPARTMENT WORK REPORT" in cover
 
-    # transition：brand_topic 示例值
+    # transition：brand_topic 示例值 + chapter_number 示例值（2）
     assert "年度工作报告" in preview["transition"]
     assert "{{brand_topic}}" not in preview["transition"]
+    assert "{{chapter_number}}" not in preview["transition"], "章节号槽位应被预览示例值填充"
+    assert "2" in preview["transition"], "过渡页章节号示例值应为 2"
 
     # ending：brand_code 示例值
     assert "No.01" in preview["ending"]
     assert "{{brand_code}}" not in preview["ending"]
 
-    # content 页 header/footer：品牌槽位也填充
+    # content 页 header/footer：品牌槽位也填充 + chapter_number 示例值（2）
     content = preview["content"]
     assert "{{brand_year}}" not in content
     assert "2026" in content
     assert "XX部门" in content
+    assert "{{chapter_number}}" not in content, "内容页章节号槽位应被预览示例值填充"
     # 标准槽位仍正常
     assert "{{page_content}}" not in content
     assert "{{current_page_number}}" not in content
@@ -2764,3 +2773,376 @@ def test_header_footer_complete_accepts_suite_prefixed_skeleton():
     out = T._ensure_header_footer_complete(suite_hf, "<div>tpl</div>", "")
     assert "母版内容页骨架" not in out, "suite- 前缀完整骨架不应再被注入母版骨架"
     assert "suite-canvas" in out
+
+
+# ---------------- AI生成套件（文字需求 + 可选网页 HTML） ----------------
+
+def test_build_template_suite_prompt_web_source():
+    """source_kind='web' 时提示词用"参考网页"措辞并含网页 HTML 与文字需求；
+    默认 source_kind 仍用"母版 HTML 原文"措辞（回归保护）。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    web_html = "<!DOCTYPE html><html><head><style>body{background:#0b1020;color:#e5e7eb;"
+    "font-family:'Inter',sans-serif}</style></head><body><h1>Welcome</h1></body></html>"
+    req = "科技感、深色系、几何装饰"
+
+    p_web = TemplatePrompts.build_template_suite_prompt(
+        template_html=web_html,
+        custom_requirements=req,
+        source_kind="web",
+    )
+    assert "参考网页 HTML" in p_web, "web 源应使用参考网页措辞"
+    assert "保持一致" in p_web, "web 源应明确风格与网页保持一致"
+    assert web_html in p_web, "web 源应包含传入的网页 HTML"
+    assert req in p_web, "文字需求应通过 custom_requirements 注入"
+    assert "母版 HTML 原文" not in p_web, "web 源不应再用母版措辞"
+
+    # 默认 source_kind=master 仍用母版措辞
+    p_master = TemplatePrompts.build_template_suite_prompt(
+        template_html=web_html,
+    )
+    assert "母版 HTML 原文" in p_master, "默认源应保留母版措辞（回归保护）"
+
+
+def test_build_template_suite_prompt_web_source_truncates_long_html():
+    """网页 HTML 过长时截断并附截断注释；无网页 HTML 时显示提示文案。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    long_html = "x" * 70000
+    p_long = TemplatePrompts.build_template_suite_prompt(
+        template_html=long_html, source_kind="web",
+    )
+    assert "已截断" in p_long, "过长网页 HTML 应截断并附注释"
+    assert "x" * 70000 not in p_long, "截断后不应包含完整原文"
+
+    p_empty = TemplatePrompts.build_template_suite_prompt(
+        template_html="", source_kind="web",
+    )
+    assert "未提供网页 HTML" in p_empty, "无网页 HTML 时应显示提示文案"
+
+
+def test_generate_suite_payload_web_source_skips_skeleton_injection():
+    """source_kind='web' 调 _generate_suite_payload 时，header_footer 不被注入
+    母版骨架（网页 DOM 不当内容页骨架注入）。用 FakeService 捕获：网页里
+    有 .canvas/.bg-paper 但生成结果 header_footer 不含母版骨架 marker。"""
+    import asyncio
+    import json
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    class FakeService:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            return type("R", (), {"content": json.dumps({
+                "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+                "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>",
+                "header_footer": (
+                    '<style>.hf-canvas{position:relative;width:1280px;height:720px}</style>'
+                    '<div class="hf-canvas"><div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                ),
+                "design_tokens": "字体栈：A；强调色：#1a2b3c",
+            }, ensure_ascii=False)})()
+
+    svc = TemplateSuiteService(FakeService())
+    # 网页 HTML 含 .canvas/.bg-paper 装饰——若误注入母版骨架会出现 marker
+    web_html = (
+        "<!DOCTYPE html><html><head><style>.canvas{position:relative}.bg-paper{position:absolute}</style>"
+        "</head><body><div class='canvas'><div class='bg-paper'></div><h1>Web</h1></div></body></html>"
+    )
+    template = {"id": 9, "template_name": "网页", "html_template": web_html}
+
+    async def run():
+        return await svc._generate_suite_payload(
+            template, creativity=5, reference_outline=False, project=None,
+            allow_no_template=True, source_kind="web",
+        )
+
+    result = asyncio.run(run())
+    hf = result["header_footer"]
+    assert "母版内容页骨架" not in hf, "web 源不应把网页 DOM 当母版骨架注入内容页"
+    assert "page_title" in hf and "page_content" in hf, "槽位应保留"
+
+
+def test_stream_generate_suite_from_requirements_both_empty_errors():
+    """文字需求与网页 HTML 都空时，事件流为 error（不调用 LLM）。"""
+    import asyncio
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    svc = GlobalTemplateSuiteService()
+
+    async def run():
+        events = []
+        async for ev in svc.stream_generate_suite_from_requirements("", "", creativity=5):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run())
+    assert len(events) == 1, "空输入应只产出一个 error 事件"
+    assert events[0]["type"] == "error", events
+    assert "至少填写文字需求或粘贴网页 HTML" in events[0]["message"], events
+
+
+def test_stream_generate_suite_from_requirements_completes():
+    """文字需求 + 网页 HTML 都提供时，走 _generate_suite_payload(source_kind='web')，
+    complete 事件返回独立套件（template_id 为 None）。通过 FakeHost 捕获 prompt
+    确含网页 HTML 片段与文字需求。"""
+    import asyncio
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    captured = {"prompt": "", "source_kind": None}
+
+    class FakeHost:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            # 不会被调用——_generate_suite_payload 被下面直接覆盖
+            return type("R", (), {"content": ""})()
+
+        async def _generate_suite_payload(self, template, **kwargs):
+            captured["prompt"] = kwargs.get("prompt", "") or "(no prompt)"
+            # 复用真实 prompt 构建器，让断言能验证 web 源措辞与内容注入
+            from landppt.services.prompts.template_prompts import TemplatePrompts
+            captured["prompt"] = TemplatePrompts.build_template_suite_prompt(
+                template_html=template.get("html_template") or "",
+                custom_requirements=kwargs.get("custom_requirements") or "",
+                source_kind=kwargs.get("source_kind") or "master",
+            )
+            captured["source_kind"] = kwargs.get("source_kind")
+            return {
+                "cover": "<!DOCTYPE html><html><body><h1>{{ cover_title }}</h1></body></html>",
+                "transition": "<!DOCTYPE html><html><body><h1>{{ transition_title }}</h1></body></html>",
+                "header_footer": (
+                    '<div class="hf-canvas"><style>.hf-canvas{}</style>'
+                    '<div class="main-stage">{{ page_content }}</div>'
+                    "<header>{{ page_title }}</header>"
+                    "<footer>{{ current_page_number }}/{{ total_page_count }}</footer></div>"
+                ),
+                "design_tokens": "字体栈：A；强调色：#1a2b3c",
+                "template_hash": "x", "template_id": None, "template_name": None,
+                "generated_at": 0,
+            }
+
+    svc = GlobalTemplateSuiteService()
+    svc._build_host = lambda: FakeHost()
+
+    web_html = "<!DOCTYPE html><html><body style='background:#0b1020'><h1>WebDesign</h1></body></html>"
+    req = "深色科技感"
+
+    async def run():
+        events = []
+        async for ev in svc.stream_generate_suite_from_requirements(req, web_html, creativity=6):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(run())
+    types = [e["type"] for e in events]
+    assert types[-1] == "complete", events
+    suite = events[-1]["suite"]
+    assert suite["cover"].startswith("<!DOCTYPE html>")
+    assert "page_title" in suite["header_footer"]
+    assert suite.get("template_id") is None, "需求/网页生成的套件是独立套件，不绑定模板"
+    assert suite.get("suite_name") == "AI 生成套件", "应有默认套件名"
+    # prompt 应携带网页 HTML 片段与文字需求（source_kind='web' 措辞）
+    assert captured["source_kind"] == "web", "应以 web 源调用 _generate_suite_payload"
+    assert "参考网页 HTML" in captured["prompt"], "应按 web 源措辞构建 prompt"
+    assert "WebDesign" in captured["prompt"], "prompt 应含网页 HTML 内容"
+    assert req in captured["prompt"], "prompt 应含文字需求"
+
+
+# ======================================================================
+# 章节号槽位 {{chapter_number}}：大纲 chapter 字段 + 套件生成/填充 + 历史 brand_code 迁移
+# ======================================================================
+
+
+def test_suite_prompt_supports_chapter_number():
+    """新套件生成 prompt 应支持 {{chapter_number}} 槽位，且只在 transition/header_footer 段提及。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI大模型"
+        scenario = "峰会"
+
+    outline = {"title": "T", "slides": [{"title": "a", "slide_type": "title"}]}
+    p = TemplatePrompts.build_template_suite_prompt(
+        project=P(), outline=outline, confirmed={"target_audience": "高管"},
+        template_html="<div>tpl</div>", creativity=5,
+    )
+    assert "chapter_number" in p, "prompt 应提及章节号槽位 chapter_number"
+    # 单类型重生 meta 也应含章节号说明
+    from landppt.services.prompts.template_prompts import TemplatePrompts as TP
+    assert "chapter_number" in TP._SUITE_PART_META["transition"]["desc"]
+    assert "chapter_number" in TP._SUITE_PART_META["header_footer"]["desc"]
+    # 禁制仍保留：不要整体编号 + 章节号只在过渡页/内容页
+    assert "不要生成整份文档的整体编号" in p
+    assert "chapter_number" in p
+
+
+def test_chapter_number_in_structure_slots_and_not_brand():
+    """chapter_number 必须在 STRUCTURE_SLOTS 里（防被品牌语义分析误归 code），且不归品牌角色。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    assert "chapter_number" in T.STRUCTURE_SLOTS, "chapter_number 必须在 STRUCTURE_SLOTS 里"
+    assert T._brand_role_by_name("chapter_number") is None, "chapter_number 不应被归为品牌角色"
+    # CHAPTER_SLOT 常量
+    assert T.CHAPTER_SLOT == "{{chapter_number}}"
+
+
+def test_default_slot_text_chapter_number():
+    """_default_slot_text 对 chapter_number 取 slide_data['chapter']，纯数字；缺失返回空。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    assert SlideMediaService._default_slot_text("chapter_number", {"chapter": 3}, 5) == "3"
+    assert SlideMediaService._default_slot_text("chapter_number", {"chapter": 0}, 5) == "0"
+    assert SlideMediaService._default_slot_text("chapter_number", {}, 5) == ""
+    # 非 chapter 槽位不受影响
+    assert SlideMediaService._default_slot_text("cover_extra", {"title": "x", "content_points": ["a"]}, 1) == "a"
+
+
+def test_replace_remaining_content_slots_fills_chapter():
+    """内容页兜底：残留的 {{chapter_number}} 应被填成真实章节号。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = "<div>{{page_title}}</div><div>{{chapter_number}}</div><div>{{page_content}}</div>"
+    out = SlideMediaService._replace_remaining_content_slots(
+        html, {"title": "T", "chapter": 2, "content_points": ["a"]}, 4, 10
+    )
+    assert "{{chapter_number}}" not in out
+    assert ">2<" in out, "章节号 2 应被填入"
+
+
+def test_build_content_suite_constraint_includes_chapter():
+    """内容页约束 prompt 应含 {{chapter_number}} 说明 + 本页真实章节号值。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": '<div class="suite-stage">{{ page_content }}<span>{{chapter_number}}</span></div>'
+                         "<style>.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>",
+        "design_tokens": "t",
+    }
+    c = SlideMediaService._build_content_suite_constraint(suite, {"chapter": 3})
+    assert "chapter_number" in c, "约束应说明 chapter_number 槽位"
+    assert "3" in c, "约束应含本页真实章节号 3"
+
+    # 无 chapter（非章节页）也应给出"不属于任何章节"语义
+    c2 = SlideMediaService._build_content_suite_constraint(suite, {})
+    assert "chapter_number" in c2
+    assert "不属于任何章节" in c2 or "留空" in c2
+
+
+def test_apply_suite_to_slide_fills_chapter_number_for_transition():
+    """过渡页确定性填充：{{chapter_number}} 应被填成 slide_data['chapter']。"""
+    from landppt.services.template.template_suite_renderer import TemplateSuiteRenderer
+
+    suite = {
+        "transition": "<!DOCTYPE html><html><body><h1>{{transition_title}}</h1>"
+                      "<span>{{chapter_number}}</span></body></html>",
+    }
+    slide_data = {"title": "第二章 方案", "slide_type": "transition", "chapter": 2, "content_points": ["第二章 方案"]}
+    filled = TemplateSuiteRenderer.apply_suite_to_slide(suite, slide_data, 5, 10)
+    assert filled is not None
+    assert "{{chapter_number}}" not in filled, "过渡页 chapter_number 槽位应被填充"
+    assert ">2<" in filled or "2" in filled, "章节号 2 应出现在过渡页"
+
+    # catalog/ending 不填章节号（即使模板里残留也不该填——历史套件已迁移删除）
+    suite2 = {"catalog": "<!DOCTYPE html><html><body><h1>{{catalog_title}}</h1>"
+                         "<span>{{chapter_number}}</span></body></html>"}
+    filled2 = TemplateSuiteRenderer.apply_suite_to_slide(suite2, {"title": "目录", "slide_type": "catalog", "chapter": 1}, 2, 10)
+    # catalog 走 apply_suite_to_slide，chapter_number 未在 slots 里 → 残留（由后续清理/backfill 处理）
+    assert filled2 is not None
+
+
+def test_migrate_brand_code_to_chapter():
+    """历史 brand_code 槽位迁移：transition/header_footer → chapter_number；cover/catalog/ending → 删除。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    # 带空格写法
+    assert T._migrate_brand_code_to_chapter("<span>{{ brand_code }}</span>", "transition") == "<span>{{chapter_number}}</span>"
+    # 无空格写法
+    assert T._migrate_brand_code_to_chapter("<span>{{brand_code}}</span>", "header_footer") == "<span>{{chapter_number}}</span>"
+    # cover/catalog/ending 删除
+    assert T._migrate_brand_code_to_chapter("<span>{{ brand_code }}</span>", "cover") == "<span></span>"
+    assert T._migrate_brand_code_to_chapter("x{{brand_code}}y", "catalog") == "xy"
+    assert T._migrate_brand_code_to_chapter("x{{ brand_code }}y", "ending") == "xy"
+    # 无 brand_code 原样返回
+    assert T._migrate_brand_code_to_chapter("<span>{{brand_year}}</span>", "transition") == "<span>{{brand_year}}</span>"
+    assert T._migrate_brand_code_to_chapter("plain text", "cover") == "plain text"
+    # design_tokens（非 HTML 页类型）不动
+    assert T._migrate_brand_code_to_chapter("--brand-code: #c00", "design_tokens") == "--brand-code: #c00"
+
+    # suite 级迁移：幂等
+    suite = {
+        "cover": "{{brand_code}}",
+        "transition": "{{ brand_code }}",
+        "catalog": "",
+        "ending": "",
+        "header_footer": "{{brand_code}}",
+        "design_tokens": "--brand-code: #c00",
+    }
+    m = T._migrate_suite_brand_code(suite)
+    assert m["cover"] == ""
+    assert m["transition"] == "{{chapter_number}}"
+    assert m["header_footer"] == "{{chapter_number}}"
+    assert m["design_tokens"] == "--brand-code: #c00", "design_tokens 不应被迁移"
+    # 二次迁移幂等（无 brand_code → 原样返回同一对象）
+    m2 = T._migrate_suite_brand_code(m)
+    assert m2 == m
+
+
+def test_migrate_suite_brand_code_no_op_when_clean():
+    """无 brand_code 的套件：_migrate_suite_brand_code 应原样返回（无副本开销）。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    suite = {"cover": "x", "transition": "y", "catalog": "", "ending": "", "header_footer": "z"}
+    out = T._migrate_suite_brand_code(suite)
+    assert out is suite, "干净套件应原样返回同一对象"
+
+
+def test_get_suite_payload_migrates_brand_code(monkeypatch):
+    """库套件读取入口 get_suite_payload 应把残留 brand_code 即时迁移成 chapter_number。"""
+    import asyncio
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    class FakeSuite:
+        is_active = True
+        cover = "<!DOCTYPE html><html><body>{{brand_code}}</body></html>"
+        transition = "<!DOCTYPE html><html><body>{{ brand_code }}</body></html>"
+        catalog = "<!DOCTYPE html><html><body>{{brand_code}}</body></html>"
+        ending = "<!DOCTYPE html><html><body>{{ brand_code }}</body></html>"
+        header_footer = "<div>{{brand_code}}</div>"
+        design_tokens = "--brand-code: #c00"
+        template_hash = "h"
+        template_id = None
+        template_name = "t"
+        suite_name = "t"
+        updated_at = 0.0
+        created_at = 0.0
+
+    class FakeDB:
+        async def get_global_template_suite_by_id(self, sid):
+            return FakeSuite()
+
+        class session:
+            @staticmethod
+            async def close():
+                pass
+
+    # get_suite_payload 直接走 self._db()（不是 _build_host），因此须把 _db 换成假库。
+    svc = GlobalTemplateSuiteService()
+
+    async def fake_db():
+        return FakeDB()
+
+    svc._db = fake_db
+
+    async def run():
+        return await svc.get_suite_payload(1)
+
+    payload = asyncio.run(run())
+    assert payload is not None
+    assert "{{brand_code}}" not in payload["cover"], "cover 的 brand_code 应被删除"
+    assert payload["transition"] == "<!DOCTYPE html><html><body>{{chapter_number}}</body></html>"
+    # header_footer：brand_code 迁移成 chapter_number；同时读取时可能附加 .suite-stage
+    # 标准化 CSS（_ensure_standard_content_stage 的既有行为），故只断言迁移结果，不做整体相等。
+    assert "{{brand_code}}" not in payload["header_footer"]
+    assert "{{chapter_number}}" in payload["header_footer"]
+    assert "{{brand_code}}" not in payload["catalog"] and "{{brand_code}}" not in payload["ending"]
+    assert payload["design_tokens"] == "--brand-code: #c00", "design_tokens 不动"
+

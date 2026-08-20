@@ -225,6 +225,10 @@ def create_outline_from_file_content(content: str, request: Any) -> Dict[str, An
                     }
                 )
 
+        # 与 LLM 路径一致：后端确定性赋章节序号（chapter 字段），不信任 LLM。
+        from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
+        slides = _Normalizer._assign_chapter_numbers(slides)
+
         return {
             "title": title,
             "slides": slides,

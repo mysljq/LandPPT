@@ -312,3 +312,94 @@ def test_ensure_transition_slides_chapter_start_by_number_prefix():
         "transition", "content",
         "conclusion",
     ], types
+
+
+# ======================================================================
+# 章节号字段 chapter：与 page_number 同级，按章节起始信号确定性赋值
+# ======================================================================
+
+
+def test_assign_chapter_numbers_basic():
+    """chapter 字段：cover/catalog/ending=0；content 按章节起始递增；同章子页沿用。"""
+    slides = [
+        _mk_slide(1, "报告", "title"),
+        _mk_slide(2, "目录", "agenda"),
+        _mk_slide(3, "一、背景", "content"),
+        _mk_slide(4, "背景细节", "content"),
+        _mk_slide(5, "二、方案", "content"),
+        _mk_slide(6, "三、落地", "content"),
+        _mk_slide(7, "谢谢", "conclusion"),
+    ]
+    out = ProjectOutlineNormalizationService._assign_chapter_numbers(slides)
+    chapters = [s["chapter"] for s in out]
+    assert chapters == [0, 0, 1, 1, 2, 3, 0], chapters
+
+
+def test_assign_chapter_numbers_transition_inherits_following_chapter():
+    """过渡页 chapter 取其后第一个 content 页的章节号（过渡页属于它即将进入的章节）。"""
+    slides = [
+        _mk_slide(1, "报告", "title"),
+        _mk_slide(2, "目录", "agenda"),
+        _mk_slide(3, "一、背景", "transition"),  # 后面是"一、背景"content → chapter 1
+        _mk_slide(4, "一、背景", "content"),
+        _mk_slide(5, "二、方案", "transition"),  # chapter 2
+        _mk_slide(6, "二、方案", "content"),
+        _mk_slide(7, "谢谢", "conclusion"),
+    ]
+    out = ProjectOutlineNormalizationService._assign_chapter_numbers(slides)
+    chapters = [(s["slide_type"], s["chapter"]) for s in out]
+    assert chapters == [
+        ("title", 0), ("agenda", 0),
+        ("transition", 1), ("content", 1),
+        ("transition", 2), ("content", 2),
+        ("conclusion", 0),
+    ], chapters
+
+
+def test_ensure_transition_slides_assigns_chapter():
+    """_ensure_transition_slides 插过渡页后，chapter 应整体重排且过渡页继承正确章节号。"""
+    slides = [
+        _mk_slide(1, "报告", "title"),
+        _mk_slide(2, "目录", "agenda"),
+        _mk_slide(3, "一、背景", "content"),
+        _mk_slide(4, "二、方案", "content"),
+        _mk_slide(5, "三、落地", "content"),
+        _mk_slide(6, "结束", "conclusion"),
+    ]
+    fixed = ProjectOutlineNormalizationService._ensure_transition_slides(slides, True)
+    # 每页 chapter 正确：cover/agenda=0；每章 transition+content 同号；conclusion=0
+    expected = [
+        ("title", 0), ("agenda", 0),
+        ("transition", 1), ("content", 1),
+        ("transition", 2), ("content", 2),
+        ("transition", 3), ("content", 3),
+        ("conclusion", 0),
+    ]
+    actual = [(s["slide_type"], s["chapter"]) for s in fixed]
+    assert actual == expected, actual
+    # page_number 仍连续
+    assert [s["page_number"] for s in fixed] == list(range(1, len(fixed) + 1))
+
+
+def test_standardize_outline_format_assigns_chapter():
+    """_standardize_outline_format 产出的大纲每个 slide 应有 chapter 字段。"""
+    outline = {
+        "title": "T",
+        "slides": [
+            {"page_number": 1, "title": "报告", "content_points": ["a"], "slide_type": "title"},
+            {"page_number": 2, "title": "目录", "content_points": ["一、背景", "二、方案"], "slide_type": "agenda"},
+            {"page_number": 3, "title": "一、背景", "content_points": ["a"], "slide_type": "content"},
+            {"page_number": 4, "title": "二、方案", "content_points": ["a"], "slide_type": "content"},
+            {"page_number": 5, "title": "谢谢", "content_points": ["a"], "slide_type": "thankyou"},
+        ],
+        "metadata": {},
+    }
+    svc = ProjectOutlineNormalizationService.__new__(ProjectOutlineNormalizationService)
+    out = svc._standardize_outline_format(outline)
+    chapters = [(s["slide_type"], s.get("chapter")) for s in out["slides"]]
+    assert chapters == [
+        ("title", 0), ("agenda", 0),
+        ("content", 1), ("content", 2),
+        ("thankyou", 0),
+    ], chapters
+

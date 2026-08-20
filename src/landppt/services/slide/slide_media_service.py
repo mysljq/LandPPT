@@ -89,7 +89,7 @@ class SlideMediaService:
                         )
                         if filled:
                             return filled
-                        suite_constraint = self._build_content_suite_constraint(suite)
+                        suite_constraint = self._build_content_suite_constraint(suite, slide_data)
                         suite_skeleton_marker = self._extract_suite_skeleton_marker(
                             str(suite.get("header_footer") or "")
                         )
@@ -249,6 +249,7 @@ class SlideMediaService:
             "page_content": body,
             "current_page_number": str(page_number),
             "total_page_count": str(total_pages),
+            "chapter_number": str((slide_data or {}).get("chapter") or ""),
         }
         def _sub(m: _re.Match) -> str:
             name = m.group(1).strip()
@@ -380,17 +381,21 @@ class SlideMediaService:
         return "\n".join(lines)
 
     @staticmethod
-    def _build_content_suite_constraint(suite: Dict[str, Any]) -> str:
+    def _build_content_suite_constraint(suite: Dict[str, Any], slide_data: Optional[Dict[str, Any]] = None) -> str:
         """Build the strong content-page constraint text.
 
         让 LLM 把套件的 header_footer 当作内容页的整页骨架逐字保留，只替换槽位；
         正文放 {{page_content}}，避免出现双标题 / 层级错乱 / 风格不一的页面。
+        slide_data 用于把本页真实章节号（chapter 字段）传给 LLM 填 {{chapter_number}}。
         """
         header_footer = str(suite.get("header_footer") or "").strip()
         if not header_footer:
             return ""
         tokens = str(suite.get("design_tokens") or "").strip()
         design_lang = SlideMediaService._extract_suite_design_language(suite)
+        slide_data = slide_data or {}
+        chapter = slide_data.get("chapter")
+        chapter_num_text = str(chapter) if chapter not in (None, "") else "（本页不属于任何章节，章节号槽位留空）"
         lines = [
             "**内容页强约束（必须把下面这段 HTML 作为本页的整页骨架，逐字保留，不得重新设计、不得丢弃任何元素——尤其 `<style>` 块必须整段保留，缺了样式整页就废了）**",
             "页头与页脚（含高度、位置、背景、装饰、样式）必须与套件**完全一致**，禁止改动高度/位置/配色；"
@@ -400,6 +405,7 @@ class SlideMediaService:
             "**必须把以下槽位用真实内容替换，不得保留 `{{...}}` 原样**（双大括号是占位符，不是装饰）：",
             "  - `{{page_title}}` → 本页标题（**标题只出现在这里**；正文内容里不要再出现与页头重复的大标题/标题块）；",
             "  - `{{current_page_number}}` / `{{total_page_count}}` → 页码（数字）；",
+            f"  - `{{chapter_number}}` → 本页所属章节序号（纯数字）：**{chapter_num_text}**；骨架里若无该槽位则忽略，有则必须替换为这个数字，不得保留 `{{chapter_number}}` 原样；",
             "  - `{{page_content}}` → 本页正文内容（**填在该槽位处，作为页头与页脚之间的正文占位区；正文不得放到该槽位之外、不得在骨架外另起内容块、不得放在页面底部**）。排版沿用骨架的配色/字体。",
             "层级与布局：背景/装饰层绝对定位铺满整页且 z-index 低；正文内容容器 z-index 必须**高于**背景/装饰层，"
             "正文不能被背景图案盖住；正文不要溢出到页头/页脚区域。",
@@ -620,6 +626,12 @@ class SlideMediaService:
         # 避免出现 "[brand_org]" 这类占位残留（也不应交给每页 LLM 补全导致各页不一致）。
         if str(name or "").startswith("brand_"):
             return ""
+
+        # 章节号槽位（过渡页/内容页）：取大纲后端赋的 chapter 字段，纯数字。
+        # chapter 为 0/缺失（非章节页或未归属）→ 返回空串清掉槽位。
+        if name == "chapter_number":
+            chapter = slide_data.get("chapter")
+            return str(chapter) if chapter not in (None, "") else ""
 
         def _first_content_point() -> str:
             content_points = slide_data.get("content_points") or slide_data.get("content") or []

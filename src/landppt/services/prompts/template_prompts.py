@@ -391,6 +391,7 @@ class TemplatePrompts:
         creativity: int = 0,
         reference_outline: bool = False,
         custom_requirements: str = "",
+        source_kind: str = "master",
     ) -> str:
         """组装"模板套件"生成提示词。
 
@@ -405,6 +406,9 @@ class TemplatePrompts:
         reference_outline：为 True 时才把项目主题/大纲/受众等信息传给模型；
         默认 False = 套件只基于母版模板生成，不绑定具体项目内容。
         custom_requirements：用户自定义要求（如主题色/风格），设计时须遵循。
+        source_kind："master"=基于 PPT 母版模板（默认，保持现有行为）；
+        "web"=基于用户粘贴的网页 HTML（template_html 即网页 HTML），套件配色/字体/版式/
+        背景装饰/视觉语言须与该网页保持一致；无母版页头页脚原文可用。
         """
         outline = outline or {}
         confirmed = confirmed or {}
@@ -451,6 +455,27 @@ class TemplatePrompts:
 {footer_block.strip() or "(未能提取到明确页脚)"}
 """
 
+        # 参考源区块：按 source_kind 分支。web 模式 = 基于用户粘贴的网页 HTML，
+        # 无 PPT 母版页头页脚原文可用（网页导航/页脚不适合做内容页页头页脚），
+        # 内容页页头页脚需模型自行设计（仍须遵循 .suite-stage 等结构约束）。
+        if source_kind == "web":
+            web_html_raw = (template_html or "").strip()
+            if len(web_html_raw) > 60000:
+                web_html_raw = (
+                    web_html_raw[:60000]
+                    + "\n<!-- 网页 HTML 较长，已截断；请重点参考其配色/字体/版式/背景装饰风格 -->"
+                )
+            source_section = (
+                "**参考网页 HTML（套件的配色/字体/版式/背景装饰/视觉语言必须与此网页保持一致）**\n"
+                f"{web_html_raw or '(未提供网页 HTML，请按文字需求自行设计一套)'}"
+            )
+            hf_section = ""  # 网页无 PPT 页头页脚原文，避免把网页导航当内容页页头
+        else:
+            source_section = (
+                "**母版 HTML 原文**\n"
+                f"{template_html or '(无母版原文，请按项目风格自行设计一套)'}"
+            )
+
         # 用户自定义要求区块（避免在 f-string 表达式内用反斜杠）
         custom_req_section = ""
         if (custom_requirements or "").strip():
@@ -461,8 +486,7 @@ class TemplatePrompts:
 
 {project_context}
 {custom_req_section}
-**母版 HTML 原文**
-{template_html or "(无母版原文，请按项目风格自行设计一套)"}
+{source_section}
 
 {hf_section}
 
@@ -470,14 +494,15 @@ class TemplatePrompts:
 
 **任务与输出约束**
 1. `cover`：一个完整的封面 HTML（1280×720，无滚动条，设计丰富有仪式感），预留槽位 `{{{{ cover_title }}}}`（主标题）、`{{{{ cover_subtitle }}}}`（副标题）、`{{{{ cover_extra }}}}`（可选补充文案）。
-2. `transition`：一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 `{{{{ transition_title }}}}`（章节标题）、`{{{{ transition_subtitle }}}}`（简短引导语）、`{{{{ transition_extra }}}}`（可选补充）。
+2. `transition`：一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 `{{{{ transition_title }}}}`（章节标题）、`{{{{ transition_subtitle }}}}`（简短引导语）、`{{{{ transition_extra }}}}`（可选补充）、`{{{{ chapter_number }}}}`（当前章节序号，纯数字如 1/2/3，生成 PPT 时会替换为真实章节号；可用 CSS/文案包装成"第1章/01/Chapter 1"等样式）。
 3. `catalog`：一个完整的**目录/大纲页** HTML（1280×720，无滚动条）。预留槽位 `{{{{ catalog_title }}}}`（页面标题，如"目录"）、`{{{{ catalog_subtitle }}}}`（副标题）、`{{{{ catalog_extra }}}}`（可选补充）。**目录条目区必须自带完整设计**：用编号（01/02/03…）+ 章节名 + 分隔线/双栏等排版，呈现 4-6 个示例章节（如"第一章 项目概述"），让条目区看起来像专业模板的目录，而不是一段文字；**不要预留 `{{{{ catalog_items }}}}` 槽位**，生成 PPT 时模型会参考本页设计并填入真实章节。
 4. `ending`：一个完整的**结尾/致谢页** HTML（1280×720，无滚动条），预留槽位 `{{{{ ending_title }}}}`（主标题，如"感谢聆听"）、`{{{{ ending_subtitle }}}}`（副标题）、`{{{{ ending_extra }}}}`（可选补充）、`{{{{ ending_items }}}}`（可选收尾要点列表）。
 5. `header_footer`：内容页的**自包含骨架片段**（不是完整页面，但包含内容页的全部视觉骨架）。必须包含：
    - 模板的背景装饰层（如 `bg-paper`/`bg-grid`/边框装饰/印章等，从母版同源继承），保证内容页有背景和装饰；
    - 页头 `{{{{ page_title }}}}`（页头标题）；
    - 一个正文占位容器 `{{{{ page_content }}}}`（供后续填充正文）；
-   - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）。
+   - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）；
+   - 可选 `{{{{ chapter_number }}}}`（本页所属章节序号，纯数字如 1/2/3；放在页头/页脚的章节标识位，可用 CSS 包装成"第1章/01"等样式）。
    样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
    **片段自带 `<style>` 块必须同时包含全局 reset 与画布约束**（与封面/过渡页一致）：
    ```css
@@ -495,8 +520,7 @@ class TemplatePrompts:
    - 部门/单位名 → `{{{{ brand_org }}}}`
    - 主题/标题标识 → `{{{{ brand_topic }}}}`
    - 标语/保密标识/补充英文 → `{{{{ brand_tagline }}}}`
-   - 编号 → `{{{{ brand_code }}}}`
-   适用位置：封面页眉页脚、过渡页 footer、目录页眉、结尾页，以及 header_footer 的页头右侧/页脚左侧。**不要写死 `2024`/`DEPARTMENT`/`CHINA MERCHANTS BANK`/`ANNUAL REVIEW`/`CONFIDENTIAL` 这类示例品牌值**；保持通用设计框架即可。
+   适用位置：封面页眉页脚、过渡页 footer、目录页眉、结尾页，以及 header_footer 的页头右侧/页脚左侧。**不要写死 `2024`/`DEPARTMENT`/`CHINA MERCHANTS BANK`/`ANNUAL REVIEW`/`CONFIDENTIAL` 这类示例品牌值**；保持通用设计框架即可。**不要生成整份文档的整体编号或编号类槽位（如 `No.01`、`{{{{brand_code}}}}`）；章节号请用 `{{{{chapter_number}}}}` 槽位表示，且只在过渡页和内容页 header_footer 出现，封面/目录/结尾页不要章节号槽位。**
 7. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
 8. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
 9. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
@@ -527,7 +551,7 @@ class TemplatePrompts:
         "transition": {
             "key": "transition",
             "label": "过渡页模板",
-            "desc": "一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 {{transition_title}}（章节标题）、{{transition_subtitle}}（简短引导语）、{{transition_extra}}（可选补充）。",
+            "desc": "一个完整的章节过渡页 HTML（1280×720，无滚动条），预留槽位 {{transition_title}}（章节标题）、{{transition_subtitle}}（简短引导语）、{{transition_extra}}（可选补充）、{{chapter_number}}（当前章节序号，纯数字，生成 PPT 时替换为真实章节号）。",
         },
         "catalog": {
             "key": "catalog",
@@ -542,7 +566,7 @@ class TemplatePrompts:
         "header_footer": {
             "key": "header_footer",
             "label": "内容页页头页脚",
-            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。**片段自带 <style> 必须包含全局 reset 与画布约束**：`*{margin:0;padding:0;box-sizing:border-box}` 和 `html,body{width:1280px;height:720px;margin:0;overflow:hidden}`（保证内容页 body 无默认 margin、无滚动条）。**必须含标准正文舞台容器 `<div class=\"suite-stage\">{{ page_content }}</div>`，规则固定为 `.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;z-index:5;overflow:hidden}`**（top 避开页头底边、bottom 不压页脚、内宽 1160px 作为 flex/grid 列宽基准）。**品牌文案（年份/部门/主题/标语）必须写成品牌槽位**：年份→{{brand_year}}、部门→{{brand_org}}、主题→{{brand_topic}}、标语→{{brand_tagline}}、编号→{{brand_code}}，不要写死 2024/DEPARTMENT/ANNUAL REVIEW/CONFIDENTIAL 等示例值。",
+            "desc": "内容页的规范页头+页脚 HTML 片段（不是完整页面），必须包含槽位 {{page_title}}（页头标题）、{{current_page_number}}（当前页码）、{{total_page_count}}（总页数）。样式须与母版同源，后续会逐字嵌入内容页提示词作为强约束。**片段自带 <style> 必须包含全局 reset 与画布约束**：`*{margin:0;padding:0;box-sizing:border-box}` 和 `html,body{width:1280px;height:720px;margin:0;overflow:hidden}`（保证内容页 body 无默认 margin、无滚动条）。**必须含标准正文舞台容器 `<div class=\"suite-stage\">{{ page_content }}</div>`，规则固定为 `.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;z-index:5;overflow:hidden}`**（top 避开页头底边、bottom 不压页脚、内宽 1160px 作为 flex/grid 列宽基准）。**品牌文案（年份/部门/主题/标语）必须写成品牌槽位**：年份→{{brand_year}}、部门→{{brand_org}}、主题→{{brand_topic}}、标语→{{brand_tagline}}，不要写死 2024/DEPARTMENT/ANNUAL REVIEW/CONFIDENTIAL 等示例值；不要生成整份文档的整体编号或编号类槽位，章节号请用 `{{chapter_number}}` 槽位（本页所属章节序号，纯数字），只在此过渡页/内容页 header_footer 出现。",
         },
     }
 

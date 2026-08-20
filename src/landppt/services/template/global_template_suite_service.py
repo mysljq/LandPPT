@@ -122,7 +122,7 @@ class GlobalTemplateSuiteService:
                     header_footer = standardized
             except Exception as exc:
                 logger.warning("Standardize content stage for suite %s failed: %s", suite_id, exc)
-            return {
+            payload = {
                 "cover": suite.cover,
                 "transition": suite.transition,
                 "catalog": suite.catalog or "",
@@ -134,6 +134,15 @@ class GlobalTemplateSuiteService:
                 "template_name": suite.template_name or suite.suite_name,
                 "generated_at": suite.updated_at or suite.created_at,
             }
+            # 历史 brand_code → chapter_number 迁移（读时 backfill 安全网）：
+            # 库套件可能在 migration 014 落库前仍含 {{brand_code}}，读取时即时转换，
+            # 与上面 stage 标准化同为"只变换返回副本、不写库"风格，幂等无副作用。
+            try:
+                from .template_suite_service import TemplateSuiteService as _TSS
+                payload = _TSS._migrate_suite_brand_code(payload)
+            except Exception as exc:
+                logger.warning("Migrate brand_code for suite %s failed: %s", suite_id, exc)
+            return payload
         finally:
             # shield close：连接归还到池，避免任务取消时 await close() 被中断导致连接泄漏。
             try:
@@ -362,6 +371,82 @@ class GlobalTemplateSuiteService:
             yield {"type": "complete", "message": "套件生成完成！", "suite": suite}
         except Exception as exc:
             logger.error("基于模板生成套件失败（流式，template_id=%s）: %s", template_id, exc)
+            yield {"type": "error", "message": f"套件生成失败：{exc}"}
+
+    # ------------------------------------------------------------------
+    # 基于文字需求 + 网页 HTML 生成套件
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decorate_suite_from_requirements(
+        suite: Dict[str, Any],
+        requirement_text: str,
+        web_html: str,
+    ) -> Dict[str, Any]:
+        """给需求/网页生成的套件附加库元数据（名称/描述/标签）。
+
+        独立套件：不绑定母版模板，template_id/template_hash/template_name 留 None
+        （与读图套件一致），由用户自行命名。
+        """
+        req = (requirement_text or "").strip()
+        suite["suite_name"] = "AI 生成套件"
+        suite["description"] = (req[:80] if req else "基于需求/网页生成").strip()
+        suite["tags"] = ["AI生成"]
+        suite["template_id"] = None
+        suite["template_hash"] = None
+        suite["template_name"] = None
+        return suite
+
+    async def stream_generate_suite_from_requirements(
+        self,
+        requirement_text: str,
+        web_html: str,
+        creativity: int = 5,
+    ):
+        """基于文字需求 + 可选网页 HTML 生成套件（流式）。
+
+        - 只填文字 → AI 自由设计；
+        - 只填网页 HTML → 套件配色/字体/版式/背景装饰与该网页保持一致；
+        - 两者都填 → 网页风格 + 文字需求叠加。
+        两者都空 → yield error。
+        逐个 yield status / complete / error 事件，格式与其它套件生成流式一致，
+        前端可复用 readSuiteGenerateStream。
+        """
+        req = (requirement_text or "").strip()
+        html = (web_html or "").strip()
+        if not req and not html:
+            yield {"type": "error", "message": "请至少填写文字需求或粘贴网页 HTML"}
+            return
+
+        logger.info(
+            "开始基于需求/网页生成套件：requirement_len=%s，web_html_len=%s，creativity=%s",
+            len(req), len(html), creativity,
+        )
+        yield {
+            "type": "status",
+            "message": "正在构建提示词并调用 AI 生成套件（封面/过渡/目录/结尾/内容页头页脚），预计 30-60 秒，请稍候...",
+        }
+        # 把网页 HTML 当作"参考设计源"传给现有生成管线（source_kind="web"）。
+        template = {"html_template": html, "template_name": "参考网页"}
+        host = self._build_host()
+        try:
+            suite = await host._generate_suite_payload(
+                template,
+                creativity=creativity,
+                reference_outline=False,
+                project=None,
+                allow_no_template=True,
+                custom_requirements=req,
+                source_kind="web",
+            )
+            self._decorate_suite_from_requirements(suite, req, html)
+            logger.info(
+                "基于需求/网页生成套件完成：requirement_len=%s，web_html_len=%s",
+                len(req), len(html),
+            )
+            yield {"type": "complete", "message": "套件生成完成！", "suite": suite}
+        except Exception as exc:
+            logger.error("基于需求/网页生成套件失败: %s", exc)
             yield {"type": "error", "message": f"套件生成失败：{exc}"}
 
     # ------------------------------------------------------------------
