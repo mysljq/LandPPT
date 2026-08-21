@@ -127,9 +127,10 @@ class TemplateSuiteRenderer:
 
         # 过渡页填章节号槽位（纯数字，取自大纲后端赋的 chapter 字段）。
         # 其他页面类型（cover/catalog/ending）不填章节号——按需求只在过渡页出现。
+        # chapter=0（不属于任何章节）→ 不填章节号，绝不渲染成"第 0 章"。
         if page_type == "transition":
             chapter = slide_data.get("chapter")
-            if chapter not in (None, ""):
+            if chapter not in (None, "", 0):
                 slots["chapter_number"] = str(chapter)
 
         # For catalog pages, also try filling a chapter/items slot if the

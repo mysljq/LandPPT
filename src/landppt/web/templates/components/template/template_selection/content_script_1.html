@@ -888,7 +888,7 @@
             const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force: true, stream: true, creativity: getSuiteCreativity() })
+                body: JSON.stringify({ force: true, stream: true, creativity: getSuiteCreativity(), chapter_indicator: !!document.getElementById('suiteChapterIndicator')?.checked })
             });
 
             if (!resp.ok) {
@@ -1023,7 +1023,7 @@
             const resp = await fetch(`/api/projects/${projectId}/template-suite/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force: true, stream: true, creativity, free: true, requirements })
+                body: JSON.stringify({ force: true, stream: true, creativity, free: true, requirements, chapter_indicator: !!document.getElementById('outlineChapterIndicator')?.checked })
             });
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));

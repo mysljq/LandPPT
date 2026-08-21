@@ -54,6 +54,26 @@ class SlideMediaService:
         try:
             if not project_id:
                 project_id = confirmed_requirements.get('project_id')
+            # 章节号刷新：老/坏大纲可能把所有 slide 的 chapter 存成 0（典型"第 0 章"事故）。
+            # _assign_chapter_numbers 幂等重算全部章节号（确定性、按页序）——对
+            # "过渡页=章节边界 + 无编号前缀章节名/agenda 匹配"更鲁棒，保证生成时
+            # {{chapter_number}} 渲染成真实章节号而非"第 0 章"。幂等：已正确的重算结果一致。
+            if all_slides:
+                try:
+                    from ..outline.project_outline_normalization_service import (
+                        ProjectOutlineNormalizationService as _ONorm,
+                    )
+                    refreshed = _ONorm._assign_chapter_numbers(
+                        [dict(s) if isinstance(s, dict) else {} for s in all_slides]
+                    )
+                    pos = max(0, int(page_number) - 1)
+                    if pos < len(refreshed):
+                        new_ch = (refreshed[pos] or {}).get("chapter", 0)
+                        if isinstance(slide_data, dict):
+                            slide_data["chapter"] = new_ch
+                        all_slides = refreshed
+                except Exception as _ce:
+                    logger.warning(f"刷新章节号失败，按原值生成: {_ce}")
             # 套件优先：封面/过渡页用套件模板填充槽位；内容页注入页头页脚强约束；
             # 目录页不直接模板填充，改为让 LLM 参考套件里的目录页设计生成完整目录页。
             # get_effective_suite 优先用项目显式选择的全局套件库套件，否则回退到项目内生成套件。
@@ -150,13 +170,19 @@ class SlideMediaService:
             # C1：内容页/目录页 LLM 输出后兜底替换残留的套件占位符（{{page_title}} 等），
             # 避免 LLM 未替换的槽位原样进最终页面（用户报告 6/7/8 页占位符残留）。
             if page_type in ("content", "catalog") and suite:
+                # 章节提示：契合"仅内容页展示"——内容页用全部章节名块列表确定性填充
+                # {{chapter_indicator}}（目录页/其他页若套件里有该槽位也会被清空）。
+                chapter_indicator_html = self.build_chapter_indicator_html(all_slides, slide_data)
                 html_content = self._replace_remaining_content_slots(
-                    html_content, slide_data, page_number, total_pages
+                    html_content, slide_data, page_number, total_pages,
+                    chapter_indicator_html=chapter_indicator_html,
                 )
                 # D1：内容页样式全丢兜底——若 LLM 保留了骨架 div 却丢掉了套件 <style> 块，
                 # 从套件 header_footer 里把 CSS 补回 head（用户报告 4/5/9/10 页样式丢失）。
                 if page_type == "content":
                     html_content = self._ensure_content_suite_style_injected(html_content, suite)
+                    # B3：章节提示兜底样式——若套件没为 .chapter-indicator 提供 CSS，注入默认导航样式。
+                    html_content = self._ensure_chapter_indicator_style(html_content, suite)
                     # A：body 默认 8px margin 兜底清零——内容页 HTML 必须 1280×720 无滚动条
                     # （套件 header_footer 是内层片段，多数不带 body reset）。
                     html_content = self._ensure_suite_body_reset(html_content)
@@ -225,8 +251,103 @@ class SlideMediaService:
         )
 
     @staticmethod
+    def build_chapter_indicator_html(
+        all_slides: List[Dict[str, Any]],
+        slide_data: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """确定性构建"章节提示" HTML：当前 PPT 全部章节名块列表，当前章节块加 `.current` 高亮。
+
+        仅用于内容页 header_footer 的 `{{chapter_indicator}}` 槽位（勾选"章节提示"后由套件生成，
+        这里在生成内容页时确定性填充，不经 LLM）：
+        - 章节名 = 各章节首个 content 页的 title（与大纲 `_assign_chapter_numbers` 的章节号一致）；
+        - 每章节一个 `.chapter-item` 块，当前章节（slide_data 的 chapter）额外加 `.current`；
+        - 外层容器 `<div class="chapter-indicator">`，块样式由套件 header_footer 的 CSS 或兜底 CSS 提供；
+        - 无任何章节时返回空串（替换对无该槽位的 HTML 无害）。
+        """
+        import re as _re
+        from collections import OrderedDict
+
+        slide_data = slide_data or {}
+        current = 0
+        try:
+            current = int(slide_data.get("chapter") or 0)
+        except (TypeError, ValueError):
+            current = 0
+
+        chapters: "OrderedDict[int, str]" = OrderedDict()
+        for s in all_slides or []:
+            if not isinstance(s, dict):
+                continue
+            stype = str(s.get("slide_type") or s.get("type") or "").strip().lower()
+            if stype != "content":
+                continue
+            try:
+                ch = int(s.get("chapter") or 0)
+            except (TypeError, ValueError):
+                ch = 0
+            if ch < 1 or ch in chapters:
+                continue
+            title = str(s.get("title") or "").strip()
+            chapters[ch] = title or f"第{ch}章"
+
+        if not chapters:
+            return ""
+
+        def _esc(text: str) -> str:
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        items = []
+        for ch, name in chapters.items():
+            cls = "chapter-item" + (" current" if ch == current else "")
+            items.append(f'<span class="{cls}">{_esc(name)}</span>')
+        return '<div class="chapter-indicator">' + "".join(items) + "</div>"
+
+    @staticmethod
+    def _ensure_chapter_indicator_style(html: str, suite: dict) -> str:
+        """B3 兜底：若内容页出现 `.chapter-indicator` 但套件未定义其样式，注入默认 CSS。
+
+        套件 header_footer 勾选"章节提示"时会设计 `.chapter-indicator`/`.chapter-item`/
+        `.chapter-item.current` 的样式；若 LLM 生成的 header_footer 只放了容器却没写样式
+        （或槽位未定义），这里注入一套中性的横向导航样式兜底，保证非空、可读。
+        已定义 `.chapter-indicator{` 规则则跳过（LLM 设计样式优先）。
+        """
+        if not html or not suite:
+            return html
+        import re as _re
+
+        if "chapter-indicator" not in html:
+            return html
+        if _re.search(r"\.chapter-indicator\s*\{", html):
+            return html  # 已有样式，跳过
+        hf = str(suite.get("header_footer") or "")
+        if not _re.search(r"\.chapter-indicator\s*\{", hf):
+            inject = (
+                '<style id="chapter-indicator-fallback">'
+                ".chapter-indicator{display:flex;flex-wrap:wrap;gap:8px;align-items:center;"
+                "font-family:inherit;} "
+                ".chapter-indicator .chapter-item{display:inline-block;padding:4px 12px;"
+                "border:1px solid rgba(127,127,127,0.35);border-radius:20px;"
+                "font-size:12px;line-height:1.4;color:#4b5563;opacity:0.85;} "
+                ".chapter-indicator .chapter-item.current{"
+                "background:#c00000;border-color:#c00000;color:#ffffff;font-weight:700;opacity:1;}"
+                "</style>"
+            )
+            lowered = html.lower()
+            idx_head = lowered.rfind("</head>")
+            if idx_head != -1:
+                return html[:idx_head].rstrip() + "\n" + inject + "\n" + html[idx_head:]
+            idx_body = lowered.rfind("</body>")
+            if idx_body != -1:
+                return html[:idx_body].rstrip() + "\n" + inject + "\n" + html[idx_body:]
+            return html.rstrip() + "\n" + inject
+        # 套件 header_footer 自身已定义 `.chapter-indicator` 样式（但生成页没带）→ 由
+        # _ensure_content_suite_style_injected 负责从套件补回，这里不重复注入。
+        return html
+
+    @staticmethod
     def _replace_remaining_content_slots(
-        html: str, slide_data: Dict[str, Any], page_number: int, total_pages: int
+        html: str, slide_data: Dict[str, Any], page_number: int, total_pages: int,
+        chapter_indicator_html: str = "",
     ) -> str:
         """C1 兜底：替换内容页 LLM 输出里残留的套件槽位。
 
@@ -235,8 +356,12 @@ class SlideMediaService:
         `{{total_page_count}}`。LLM 偶尔保留原始 token，需这里兜底替换，
         否则占位符原样进最终 HTML（用户报告 6/7/8 页现象）。
 
-        仅替换这四个内容页已知槽位；其它未知槽位（如套件特有的额外槽位）保留，
+        仅替换这四个内容页已知槽位（及章节号/章节提示）；其它未知槽位（如套件特有的额外槽位）保留，
         避免误伤。
+
+        chapter_indicator_html：勾选"章节提示"时，由调用方用
+        SlideMediaService.build_chapter_indicator_html 预生成的章节提示 HTML；为空则
+        `{{chapter_indicator}}` 被替换为空串清掉（不残留）。
         """
         if not html:
             return html
@@ -250,6 +375,7 @@ class SlideMediaService:
             "current_page_number": str(page_number),
             "total_page_count": str(total_pages),
             "chapter_number": str((slide_data or {}).get("chapter") or ""),
+            "chapter_indicator": chapter_indicator_html,
         }
         def _sub(m: _re.Match) -> str:
             name = m.group(1).strip()
@@ -395,7 +521,8 @@ class SlideMediaService:
         design_lang = SlideMediaService._extract_suite_design_language(suite)
         slide_data = slide_data or {}
         chapter = slide_data.get("chapter")
-        chapter_num_text = str(chapter) if chapter not in (None, "") else "（本页不属于任何章节，章节号槽位留空）"
+        # chapter=0 表示"不属于任何章节"（封面/目录/结尾等），绝不渲染成"第 0 章"。
+        chapter_num_text = str(chapter) if chapter not in (None, "", 0) else "（本页不属于任何章节，章节号槽位留空）"
         lines = [
             "**内容页强约束（必须把下面这段 HTML 作为本页的整页骨架，逐字保留，不得重新设计、不得丢弃任何元素——尤其 `<style>` 块必须整段保留，缺了样式整页就废了）**",
             "页头与页脚（含高度、位置、背景、装饰、样式）必须与套件**完全一致**，禁止改动高度/位置/配色；"
@@ -421,6 +548,13 @@ class SlideMediaService:
             "用 `flex:1` 自适应或 `calc(100% - Npx)` 计算列宽，禁用 `45%+55%+gap` 这种必然超出容器右沿的组合；"
             "百分比列宽以容器内宽为基准，而非 1280px。",
         ]
+        # 章节提示槽位：若骨架含 {{chapter_indicator}}，后端会确定性填入全部章节名的块列表并高亮当前章节，
+        # 因此要求 LLM 保留该槽位原样、不要删除也不要用文字顶替（避免页头出现无样式残留）。
+        if "chapter_indicator" in header_footer:
+            lines.append(
+                "  - `{{chapter_indicator}}` → 章节提示（**保留该槽位原样，不要移除、不要替换成文字**）；"
+                "生成本页时后端会自动把它填成全部章节名的块列表并高亮当前章节，保持骨架里的容器与样式即可。"
+            )
         if design_lang:
             lines.append(f"\n**套件整体设计语言（内容页配色/字体必须沿用）**\n{design_lang}")
         lines += [
@@ -628,10 +762,10 @@ class SlideMediaService:
             return ""
 
         # 章节号槽位（过渡页/内容页）：取大纲后端赋的 chapter 字段，纯数字。
-        # chapter 为 0/缺失（非章节页或未归属）→ 返回空串清掉槽位。
+        # chapter 为 0/缺失（非章节页或未归属）→ 返回空串清掉槽位（绝不渲染成"第 0 章"）。
         if name == "chapter_number":
             chapter = slide_data.get("chapter")
-            return str(chapter) if chapter not in (None, "") else ""
+            return str(chapter) if chapter not in (None, "", 0) else ""
 
         def _first_content_point() -> str:
             content_points = slide_data.get("content_points") or slide_data.get("content") or []

@@ -403,3 +403,47 @@ def test_standardize_outline_format_assigns_chapter():
         ("thankyou", 0),
     ], chapters
 
+
+def test_assign_chapter_numbers_uses_transition_boundary_and_nonprefixed_agenda():
+    """真实大纲（无编号前缀章节名 + 每章前有过渡页 + agenda 也是裸章节名）：
+    transition 是章节边界信号，content 跟随过渡页即为新章节；无过渡的"现状与洞察"靠
+    agenda 章节名匹配识别——全部分到 1/2/3/4，绝不出现"第 0 章"事故。"""
+    slides = [
+        _mk_slide(1, "部门工作情况汇报", "title"),
+        _mk_slide(2, "目录", "agenda"),
+        _mk_slide(3, "室组人员管理总体情况", "transition"),
+        _mk_slide(4, "室组人员管理总体情况", "content"),
+        _mk_slide(5, "大模型方向", "transition"),
+        _mk_slide(6, "ZA38：智能体执行能力与可视化交互建设", "content"),
+        _mk_slide(7, "ZA38：可观测能力完善与智能化CLI探索", "content"),
+        _mk_slide(8, "训练与推理：性能优化与模型测评成果", "content"),
+        _mk_slide(9, "低代码方向", "transition"),
+        _mk_slide(10, "安全合规能力建设：运行与数据安全保障", "content"),
+        _mk_slide(11, "薪福通精品模板建设与低代码用户牵引", "content"),
+        _mk_slide(12, "现状与洞察：编码通（新）应用增长放缓分析", "content"),
+        _mk_slide(13, "总结与展望", "conclusion"),
+    ]
+    # agenda 裸章节名（无编号前缀）：曾导致 _extract_chapter_titles 返回空 → 全部 chapter=0。
+    slides[1]["content_points"] = [
+        "室组人员管理",
+        "大模型方向ZA38、ClawPartner、训练推理",
+        "低代码方向：安全合规、模板建设、用户牵引",
+        "现状与洞察",
+    ]
+    out = ProjectOutlineNormalizationService._assign_chapter_numbers(slides)
+    chapters = [s["chapter"] for s in out]
+    assert chapters == [
+        0, 0,                     # title, agenda
+        1, 1,                     # transition→1, content(室组人员管理)→1
+        2, 2, 2, 2,               # transition→2, ZA38×2、训练推理 →2
+        3, 3, 3,                  # transition→3, 安全合规、薪福通 →3
+        4,                        # 现状与洞察 →4（靠 agenda 章节名匹配，无过渡）
+        0,                        # conclusion
+    ], chapters
+    assert 0 not in chapters[2:12], "内容/过渡页绝不应出现 chapter=0（第 0 章）"
+
+    # 顺带验证 _extract_chapter_titles 能识别无前缀章节名
+    titles = ProjectOutlineNormalizationService._extract_chapter_titles(slides)
+    assert "室组人员管理" in titles
+    assert "现状与洞察" in titles
+

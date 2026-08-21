@@ -47,6 +47,7 @@ class SuiteGenerateRequest(BaseModel):
     template_id: int
     creativity: int = 5
     stream: bool = False
+    chapter_indicator: bool = False
 
 
 class SuiteFromRequirementsRequest(BaseModel):
@@ -54,6 +55,7 @@ class SuiteFromRequirementsRequest(BaseModel):
     web_html: str = ""
     creativity: int = 5
     stream: bool = True
+    chapter_indicator: bool = False
 
 
 class SuiteUpdateRequest(BaseModel):
@@ -217,7 +219,8 @@ async def generate_suite_from_template(payload: SuiteGenerateRequest, user=Depen
         if payload.stream:
             async def event_stream():
                 async for event in svc.stream_generate_suite_from_template(
-                    payload.template_id, creativity=payload.creativity
+                    payload.template_id, creativity=payload.creativity,
+                    chapter_indicator=payload.chapter_indicator,
                 ):
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -227,7 +230,10 @@ async def generate_suite_from_template(payload: SuiteGenerateRequest, user=Depen
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
 
-        suite = await svc.generate_suite_from_template(payload.template_id, creativity=payload.creativity)
+        suite = await svc.generate_suite_from_template(
+            payload.template_id, creativity=payload.creativity,
+            chapter_indicator=payload.chapter_indicator,
+        )
         return {"success": True, "suite": suite}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -269,7 +275,8 @@ async def generate_suite_from_requirements(
         if payload.stream:
             async def event_stream():
                 async for event in svc.stream_generate_suite_from_requirements(
-                    payload.requirement_text, payload.web_html, creativity=payload.creativity
+                    payload.requirement_text, payload.web_html, creativity=payload.creativity,
+                    chapter_indicator=payload.chapter_indicator,
                 ):
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -282,7 +289,8 @@ async def generate_suite_from_requirements(
         # 非流式：收集事件，complete 取 suite，error 抛 400
         suite = None
         async for event in svc.stream_generate_suite_from_requirements(
-            payload.requirement_text, payload.web_html, creativity=payload.creativity
+            payload.requirement_text, payload.web_html, creativity=payload.creativity,
+            chapter_indicator=payload.chapter_indicator,
         ):
             if event.get("type") == "error":
                 raise HTTPException(status_code=400, detail=event.get("message", "生成失败"))

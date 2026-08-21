@@ -2986,11 +2986,12 @@ def test_chapter_number_in_structure_slots_and_not_brand():
 
 
 def test_default_slot_text_chapter_number():
-    """_default_slot_text 对 chapter_number 取 slide_data['chapter']，纯数字；缺失返回空。"""
+    """_default_slot_text 对 chapter_number 取 slide_data['chapter']，纯数字；0/缺失返回空（绝不渲染"第 0 章"）。"""
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     assert SlideMediaService._default_slot_text("chapter_number", {"chapter": 3}, 5) == "3"
-    assert SlideMediaService._default_slot_text("chapter_number", {"chapter": 0}, 5) == "0"
+    # chapter=0 表示"不属于任何章节"→ 返回空串清掉槽位，避免渲染成"第 0 章"
+    assert SlideMediaService._default_slot_text("chapter_number", {"chapter": 0}, 5) == ""
     assert SlideMediaService._default_slot_text("chapter_number", {}, 5) == ""
     # 非 chapter 槽位不受影响
     assert SlideMediaService._default_slot_text("cover_extra", {"title": "x", "content_points": ["a"]}, 1) == "a"
@@ -3145,4 +3146,234 @@ def test_get_suite_payload_migrates_brand_code(monkeypatch):
     assert "{{chapter_number}}" in payload["header_footer"]
     assert "{{brand_code}}" not in payload["catalog"] and "{{brand_code}}" not in payload["ending"]
     assert payload["design_tokens"] == "--brand-code: #c00", "design_tokens 不动"
+
+
+# ======================================================================
+# 章节提示槽位 {{chapter_indicator}}：勾选生成 + 内容页确定性填充 + 兜底样式
+# ======================================================================
+
+
+def test_chapter_indicator_constants_and_structure_slots():
+    """chapter_indicator 常量正确、必须在 STRUCTURE_SLOTS（防被品牌语义分析误归），且不归品牌角色。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService as T
+
+    assert T.CHAPTER_INDICATOR_SLOT == "{{chapter_indicator}}"
+    assert "chapter_indicator" in T.STRUCTURE_SLOTS, "chapter_indicator 必须在 STRUCTURE_SLOTS 里"
+    assert T._brand_role_by_name("chapter_indicator") is None, "chapter_indicator 不应被归为品牌角色"
+
+
+def test_build_chapter_indicator_html():
+    """build_chapter_indicator_html 确定性构建全部章节名块列表，当前章节 .current 高亮。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    all_slides = [
+        {"slide_type": "cover", "title": "封面", "chapter": 0},
+        {"slide_type": "content", "title": "项目概述", "chapter": 1},
+        {"slide_type": "content", "title": "项目概述子页", "chapter": 1},
+        {"slide_type": "content", "title": "核心方案", "chapter": 2},
+        {"slide_type": "content", "title": "实施路径", "chapter": 3},
+        {"slide_type": "ending", "title": "致谢", "chapter": 0},
+    ]
+    html = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 2})
+    assert html.startswith('<div class="chapter-indicator">')
+    assert html.endswith("</div>")
+    assert "项目概述" in html and "核心方案" in html and "实施路径" in html
+    assert html.count("chapter-item current") == 1
+    assert 'class="chapter-item current">核心方案' in html
+
+    assert SlideMediaService.build_chapter_indicator_html([], {"chapter": 1}) == ""
+    assert SlideMediaService.build_chapter_indicator_html(
+        [{"slide_type": "cover", "title": "封", "chapter": 0}], {}
+    ) == ""
+
+
+def test_build_chapter_indicator_html_current_differs():
+    """不同当前章节 → 高亮块不同。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    all_slides = [
+        {"slide_type": "content", "title": "第一章标题", "chapter": 1},
+        {"slide_type": "content", "title": "第二章标题", "chapter": 2},
+        {"slide_type": "content", "title": "第三章标题", "chapter": 3},
+    ]
+    h1 = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 1})
+    h3 = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 3})
+    assert 'class="chapter-item current">第一章标题' in h1
+    assert 'class="chapter-item current">第三章标题' in h3
+    assert h1 != h3
+
+
+def test_replace_remaining_content_slots_fills_chapter_indicator():
+    """内容页兜底：残留的 {{chapter_indicator}}（含带空格写法）应被填成章节提示 HTML。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    indicator = SlideMediaService.build_chapter_indicator_html(
+        [{"slide_type": "content", "title": "第一章", "chapter": 1},
+         {"slide_type": "content", "title": "第二章", "chapter": 2}],
+        {"chapter": 2},
+    )
+    html = '<header>{{page_title}}</header><div>{{chapter_indicator}}</div>'
+    out = SlideMediaService._replace_remaining_content_slots(
+        html, {"title": "T", "chapter": 2, "content_points": []}, 4, 10,
+        chapter_indicator_html=indicator,
+    )
+    assert "{{chapter_indicator}}" not in out
+    assert "chapter-indicator" in out
+    assert 'chapter-item current">第二章' in out, "当前章节块应高亮"
+
+    html2 = '<div>{{ chapter_indicator }}</div>'
+    out2 = SlideMediaService._replace_remaining_content_slots(
+        html2, {"title": "T", "chapter": 1, "content_points": []}, 4, 10,
+        chapter_indicator_html=indicator,
+    )
+    assert "{{ chapter_indicator }}" not in out2
+
+    out3 = SlideMediaService._replace_remaining_content_slots(
+        '<div>{{chapter_indicator}}</div>', {"title": "T", "chapter": 1, "content_points": []}, 4, 10,
+    )
+    assert "{{chapter_indicator}}" not in out3
+
+
+def test_ensure_chapter_indicator_style():
+    """套件已定义 .chapter-indicator{ 样式时不注入；未定义且出现该容器时注入默认导航样式。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = ('<!DOCTYPE html><html><head></head><body><div class="chapter-indicator">'
+            '<span class="chapter-item">a</span></div></body></html>')
+    suite = {"header_footer": "<div class='chapter-indicator'>x</div>"}  # 只有容器无 CSS
+    out = SlideMediaService._ensure_chapter_indicator_style(html, suite)
+    assert "chapter-indicator-fallback" in out
+    assert ".chapter-item.current" in out
+
+    suite_css = {"header_footer": "<style>.chapter-indicator{display:flex}</style>"}
+    out2 = SlideMediaService._ensure_chapter_indicator_style(html, suite_css)
+    assert "chapter-indicator-fallback" not in out2
+
+    plain = '<!DOCTYPE html><html><head></head><body><p>hi</p></body></html>'
+    assert SlideMediaService._ensure_chapter_indicator_style(plain, suite) == plain
+
+
+def test_suite_prompt_chapter_indicator_on():
+    """勾选时 prompt 要求设计 {{chapter_indicator}} 槽位与 chapter-item/current 样式；不勾选时禁止。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    class P:
+        topic = "AI"
+        scenario = "峰会"
+
+    outline = {"title": "T", "slides": [{"title": "a", "slide_type": "title"}]}
+    base_kw = dict(project=P(), outline=outline, confirmed={},
+                   template_html="<div>tpl</div>", creativity=5)
+
+    p_on = TemplatePrompts.build_template_suite_prompt(**base_kw, chapter_indicator=True)
+    assert "chapter-indicator" in p_on
+    assert "chapter-item" in p_on
+    assert "chapter-item.current" in p_on
+    assert "章节提示" in p_on
+
+    p_off = TemplatePrompts.build_template_suite_prompt(**base_kw)
+    assert "chapter-indicator" not in p_off
+    assert "chapter-item" not in p_off
+    assert "chapter_indicator" in p_off, "未勾选仍应明确禁止该槽位"
+
+
+def test_suite_part_prompt_header_footer_chapter_indicator():
+    """单类型重生：仅 part=header_footer 且勾选时追加章节提示槽位要求。"""
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+
+    base_kw = dict(part="header_footer", project=None, outline={}, confirmed={},
+                   template_html="<div>tpl</div>", existing_suite={}, creativity=5)
+
+    p_on = TemplatePrompts.build_template_suite_part_prompt(**base_kw, chapter_indicator=True)
+    assert "chapter-indicator" in p_on, "header_footer 重生 + 勾选应要求章节提示槽位"
+    assert "chapter-item" in p_on
+
+    p_off = TemplatePrompts.build_template_suite_part_prompt(**base_kw)
+    assert "chapter-indicator" not in p_off
+    assert "chapter-item" not in p_off
+
+    p_cover = TemplatePrompts.build_template_suite_part_prompt(
+        part="cover", project=None, outline={}, confirmed={},
+        template_html="<div>tpl</div>", existing_suite={}, creativity=5,
+        chapter_indicator=True,
+    )
+    assert "chapter-indicator" not in p_cover
+
+
+def test_preview_html_chapter_indicator():
+    """内容页预览：header_footer 含 {{chapter_indicator}} 时填入示例章节块且无 {{ 残留。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    suite = dict(SUITE)
+    suite["header_footer"] = "<header>{{ page_title }}</header>" \
+                             "<div class='chapter-indicator'>{{chapter_indicator}}</div>" \
+                             "<footer>{{ current_page_number }} / {{ total_page_count }}</footer>"
+    svc = TemplateSuiteService.__new__(TemplateSuiteService)
+    preview = svc.build_preview_html(suite)
+    content = preview["content"]
+    assert "{{" not in content, "预览不得有 {{ 残留"
+    assert "chapter-item current" in content, "预览章节提示应含当前章高亮"
+    assert "chapter-indicator" in content
+
+
+def test_chapter_indicator_content_page_postprocess_wired():
+    """内容页后处理链（wire 逻辑）：替换残留 {{chapter_indicator}} + 兜底样式，当前章节高亮。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite = {
+        "header_footer": "<header>{{ page_title }}</header>"
+                         "<div class='chapter-indicator'>{{chapter_indicator}}</div>"
+                         "<div class='suite-stage'>{{ page_content }}</div>"
+                         "<footer>{{ current_page_number }} / {{ total_page_count }}</footer>",
+        "design_tokens": "t",
+    }
+    all_slides = [
+        {"slide_type": "cover", "chapter": 0},
+        {"slide_type": "content", "title": "第一章 概述", "chapter": 1},
+        {"slide_type": "content", "title": "第二章 方案", "chapter": 2},
+        {"slide_type": "content", "title": "第二章 方案子页", "chapter": 2},
+        {"slide_type": "ending", "chapter": 0},
+    ]
+    slide_data = {"title": "第二章 方案子页", "chapter": 2, "content_points": ["x"]}
+
+    indicator = SlideMediaService.build_chapter_indicator_html(all_slides, slide_data)
+    html = (
+        "<!DOCTYPE html><html><head></head><body>"
+        "<header>{{page_title}}</header>"
+        "<div class='chapter-indicator'>{{chapter_indicator}}</div>"
+        "<div class='suite-stage'>{{page_content}}</div>"
+        "<footer>{{current_page_number}} / {{total_page_count}}</footer>"
+        "</body></html>"
+    )
+    html = SlideMediaService._replace_remaining_content_slots(
+        html, slide_data, 4, 10, chapter_indicator_html=indicator
+    )
+    html = SlideMediaService._ensure_chapter_indicator_style(html, suite)
+    assert "{{chapter_indicator}}" not in html, "章节提示槽位应被填充"
+    assert "{{}}" not in html
+    assert "chapter-item current" in html
+    assert "第一章 概述" in html
+    assert "第二章 方案" in html
+
+
+def test_build_content_suite_constraint_preserves_chapter_indicator():
+    """内容页约束：骨架含 {{chapter_indicator}} 时提示 LLM 保留该槽位、不得移除或文字顶替。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    suite_with = {
+        "header_footer": "<div class='chapter-indicator'>{{chapter_indicator}}</div>"
+                         "<div class='suite-stage'>{{ page_content }}</div>",
+        "design_tokens": "t",
+    }
+    c = SlideMediaService._build_content_suite_constraint(suite_with, {"chapter": 2})
+    assert "chapter_indicator" in c, "约束应提及 chapter_indicator 槽位"
+    assert "保留" in c, "约束应要求保留该槽位"
+
+    # 骨架不含该槽位 → 约束不提
+    suite_without = {
+        "header_footer": "<div class='suite-stage'>{{ page_content }}</div>",
+        "design_tokens": "t",
+    }
+    c2 = SlideMediaService._build_content_suite_constraint(suite_without, {"chapter": 2})
+    assert "chapter_indicator" not in c2
 

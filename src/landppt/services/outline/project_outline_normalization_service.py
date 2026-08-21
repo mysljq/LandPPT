@@ -367,24 +367,24 @@ class ProjectOutlineNormalizationService:
 
     @classmethod
     def _extract_chapter_titles(cls, slides: List[Dict[str, Any]]) -> List[str]:
-        """从第一个 agenda 页的 content_points 提取一级章节标题（带编号前缀，如"一、室组人员管理"）。
+        """从第一个 agenda 页的 content_points 提取一级章节标题。
 
-        缩进子项（如"   ZA38使用情况"）无编号前缀，不是一级章节，忽略。
+        兼容带编号前缀（"一、室组人员管理" / "1、室组人员管理" / "第1章 室组人员管理"）
+        与不带前缀（"室组人员管理"）两种写法——真实大纲的目录项常为纯章节名，无编号前缀。
+        返回 strip 掉前缀后的核心章节名，供 `_chapter_key_of_slide` 做标题匹配。
         """
         for s in slides:
             if (s or {}).get("slide_type") != "agenda":
                 continue
             titles = []
             for cp in (s.get("content_points") or []):
-                t = str(cp).strip()
+                t = cls._strip_chapter_prefix(str(cp))
                 if not t:
                     continue
-                if (
-                    cls._CHAPTER_PREFIX_RE.match(t)
-                    or cls._CHAPTER_NUM_PREFIX_RE.match(t)
-                    or cls._CHAPTER_CN_RE.match(t)
-                ):
-                    titles.append(t)
+                # 跳过目录页自身的页面级占位/说明短语（这类不是章节，误当章节会乱切分）
+                if len(t) < 2 or t.strip(":：·.-—") in ("目录", "contents", "CONTENTS", "章节概览", "章节", "大纲", "overview"):
+                    continue
+                titles.append(t)
             if titles:
                 return titles
         return []
@@ -436,6 +436,17 @@ class ProjectOutlineNormalizationService:
 
         # 3) 封面/目录/结尾后进入的第一个内容页（含第一章）
         if prev_out and prev_out.get("slide_type") not in ("content", "transition"):
+            return title
+
+        # 4) 直接跟在过渡页后的 content 视为章节起始。
+        #    过渡页是章节边界标记（LLM 或 _ensure_transition_slides 都会在每个章节前插过渡页），
+        #    因此对"章节名无编号前缀 + 无 agenda 匹配"的真实大纲（如"室组人员管理总体情况"后跟
+        #    "大模型方向"过渡页）最可靠——否则这类 content 会全部落在 chapter=0，导致
+        #    过渡页/内容页的 {{chapter_number}} 渲染成"第 0 章"。
+        if prev_out and (
+            str(prev_out.get("slide_type") or prev_out.get("type") or "").strip().lower()
+            == "transition"
+        ):
             return title
 
         return None

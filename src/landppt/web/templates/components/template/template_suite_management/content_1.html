@@ -78,6 +78,13 @@
                         <span id="creativityLabel" style="font-size:0.8rem; color:var(--text-primary); font-weight:700; min-width:130px;">5 · 平衡</span>
                     </div>
                 </div>
+                <!-- 章节提示：勾选后内容页 header_footer 增加章节提示槽位 -->
+                <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+                    <input type="checkbox" id="suiteChapterIndicator" style="accent-color:#111; cursor:pointer;">
+                    <label for="suiteChapterIndicator" style="font-size:0.85rem; color:var(--text-primary); cursor:pointer;">
+                        内容页章节提示<span style="color:var(--text-secondary);">（展示全部章节名，当前章节高亮）</span>
+                    </label>
+                </div>
                 <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:16px;">
                     <button type="button" id="startGenerateBtn" class="btn btn-primary"><i class="fas fa-wand-magic-sparkles"></i> 生成套件</button>
                 </div>
@@ -218,6 +225,13 @@
                         style="flex:1; min-width:160px; accent-color:#111; cursor:pointer;"
                         oninput="updateAiCreativityLabel()">
                     <span id="aiCreativityLabel" style="font-size:0.82rem; color:var(--text-primary); font-weight:700; min-width:130px;">5 · 平衡</span>
+                </div>
+                <!-- 章节提示：勾选后内容页 header_footer 增加章节提示槽位 -->
+                <div style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+                    <input type="checkbox" id="aiChapterIndicator" style="accent-color:#111; cursor:pointer;">
+                    <label for="aiChapterIndicator" style="font-size:0.82rem; color:var(--text-primary); cursor:pointer;">
+                        内容页章节提示<span style="color:var(--text-secondary);">（展示全部章节名，当前章节高亮）</span>
+                    </label>
                 </div>
                 <div style="text-align:center; margin-top:18px;">
                     <button id="aiStartGenerateBtn" class="btn btn-primary" onclick="startAiGenerateSuite()">

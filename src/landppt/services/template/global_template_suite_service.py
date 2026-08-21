@@ -294,19 +294,22 @@ class GlobalTemplateSuiteService:
         self,
         template_id: int,
         creativity: int = 0,
+        chapter_indicator: bool = False,
     ) -> Dict[str, Any]:
         """Generate a suite payload from a master template (no persistence).
 
         Returns the suite dict the caller may preview then optionally save.
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         template = await self._get_template_by_id(template_id)
         if not template:
             raise ValueError(f"模板 {template_id} 不存在")
         logger.info(
-            "开始基于模板生成套件：template_id=%s，模板=%s，创意度=%s",
+            "开始基于模板生成套件：template_id=%s，模板=%s，创意度=%s，chapter_indicator=%s",
             template_id,
             template.get("template_name"),
             creativity,
+            chapter_indicator,
         )
         host = self._build_host()
         try:
@@ -315,6 +318,7 @@ class GlobalTemplateSuiteService:
                 creativity=creativity,
                 reference_outline=False,
                 project=None,
+                chapter_indicator=chapter_indicator,
             )
         except Exception as exc:
             logger.error("基于模板生成套件失败（template_id=%s）: %s", template_id, exc)
@@ -331,9 +335,12 @@ class GlobalTemplateSuiteService:
         self,
         template_id: int,
         creativity: int = 0,
+        chapter_indicator: bool = False,
     ):
         """Stream suite-generation events (status → complete / error) so the
-        frontend can show live progress instead of a silent blocking request."""
+        frontend can show live progress instead of a silent blocking request.
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
+        """
         template = await self._get_template_by_id(template_id)
         if not template:
             logger.error("基于模板生成套件失败：模板 %s 不存在", template_id)
@@ -341,10 +348,11 @@ class GlobalTemplateSuiteService:
             return
 
         logger.info(
-            "开始基于模板生成套件（流式）：template_id=%s，模板=%s，创意度=%s",
+            "开始基于模板生成套件（流式）：template_id=%s，模板=%s，创意度=%s，chapter_indicator=%s",
             template_id,
             template.get("template_name"),
             creativity,
+            chapter_indicator,
         )
         yield {
             "type": "status",
@@ -361,6 +369,7 @@ class GlobalTemplateSuiteService:
                 creativity=creativity,
                 reference_outline=False,
                 project=None,
+                chapter_indicator=chapter_indicator,
             )
             self._decorate_suite(suite, template, template_id)
             logger.info(
@@ -402,6 +411,7 @@ class GlobalTemplateSuiteService:
         requirement_text: str,
         web_html: str,
         creativity: int = 5,
+        chapter_indicator: bool = False,
     ):
         """基于文字需求 + 可选网页 HTML 生成套件（流式）。
 
@@ -411,6 +421,7 @@ class GlobalTemplateSuiteService:
         两者都空 → yield error。
         逐个 yield status / complete / error 事件，格式与其它套件生成流式一致，
         前端可复用 readSuiteGenerateStream。
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         req = (requirement_text or "").strip()
         html = (web_html or "").strip()
@@ -438,6 +449,7 @@ class GlobalTemplateSuiteService:
                 allow_no_template=True,
                 custom_requirements=req,
                 source_kind="web",
+                chapter_indicator=chapter_indicator,
             )
             self._decorate_suite_from_requirements(suite, req, html)
             logger.info(

@@ -318,7 +318,7 @@ async function previewSelectedTemplate() {
 }
 
 function updateCreativityLabel() {
-    const val = parseInt(dom.creativitySlider.value, 10) || 5;
+    const val = parseInt(dom.creativitySlider.value, 10) ?? 5;
     let text = String(val);
     if (val <= 1) text += ' · 严格遵循母版';
     else if (val <= 3) text += ' · 以母版为主';
@@ -334,7 +334,7 @@ async function startGenerateSuite() {
         alert('请先选择模板');
         return;
     }
-    const creativity = parseInt(dom.creativitySlider.value, 10) || 5;
+    const creativity = parseInt(dom.creativitySlider.value, 10) ?? 5;
     const statusEl = document.getElementById('genProgressStatus');
     const elapsedEl = document.getElementById('genProgressElapsed');
     const startBtn = document.getElementById('startGenerateBtn');
@@ -357,7 +357,7 @@ async function startGenerateSuite() {
         const resp = await fetch('/api/template-suites/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ template_id: templateId, creativity, stream: true }),
+            body: JSON.stringify({ template_id: templateId, creativity, stream: true, chapter_indicator: !!document.getElementById('suiteChapterIndicator')?.checked }),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));
@@ -669,7 +669,7 @@ async function startImageGenerateSuite() {
         alert('请至少上传一张页面截图');
         return;
     }
-    const creativity = parseInt(dom.imgCreativitySlider.value, 10) || 5;
+    const creativity = parseInt(dom.imgCreativitySlider.value, 10) ?? 5;
     const startBtn = document.getElementById('imgStartGenerateBtn');
     if (startBtn) startBtn.disabled = true;
     dom.imgGenUpload.style.display = 'none';
@@ -825,7 +825,7 @@ async function startAiGenerateSuite() {
         alert('请至少填写文字需求或粘贴网页 HTML');
         return;
     }
-    const creativity = parseInt(dom.aiCreativitySlider.value, 10) || 5;
+    const creativity = parseInt(dom.aiCreativitySlider.value, 10) ?? 5;
     const startBtn = document.getElementById('aiStartGenerateBtn');
     if (startBtn) startBtn.disabled = true;
     dom.aiGenInput.style.display = 'none';
@@ -846,7 +846,7 @@ async function startAiGenerateSuite() {
         const resp = await fetch('/api/template-suites/generate-from-requirements', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requirement_text: requirement, web_html: webHtml, creativity, stream: true }),
+            body: JSON.stringify({ requirement_text: requirement, web_html: webHtml, creativity, stream: true, chapter_indicator: !!document.getElementById('aiChapterIndicator')?.checked }),
         });
         if (!resp.ok) {
             const err = await resp.json().catch(() => ({}));

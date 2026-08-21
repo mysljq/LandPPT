@@ -477,6 +477,9 @@ async def generate_project_template_suite(
         except (TypeError, ValueError):
             creativity = 5
         creativity = max(0, min(10, creativity))
+        # chapter_indicator：True = 内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
+        # 缺省（None）时在下方从现有套件自推断（如编辑器"重新生成套件"入口，避免静默丢失章节提示）。
+        chapter_indicator = payload.get("chapter_indicator")
         want_stream = True if payload.get("stream") is None else bool(payload.get("stream"))
         accept = (request.headers.get("accept") or "").lower()
         if "application/json" in accept and "text/event-stream" not in accept and payload.get("stream") is None:
@@ -486,6 +489,19 @@ async def generate_project_template_suite(
         project = await user_ppt_service.project_manager.get_project(project_id, user_id=user.id)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
+
+        # chapter_indicator 缺省时，从现有套件推断（保留已有章节提示状态，避免编辑器
+        # "重新生成套件"入口静默丢失用户已勾选的章节提示）。
+        if chapter_indicator is None:
+            try:
+                existing = await user_ppt_service.template_suite.get_suite(project_id)
+                chapter_indicator = bool(
+                    existing and "{{chapter_indicator}}" in str(existing.get("header_footer") or "")
+                )
+            except Exception:
+                chapter_indicator = False
+        else:
+            chapter_indicator = bool(chapter_indicator)
 
         will_generate = True
         if not force:
@@ -526,6 +542,7 @@ async def generate_project_template_suite(
                         creativity=creativity,
                         free=free,
                         custom_requirements=requirements,
+                        chapter_indicator=chapter_indicator,
                     ):
                         if (
                             will_generate
@@ -562,6 +579,7 @@ async def generate_project_template_suite(
             creativity=creativity,
             free=free,
             custom_requirements=requirements,
+            chapter_indicator=chapter_indicator,
         ):
             if (event or {}).get("type") == "complete":
                 suite = (event or {}).get("suite")
@@ -616,6 +634,11 @@ async def regenerate_project_template_suite_part(
         except (TypeError, ValueError):
             creativity = 5
         creativity = max(0, min(10, creativity))
+        # chapter_indicator：True = 内容页 header_footer 保留 {{chapter_indicator}} 章节提示槽位；
+        # 缺省（None）由服务层从现有 header_footer 自推断。
+        chapter_indicator = payload.get("chapter_indicator")
+        if chapter_indicator is not None:
+            chapter_indicator = bool(chapter_indicator)
         if part not in ("cover", "transition", "header_footer"):
             raise HTTPException(status_code=400, detail="part 必须是 cover / transition / header_footer")
 
@@ -663,6 +686,7 @@ async def regenerate_project_template_suite_part(
                         user_feedback=user_feedback,
                         user_id=user.id,
                         creativity=creativity,
+                        chapter_indicator=chapter_indicator,
                     ):
                         if not credits_consumed and (event or {}).get("type") == "complete":
                             await consume_credits_for_operation(
@@ -694,6 +718,7 @@ async def regenerate_project_template_suite_part(
             user_feedback=user_feedback,
             user_id=user.id,
             creativity=creativity,
+            chapter_indicator=chapter_indicator,
         ):
             if (event or {}).get("type") == "complete":
                 updated = (event or {}).get("suite")

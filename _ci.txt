@@ -1,0 +1,15 @@
+idx=0 type=content title=部门工作情况汇报 | indicator=False
+idx=1 type=content title=目录 | indicator=False
+idx=2 type=content title=室组人员管理总体情况 | indicator=False
+idx=3 type=content title=室组人员管理总体情况 | indicator=True
+idx=4 type=content title=大模型方向 | indicator=False
+idx=5 type=content title=ZA38：智能体执行能力与可视化交互建设 | indicator=True
+idx=6 type=content title=ZA38：可观测能力完善与智能化CLI探索 | indicator=True
+   ITEMS: 01 封面
+idx=7 type=content title=洞察：Harness Engineering核心解构与行业共识 | indicator=True
+idx=8 type=content title=洞察：应用架构从“代码解耦”到“智能解耦” | indicator=True
+idx=9 type=content title=洞察：工作流重构与系统架构演进 | indicator=True
+idx=10 type=content title=ClawPartner：自研云服务化与垂域场景拓展 | indicator=True
+idx=11 type=content title=训练与推理：性能优化与模型测评成果 | indicator=True
+   ITEMS: 01 封面
+idx=13 type=content title=低代码方向 | indicator=False

@@ -137,6 +137,14 @@
                 <span id="suiteCreativityLabel" style="font-size: 0.78rem; color: var(--text-primary); font-weight: 700; min-width: 130px;">5 · 平衡</span>
             </div>
 
+            <!-- 章节提示：勾选后内容页 header_footer 增加章节提示槽位（展示全部章节名，当前章节高亮） -->
+            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 8px;">
+                <input type="checkbox" id="suiteChapterIndicator" style="accent-color: #111; cursor: pointer;">
+                <label for="suiteChapterIndicator" style="font-size: 0.78rem; color: var(--text-primary); cursor: pointer;">
+                    内容页章节提示<span style="color: var(--text-secondary);">（展示全部章节名，当前章节高亮）</span>
+                </label>
+            </div>
+
             <div style="margin-top: 8px; font-size: 0.78rem; color: #64748b; line-height: 1.6;">
                 💡 套件包含<b>封面模板</b>、<b>过渡页模板</b>与<b>内容页规范页头页脚</b>。<br>
                 可选步骤：不生成/不使用也能正常出 PPT（封面/过渡页会由 AI 自由发挥）。
@@ -165,6 +173,13 @@
                     <input type="range" id="outlineCreativitySlider" min="0" max="10" step="1" value="5"
                         style="flex:1; min-width:160px; accent-color:#111; cursor:pointer;" oninput="updateOutlineCreativityLabel()">
                     <span id="outlineCreativityLabel" style="font-size:0.8rem; color:var(--text-primary); font-weight:700; min-width:130px;">5 · 平衡</span>
+                </div>
+                <!-- 章节提示：勾选后内容页 header_footer 增加章节提示槽位 -->
+                <div style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+                    <input type="checkbox" id="outlineChapterIndicator" style="accent-color:#111; cursor:pointer;">
+                    <label for="outlineChapterIndicator" style="font-size:0.8rem; color:var(--text-primary); cursor:pointer;">
+                        内容页章节提示<span style="color:var(--text-secondary);">（展示全部章节名，当前章节高亮）</span>
+                    </label>
                 </div>
                 <div style="text-align:center; margin-top:18px;">
                     <button id="outlineStartBtn" class="btn btn-primary" onclick="startOutlineSuiteGen()"><i class="fas fa-magic"></i> 开始生成</button>

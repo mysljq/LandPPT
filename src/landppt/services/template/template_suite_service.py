@@ -59,6 +59,9 @@ class TemplateSuiteService:
     # 章节号槽位（结构槽位性质）：过渡页/内容页 header_footer 用，生成 PPT 时填真实章节号。
     # 不是品牌槽位（每页变、生成时才知道），故不进 BRAND_SLOTS/_ROLE_TO_SLOT。
     CHAPTER_SLOT = "{{chapter_number}}"
+    # 章节提示槽位（结构槽位性质）：内容页 header_footer 用，勾选"章节提示"后生成。
+    # 内容页生成时确定性填充"全部章节名的块列表，当前章节高亮"。仅内容页展示。
+    CHAPTER_INDICATOR_SLOT = "{{chapter_indicator}}"
     # 结构槽位（生成时有专门机制填充，不是品牌占位）——语义分析即使误归为品牌角色也不替换。
     STRUCTURE_SLOTS = frozenset({
         "cover_title", "cover_subtitle", "cover_extra",
@@ -66,7 +69,7 @@ class TemplateSuiteService:
         "catalog_title", "catalog_subtitle", "catalog_extra", "catalog_items",
         "ending_title", "ending_subtitle", "ending_extra", "ending_items",
         "page_title", "page_content", "current_page_number", "total_page_count",
-        "chapter_number",
+        "chapter_number", "chapter_indicator",
     })
     # 角色 → 项目值槽位 的映射（用于把 LLM 归类的角色转成真实值来源）。
     _ROLE_TO_SLOT = {
@@ -787,6 +790,15 @@ class TemplateSuiteService:
 
         # Content page: header/footer fragment + a sample body.
         hf = str(suite.get("header_footer") or "")
+        # 章节提示示例（第二章为当前章高亮）：仅在套件 header_footer 含 {{chapter_indicator}} 时被填入。
+        chapter_indicator_sample = (
+            '<div class="chapter-indicator">'
+            '<span class="chapter-item">第一章 · 项目概述</span>'
+            '<span class="chapter-item current">第二章 · 核心方案</span>'
+            '<span class="chapter-item">第三章 · 实施路径</span>'
+            '<span class="chapter-item">第四章 · 总结展望</span>'
+            '</div>'
+        )
         hf = _fill(
             hf,
             {
@@ -794,6 +806,7 @@ class TemplateSuiteService:
                 "current_page_number": "3",
                 "total_page_count": "10",
                 "chapter_number": "2",
+                "chapter_indicator": chapter_indicator_sample,
             },
         )
         content = self._wrap_content_preview(hf)
@@ -1380,6 +1393,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         reference_outline: bool = False,
         free: bool = False,
         custom_requirements: str = "",
+        chapter_indicator: bool = False,
     ) -> Dict[str, Any]:
         """Generate (or refresh) a template suite for a project and persist it.
 
@@ -1388,6 +1402,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         为 True 时把项目主题/大纲/受众等信息传给模型。
         free=True：大纲智能套件——无需母版模板，直接根据项目大纲/主题设计一套套件。
         custom_requirements：用户自定义要求（如主题色/风格），设计时须遵循。
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         template = template or {}
         html = (template.get("html_template") or "") if template else ""
@@ -1406,6 +1421,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             project=project,
             allow_no_template=free,
             custom_requirements=custom_requirements,
+            chapter_indicator=chapter_indicator,
         )
         if free:
             suite["template_mode"] = "outline"
@@ -1432,6 +1448,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         allow_no_template: bool = False,
         custom_requirements: str = "",
         source_kind: str = "master",
+        chapter_indicator: bool = False,
     ) -> Dict[str, Any]:
         """Generate a suite dict via one LLM call (no project persistence).
 
@@ -1443,6 +1460,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         此时 template["html_template"] 即网页 HTML，套件风格须与该网页一致。web 模式下
         生成 header_footer 时传空 template_html 给 _ensure_header_footer_complete——网页
         DOM 不适合当内容页母版骨架注入，避免把网页结构硬塞进内容页。
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         template = template or {}
         html = (template.get("html_template") or "") if template else ""
@@ -1452,10 +1470,11 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         _tpl_name = template.get("template_name") or f"#{template.get('id')}"
         _t0 = time.time()
         logger.info(
-            "套件生成开始：模板=%s，创意度=%s，reference_outline=%s",
+            "套件生成开始：模板=%s，创意度=%s，reference_outline=%s，chapter_indicator=%s",
             _tpl_name,
             creativity,
             reference_outline,
+            chapter_indicator,
         )
 
         extracted = MasterLayoutExtractor.extract_header_footer(html)
@@ -1472,6 +1491,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             reference_outline=reference_outline,
             custom_requirements=custom_requirements,
             source_kind=source_kind,
+            chapter_indicator=chapter_indicator,
         )
         logger.info("套件提示词构建完成（%s 字符），开始调用 AI...", len(prompt))
 
@@ -1591,6 +1611,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         user_feedback: str = "",
         creativity: int = 0,
         reference_outline: bool = False,
+        chapter_indicator: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Only regenerate one part (cover/transition/header_footer) of the suite.
 
@@ -1600,6 +1621,8 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
         reference_outline：默认 False = 仅基于母版/现有套件，不绑定项目大纲/主题。
+        chapter_indicator：None（默认）= 从现有 header_footer 是否含 {{chapter_indicator}}
+        自推断（重新生成部分时保留章节提示状态）；bool 时显式指定。
         """
         if part not in self._SUITE_PART_KEYS:
             raise ValueError(f"不支持的套件类型: {part}")
@@ -1612,6 +1635,14 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         existing = await self.get_suite(project_id)
         if not existing:
             raise ValueError("项目暂无已生成的套件，请先整体生成套件")
+
+        # 重新生成 header_footer 时保留章节提示状态：若既有 header_footer 含
+        # {{chapter_indicator}} 槽位，则新生成的也应保留（不依赖前端传值）。
+        if chapter_indicator is None:
+            chapter_indicator = (
+                part == "header_footer"
+                and TemplateSuiteService.CHAPTER_INDICATOR_SLOT in str(existing.get("header_footer") or "")
+            )
 
         extracted = MasterLayoutExtractor.extract_header_footer(html)
         project = await self.project_manager.get_project(project_id)
@@ -1631,6 +1662,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
             user_feedback=user_feedback,
             creativity=creativity,
             reference_outline=reference_outline,
+            chapter_indicator=bool(chapter_indicator),
         )
 
         response = await self._text_completion_for_role(
@@ -1690,10 +1722,12 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         user_feedback: str = "",
         user_id: Optional[int] = None,
         creativity: int = 0,
+        chapter_indicator: Optional[bool] = None,
     ):
         """Stream single-type suite regeneration events, persisting on success.
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
+        chapter_indicator：None=由 regenerate_suite_part 从现有 header_footer 自推断；bool=显式指定。
         """
         lock = self._template_suite_locks.setdefault(project_id, asyncio.Lock())
         if lock.locked():
@@ -1709,7 +1743,8 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
                 yield {"type": "status", "message": f"正在重新生成{part}..."}
                 try:
                     updated = await self.regenerate_suite_part(
-                        project_id, part, template, user_feedback=user_feedback, creativity=creativity
+                        project_id, part, template, user_feedback=user_feedback, creativity=creativity,
+                        chapter_indicator=chapter_indicator,
                     )
                 except Exception as exc:
                     logger.error("Suite part regeneration failed for project %s: %s", project_id, exc)
@@ -1739,12 +1774,14 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         creativity: int = 0,
         free: bool = False,
         custom_requirements: str = "",
+        chapter_indicator: bool = False,
     ):
         """Stream suite-generation events and persist the suite on success.
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
         free=True：大纲智能套件——无需母版模板，直接根据项目大纲/主题设计一套。
         custom_requirements：用户自定义要求（如主题色/风格）。
+        chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         lock = self._template_suite_locks.setdefault(project_id, asyncio.Lock())
         if lock.locked():
@@ -1781,6 +1818,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
                     suite = await self.generate_suite(
                         project_id, template, force=force, creativity=creativity,
                         free=free, custom_requirements=custom_requirements,
+                        chapter_indicator=chapter_indicator,
                     )
                 except Exception as exc:
                     logger.error("Template suite generation failed for project %s: %s", project_id, exc)

@@ -392,6 +392,7 @@ class TemplatePrompts:
         reference_outline: bool = False,
         custom_requirements: str = "",
         source_kind: str = "master",
+        chapter_indicator: bool = False,
     ) -> str:
         """组装"模板套件"生成提示词。
 
@@ -409,6 +410,8 @@ class TemplatePrompts:
         source_kind："master"=基于 PPT 母版模板（默认，保持现有行为）；
         "web"=基于用户粘贴的网页 HTML（template_html 即网页 HTML），套件配色/字体/版式/
         背景装饰/视觉语言须与该网页保持一致；无母版页头页脚原文可用。
+        chapter_indicator：True 时内容页 header_footer 需设计一个 {{chapter_indicator}}
+        章节提示槽位（容器 + 章节块 + 当前章节高亮样式），仅内容页展示。
         """
         outline = outline or {}
         confirmed = confirmed or {}
@@ -481,6 +484,24 @@ class TemplatePrompts:
         if (custom_requirements or "").strip():
             custom_req_section = "**用户自定义要求（设计时必须遵循）**\n" + custom_requirements.strip() + "\n"
 
+        # 章节提示槽位区块：勾选"章节提示"时，内容页 header_footer 需设计该槽位；
+        # 未勾选时明确禁止输出该槽位（防止老套件误带）。用普通字符串，非 f-string，故花括号安全。
+        chapter_indicator_section = (
+            (
+                "   - **章节提示 `{{ chapter_indicator }}`（勾选了「章节提示」时必含）**：内容页需展示"
+                "该 PPT 的全部章节名导航。请设计一个外层容器，类名用 `chapter-indicator`；容器内每章节一个块，"
+                "块类名用 `chapter-item`；当前章节块额外加 `current` 类（如 `class=\"chapter-item current\"`），"
+                "用于高亮区分。生成 PPT 时会用全部章节名块列表**确定性**替换 `{{ chapter_indicator }}`，"
+                "所以容器与 `chapter-item`/`chapter-item.current` 的 CSS 样式请自行设计（可沿用套件配色/字体/"
+                "强调色，横向或纵向排版均可），保证未高亮块与当前高亮块在视觉上分明。该槽位**只出现在内容页 "
+                "header_footer**，封面/过渡/目录/结尾页不要；也不要把它放进 `.suite-stage` 正文区，应位于页头/页脚附近。\n"
+            )
+            if chapter_indicator
+            else (
+                "   - **不要生成 `{{ chapter_indicator }}` 章节提示槽位**（未勾选「章节提示」时，内容页不要展示全部章节名导航）。\n"
+            )
+        )
+
         return f"""
 请基于已选母版的设计风格与主题色，生成一套通用的"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
 
@@ -503,7 +524,7 @@ class TemplatePrompts:
    - 一个正文占位容器 `{{{{ page_content }}}}`（供后续填充正文）；
    - 页脚 `{{{{ current_page_number }}}}`（当前页码）、`{{{{ total_page_count }}}}`（总页数）；
    - 可选 `{{{{ chapter_number }}}}`（本页所属章节序号，纯数字如 1/2/3；放在页头/页脚的章节标识位，可用 CSS 包装成"第1章/01"等样式）。
-   样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
+{chapter_indicator_section}   样式与母版提取原文同源；整段片段后续会被逐字嵌入内容页提示词作为强约束，因此必须自带背景装饰，不能只有孤立的页头页脚文字。
    **片段自带 `<style>` 块必须同时包含全局 reset 与画布约束**（与封面/过渡页一致）：
    ```css
    {TemplatePrompts.HF_RESET_CSS}
@@ -582,6 +603,7 @@ class TemplatePrompts:
         user_feedback: str = "",
         creativity: int = 0,
         reference_outline: bool = False,
+        chapter_indicator: bool = False,
     ) -> str:
         """组装"模板套件单类型重新生成"提示词。
 
@@ -590,6 +612,8 @@ class TemplatePrompts:
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意（仅 cover/transition 生效）。
         reference_outline：为 True 时才把项目主题/大纲等信息传给模型；默认 False = 仅基于母版/现有套件。
+        chapter_indicator：仅 part="header_footer" 时生效——True 时要求重新生成的内容页 header_footer
+        保留 `{{chapter_indicator}}` 章节提示槽位（含容器与章节块/当前章高亮样式）。
         """
         meta = TemplatePrompts._SUITE_PART_META.get(part)
         if not meta:
@@ -654,6 +678,18 @@ class TemplatePrompts:
 
         feedback_section = f"\n**本次调整需求（务必满足）**\n{user_feedback.strip()}\n" if user_feedback.strip() else ""
 
+        # header_footer 局部重生：勾选"章节提示"时在其 desc 后追加章节提示槽位要求。
+        part_desc = meta['desc']
+        if part == "header_footer" and chapter_indicator:
+            part_desc = (
+                part_desc
+                + " **必须保留章节提示槽位 `{{ chapter_indicator }}`**：设计一个外层容器（类名 `chapter-indicator`），"
+                "容器内每章节一个块（类名 `chapter-item`），当前章节块额外加 `current` 类（`class=\"chapter-item current\"`）以高亮区分；"
+                "生成 PPT 时后端会用全部章节名块列表确定性替换该槽位，所以请为 `chapter-indicator`/`chapter-item`/`chapter-item.current` "
+                "设计好样式（沿用套件配色/字体，保证高亮与未高亮分明），并把它放在页头/页脚附近、不要放进 `.suite-stage` 正文区。"
+                "若不需要则不要输出 `{{ chapter_indicator }}` 槽位。"
+            )
+
         return f"""
 请为这套 PPT 重新生成「{meta['label']}」，只输出这一个部分，其余套件部分保持不变。
 
@@ -669,7 +705,7 @@ class TemplatePrompts:
 {feedback_section}
 
 **本次输出约束**
-- 只重新设计并输出 `{meta['key']}` 这一种：{meta['desc']}
+- 只重新设计并输出 `{meta['key']}` 这一种：{part_desc}
 - 必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale；封面/过渡页用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段（但片段自带的 `<style>` 必须包含 `{TemplatePrompts.HF_RESET_CSS}` 与 `{TemplatePrompts.HF_CANVAS_RULE}`，保证内容页 body 无默认 margin、无滚动条）。
 - 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
 - 沿用现有套件的 design_tokens 与其余部分的视觉语言，保持同一套设计系统。
