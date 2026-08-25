@@ -170,16 +170,29 @@ class SlideMediaService:
             # C1：内容页/目录页 LLM 输出后兜底替换残留的套件占位符（{{page_title}} 等），
             # 避免 LLM 未替换的槽位原样进最终页面（用户报告 6/7/8 页占位符残留）。
             if page_type in ("content", "catalog") and suite:
-                # 章节提示：契合"仅内容页展示"——内容页用全部章节名块列表确定性填充
-                # {{chapter_indicator}}（目录页/其他页若套件里有该槽位也会被清空）。
-                chapter_indicator_html = self.build_chapter_indicator_html(all_slides, slide_data)
+                # 章节提示必须由后端最终裁决：LLM 可能删除槽位、留下空容器，甚至自行
+                # 把每一页标题拼成章节列表。先清掉残留 token，再在内容页统一覆盖/补入
+                # 只来自目录页的真实章节列表；目录页自身不展示章节提示。
+                indicator_enabled = (
+                    page_type == "content"
+                    and self._suite_has_chapter_indicator(suite)
+                )
+                chapter_indicator_html = (
+                    self.build_chapter_indicator_html(all_slides, slide_data)
+                    if indicator_enabled
+                    else ""
+                )
                 html_content = self._replace_remaining_content_slots(
                     html_content, slide_data, page_number, total_pages,
-                    chapter_indicator_html=chapter_indicator_html,
+                    chapter_indicator_html="",
                 )
                 # D1：内容页样式全丢兜底——若 LLM 保留了骨架 div 却丢掉了套件 <style> 块，
                 # 从套件 header_footer 里把 CSS 补回 head（用户报告 4/5/9/10 页样式丢失）。
                 if page_type == "content":
+                    if indicator_enabled:
+                        html_content = self._upsert_chapter_indicator(
+                            html_content, chapter_indicator_html
+                        )
                     html_content = self._ensure_content_suite_style_injected(html_content, suite)
                     # B3：章节提示兜底样式——若套件没为 .chapter-indicator 提供 CSS，注入默认导航样式。
                     html_content = self._ensure_chapter_indicator_style(html_content, suite)
@@ -255,17 +268,17 @@ class SlideMediaService:
         all_slides: List[Dict[str, Any]],
         slide_data: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """确定性构建"章节提示" HTML：当前 PPT 全部章节名块列表，当前章节块加 `.current` 高亮。
+        """确定性构建章节提示：只使用目录页章节，当前章节块加 `.current` 高亮。
 
         仅用于内容页 header_footer 的 `{{chapter_indicator}}` 槽位（勾选"章节提示"后由套件生成，
         这里在生成内容页时确定性填充，不经 LLM）：
-        - 章节名 = 各章节首个 content 页的 title（与大纲 `_assign_chapter_numbers` 的章节号一致）；
+        - 章节名严格来自 agenda/catalog/directory 页的 content_points，不再拿每个内容页标题；
         - 每章节一个 `.chapter-item` 块，当前章节（slide_data 的 chapter）额外加 `.current`；
+        - 根据章节数和最长章节名动态计算字号，允许最多两行，确保全量章节名可见；
         - 外层容器 `<div class="chapter-indicator">`，块样式由套件 header_footer 的 CSS 或兜底 CSS 提供；
-        - 无任何章节时返回空串（替换对无该槽位的 HTML 无害）。
+        - 无目录章节时返回空串，绝不回退为每页标题。
         """
-        import re as _re
-        from collections import OrderedDict
+        from html import escape as _escape
 
         slide_data = slide_data or {}
         current = 0
@@ -274,33 +287,171 @@ class SlideMediaService:
         except (TypeError, ValueError):
             current = 0
 
-        chapters: "OrderedDict[int, str]" = OrderedDict()
-        for s in all_slides or []:
-            if not isinstance(s, dict):
-                continue
-            stype = str(s.get("slide_type") or s.get("type") or "").strip().lower()
-            if stype != "content":
-                continue
-            try:
-                ch = int(s.get("chapter") or 0)
-            except (TypeError, ValueError):
-                ch = 0
-            if ch < 1 or ch in chapters:
-                continue
-            title = str(s.get("title") or "").strip()
-            chapters[ch] = title or f"第{ch}章"
+        chapters = SlideMediaService._extract_directory_chapter_titles(all_slides)
 
         if not chapters:
             return ""
 
-        def _esc(text: str) -> str:
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
+        font_size = SlideMediaService._chapter_indicator_font_size(chapters)
+        number_size = max(7, font_size - 1)
+        letter_spacing = "0" if font_size <= 9 else "0.2px"
         items = []
-        for ch, name in chapters.items():
-            cls = "chapter-item" + (" current" if ch == current else "")
-            items.append(f'<span class="{cls}">{_esc(name)}</span>')
-        return '<div class="chapter-indicator">' + "".join(items) + "</div>"
+        for chapter_number, name in enumerate(chapters, 1):
+            cls = "chapter-item" + (" current" if chapter_number == current else "")
+            # inline 尺寸覆盖套件里固定的 13px/nowrap/ellipsis，避免长目录名被省略。
+            item_style = (
+                f"font-size:{font_size}px;line-height:1.12;letter-spacing:{letter_spacing};"
+                "white-space:normal;overflow:visible;text-overflow:clip;"
+                "min-width:0;padding:1px 4px;gap:3px;text-align:center;"
+            )
+            items.append(
+                f'<span class="{cls}" style="{item_style}" title="{_escape(name, quote=True)}">'
+                f'<span class="chapter-item-num" style="font-size:{number_size}px;flex-shrink:0">'
+                f'{chapter_number:02d}</span>'
+                '<span class="chapter-item-label" '
+                'style="min-width:0;white-space:normal;overflow-wrap:anywhere">'
+                f'{_escape(name)}</span>'
+                "</span>"
+            )
+        return (
+            '<div class="chapter-indicator" data-chapter-source="directory" '
+            f'data-chapter-count="{len(chapters)}">'
+            + "".join(items)
+            + "</div>"
+        )
+
+    @staticmethod
+    def _extract_directory_chapter_titles(
+        all_slides: Optional[List[Dict[str, Any]]],
+    ) -> List[str]:
+        """读取第一个目录页的章节名，保持目录顺序并去重。
+
+        章节提示的唯一数据源是目录；没有目录/目录无条目时返回空列表，不以内容页标题兜底。
+        """
+        from ..outline.project_outline_normalization_service import (
+            ProjectOutlineNormalizationService as _OutlineNormalizer,
+        )
+
+        directory_types = {"agenda", "catalog", "outline", "directory", "contents"}
+        for slide in all_slides or []:
+            if not isinstance(slide, dict):
+                continue
+            slide_type = str(
+                slide.get("slide_type") or slide.get("type") or ""
+            ).strip().lower()
+            if slide_type not in directory_types:
+                continue
+
+            raw_points = slide.get("content_points") or slide.get("content") or []
+            if isinstance(raw_points, str):
+                raw_points = [line for line in raw_points.splitlines() if line.strip()]
+            if not isinstance(raw_points, list):
+                return []
+
+            chapters: List[str] = []
+            seen = set()
+            for point in raw_points:
+                if isinstance(point, dict):
+                    raw = point.get("title") or point.get("name") or point.get("text") or ""
+                else:
+                    raw = point
+                raw_title = str(raw).strip()
+                title = _OutlineNormalizer._strip_chapter_prefix(raw_title).strip() or raw_title
+                if not title:
+                    continue
+                lowered = title.casefold()
+                if lowered in {"目录", "contents", "章节概览", "章节", "大纲", "overview"}:
+                    continue
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                chapters.append(title)
+            return chapters
+        return []
+
+    @staticmethod
+    def _chapter_indicator_font_size(chapters: List[str]) -> int:
+        """按章节数量与最长名称估算可完整展示的统一字号（8-13px）。"""
+        if not chapters:
+            return 12
+
+        def _visual_length(value: str) -> float:
+            return sum(1.0 if ord(ch) > 127 else 0.55 for ch in value)
+
+        count = max(1, len(chapters))
+        longest = max(_visual_length(name) for name in chapters)
+        # 1280 画布扣除左右内边距后约 1220px；每块预留编号/间距约 25px，允许两行。
+        per_item_width = 1220 / count
+        estimated = int(((per_item_width - 25) * 2) / max(longest, 1.0))
+        count_cap = 13
+        if count >= 11:
+            count_cap = 8
+        elif count >= 9:
+            count_cap = 9
+        elif count >= 7:
+            count_cap = 10
+        elif count >= 6:
+            count_cap = 11
+        elif count >= 5:
+            count_cap = 12
+        return max(8, min(count_cap, estimated))
+
+    @staticmethod
+    def _suite_has_chapter_indicator(suite: Optional[Dict[str, Any]]) -> bool:
+        """套件 header_footer 含槽位或章节容器时，视为已启用章节提示。"""
+        header_footer = str((suite or {}).get("header_footer") or "")
+        return "chapter_indicator" in header_footer or "chapter-indicator" in header_footer
+
+    @staticmethod
+    def _find_chapter_indicator_range(html: str) -> Optional[tuple]:
+        """返回首个 chapter-indicator 元素的字符串范围，支持内部嵌套同类标签。"""
+        if not html:
+            return None
+        opening = re.compile(
+            r"<(?P<tag>div|nav|section)\b(?P<attrs>[^>]*\bclass\s*=\s*"
+            r"(?P<q>['\"])[^'\"]*\bchapter-indicator\b[^'\"]*(?P=q)[^>]*)>",
+            re.IGNORECASE,
+        )
+        match = opening.search(html)
+        if not match:
+            return None
+        tag = match.group("tag")
+        token_re = re.compile(rf"</?{re.escape(tag)}\b[^>]*>", re.IGNORECASE)
+        depth = 1
+        for token in token_re.finditer(html, match.end()):
+            value = token.group(0).lstrip()
+            if value.startswith("</"):
+                depth -= 1
+                if depth == 0:
+                    return match.start(), token.end()
+            elif not value.rstrip().endswith("/>"):
+                depth += 1
+        return match.start(), match.end()
+
+    @staticmethod
+    def _upsert_chapter_indicator(html: str, indicator_html: str) -> str:
+        """强制覆盖/补入章节提示，消除 LLM 删除、留空或自行生成错误列表的差异。"""
+        if not html:
+            return html
+        existing = SlideMediaService._find_chapter_indicator_range(html)
+        if existing:
+            start, end = existing
+            return html[:start] + indicator_html + html[end:]
+        if not indicator_html:
+            return html
+
+        stage = re.search(
+            r"<(?:div|main|section)\b[^>]*\bclass\s*=\s*(['\"])"
+            r"[^'\"]*\bsuite-stage\b[^'\"]*\1[^>]*>",
+            html,
+            re.IGNORECASE,
+        )
+        if stage:
+            return html[:stage.start()] + indicator_html + "\n" + html[stage.start():]
+        body_close = re.search(r"</body\s*>", html, re.IGNORECASE)
+        if body_close:
+            return html[:body_close.start()] + indicator_html + "\n" + html[body_close.start():]
+        return html.rstrip() + "\n" + indicator_html
 
     @staticmethod
     def _ensure_chapter_indicator_style(html: str, suite: dict) -> str:
@@ -323,11 +474,15 @@ class SlideMediaService:
         if not _re.search(r"\.chapter-indicator\s*\{", hf):
             inject = (
                 '<style id="chapter-indicator-fallback">'
-                ".chapter-indicator{display:flex;flex-wrap:wrap;gap:8px;align-items:center;"
+                ".chapter-indicator{display:flex;flex-wrap:nowrap;gap:0;width:100%;align-items:center;"
                 "font-family:inherit;} "
-                ".chapter-indicator .chapter-item{display:inline-block;padding:4px 12px;"
+                ".chapter-indicator .chapter-item{display:flex;flex:1 1 0;min-width:0;"
+                "align-items:center;justify-content:center;padding:2px 4px;"
                 "border:1px solid rgba(127,127,127,0.35);border-radius:20px;"
-                "font-size:12px;line-height:1.4;color:#4b5563;opacity:0.85;} "
+                "font-size:12px;line-height:1.15;color:#4b5563;opacity:0.85;"
+                "white-space:normal;overflow:visible;text-overflow:clip;} "
+                ".chapter-indicator .chapter-item-label{min-width:0;white-space:normal;"
+                "overflow-wrap:anywhere;} "
                 ".chapter-indicator .chapter-item.current{"
                 "background:#c00000;border-color:#c00000;color:#ffffff;font-weight:700;opacity:1;}"
                 "</style>"

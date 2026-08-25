@@ -435,7 +435,11 @@ async def get_project_template_suite_preview(
         if not suite:
             raise HTTPException(status_code=404, detail="模板套件尚未生成，请先点击「生成一致性套件」")
 
-        preview = user_ppt_service.template_suite.build_preview_html(suite)
+        outline = project.outline if isinstance(project.outline, dict) else {}
+        preview = user_ppt_service.template_suite.build_preview_html(
+            suite,
+            all_slides=outline.get("slides") or [],
+        )
         return {
             "success": True,
             "template_name": suite.get("template_name"),

@@ -489,11 +489,13 @@ class TemplatePrompts:
         chapter_indicator_section = (
             (
                 "   - **章节提示 `{{ chapter_indicator }}`（勾选了「章节提示」时必含）**：内容页需展示"
-                "该 PPT 的全部章节名导航。请设计一个外层容器，类名用 `chapter-indicator`；容器内每章节一个块，"
+                "该 PPT 的全部章节名导航。章节列表最终只会使用目录页中的一级章节，严禁把每个内容页标题当章节。"
+                "请设计一个外层容器，类名用 `chapter-indicator`；容器内每章节一个块，"
                 "块类名用 `chapter-item`；当前章节块额外加 `current` 类（如 `class=\"chapter-item current\"`），"
                 "用于高亮区分。生成 PPT 时会用全部章节名块列表**确定性**替换 `{{ chapter_indicator }}`，"
                 "所以容器与 `chapter-item`/`chapter-item.current` 的 CSS 样式请自行设计（可沿用套件配色/字体/"
-                "强调色，横向或纵向排版均可），保证未高亮块与当前高亮块在视觉上分明。该槽位**只出现在内容页 "
+                "强调色，横向或纵向排版均可），保证未高亮块与当前高亮块在视觉上分明。应允许 8-13px 动态字号、"
+                "必要时两行展示，并禁止用省略号截断章节名。该槽位**只出现在内容页 "
                 "header_footer**，封面/过渡/目录/结尾页不要；也不要把它放进 `.suite-stage` 正文区，应位于页头/页脚附近。\n"
             )
             if chapter_indicator
@@ -684,9 +686,11 @@ class TemplatePrompts:
             part_desc = (
                 part_desc
                 + " **必须保留章节提示槽位 `{{ chapter_indicator }}`**：设计一个外层容器（类名 `chapter-indicator`），"
-                "容器内每章节一个块（类名 `chapter-item`），当前章节块额外加 `current` 类（`class=\"chapter-item current\"`）以高亮区分；"
+                "后端只会填入目录页中的一级章节，严禁把每个内容页标题当章节；容器内每章节一个块（类名 `chapter-item`），"
+                "当前章节块额外加 `current` 类（`class=\"chapter-item current\"`）以高亮区分；"
                 "生成 PPT 时后端会用全部章节名块列表确定性替换该槽位，所以请为 `chapter-indicator`/`chapter-item`/`chapter-item.current` "
-                "设计好样式（沿用套件配色/字体，保证高亮与未高亮分明），并把它放在页头/页脚附近、不要放进 `.suite-stage` 正文区。"
+                "设计好样式（沿用套件配色/字体，保证高亮与未高亮分明），支持 8-13px 动态字号和两行完整显示，"
+                "禁止用省略号截断章节名，并把它放在页头/页脚附近、不要放进 `.suite-stage` 正文区。"
                 "若不需要则不要输出 `{{ chapter_indicator }}` 槽位。"
             )
 

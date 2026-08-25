@@ -692,22 +692,42 @@ class TemplateSuiteService:
             logger.warning("Failed to get effective suite for project %s: %s", project_id, exc)
             return None
 
+    _PREVIEW_CHAPTER_TITLES = ("概述", "核心方案", "实施路径", "总结与展望")
+
     @staticmethod
-    def _catalog_items_sample() -> str:
+    def _preview_chapter_titles(
+        all_slides: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[str]:
+        """预览章节名优先取项目目录页；无项目大纲时使用统一示例章节。"""
+        if all_slides:
+            from ..slide.slide_media_service import SlideMediaService
+
+            chapters = SlideMediaService._extract_directory_chapter_titles(all_slides)
+            if chapters:
+                return chapters
+        return list(TemplateSuiteService._PREVIEW_CHAPTER_TITLES)
+
+    @staticmethod
+    def _catalog_items_sample(chapters: Optional[List[str]] = None) -> str:
         """Styled example rows for the catalog items slot (preview only).
 
         Renders as a designed 目录 list (bullets + dividers + responsive two-column
         grid) instead of a plain text paragraph, so previews show the intended look.
         """
-        chapters = ["第一章 概述", "第二章 核心方案", "第三章 实施路径", "第四章 总结与展望"]
+        from html import escape as _escape
+
+        chapter_names = chapters or list(TemplateSuiteService._PREVIEW_CHAPTER_TITLES)
+        chinese_numbers = ("一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
         rows = "".join(
             '<div style="display:flex; align-items:center; gap:10px; padding:10px 2px; '
             'border-bottom:1px solid rgba(127,127,127,0.25);">'
             '<span style="flex:0 0 auto; width:8px; height:8px; border-radius:50%; '
             'background:currentColor; opacity:0.35;"></span>'
-            f'<span style="font-size:1em; font-weight:600; line-height:1.35;">{title}</span>'
+            f'<span style="font-size:1em; font-weight:600; line-height:1.35;">'
+            f'第{chinese_numbers[index - 1] if index <= len(chinese_numbers) else index}章 '
+            f'{_escape(str(title))}</span>'
             "</div>"
-            for title in chapters
+            for index, title in enumerate(chapter_names, 1)
         )
         return (
             '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); '
@@ -716,7 +736,11 @@ class TemplateSuiteService:
             + "</div>"
         )
 
-    def build_preview_html(self, suite: Dict[str, Any]) -> Dict[str, str]:
+    def build_preview_html(
+        self,
+        suite: Dict[str, Any],
+        all_slides: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
         """Render the suite into preview pages with sample slot content.
 
         Returns {"cover", "transition", "catalog", "ending", "content"} where each
@@ -726,6 +750,12 @@ class TemplateSuiteService:
         header_footer with a placeholder body.
         """
         from .template_suite_renderer import TemplateSuiteRenderer
+        from ..slide.slide_media_service import SlideMediaService
+
+        # 项目内预览使用真实目录章节；套件库预览没有项目上下文时，目录页和内容页
+        # 共用同一组示例章节，确保两个 Tab 展示完全一致的章节名称与顺序。
+        preview_chapters = self._preview_chapter_titles(all_slides)
+        current_chapter = min(2, len(preview_chapters)) if preview_chapters else 0
 
         def _fill(entry: str, slots: Dict[str, str]) -> str:
             import re as _re
@@ -761,7 +791,10 @@ class TemplateSuiteService:
         transition = _fill(
             suite.get("transition"),
             {
-                "transition_title": "第二章 · 核心方案",
+                "transition_title": (
+                    f"第{current_chapter}章 · {preview_chapters[current_chapter - 1]}"
+                    if current_chapter else "章节过渡"
+                ),
                 "transition_subtitle": "从规划到落地，本部分介绍具体实施方案",
                 "transition_extra": "核心章节 · 敬请期待",
                 "chapter_number": "2",
@@ -774,7 +807,7 @@ class TemplateSuiteService:
                 "catalog_title": "目录",
                 "catalog_subtitle": "内容概览",
                 "catalog_extra": "",
-                "catalog_items": self._catalog_items_sample(),
+                "catalog_items": self._catalog_items_sample(preview_chapters),
             },
         )
         # 结尾页：感谢标题 + 副标题 + 收尾要点
@@ -788,17 +821,25 @@ class TemplateSuiteService:
             },
         )
 
-        # Content page: header/footer fragment + a sample body.
+        # Content page: header/footer fragment + a sample body. 章节提示复用目录页
+        # 章节，并采用实际生成阶段相同的“覆盖整个容器”逻辑，避免把完整容器嵌套到
+        # 套件原有的 .chapter-indicator 中，导致套件 CSS 无法命中。
         hf = str(suite.get("header_footer") or "")
-        # 章节提示示例（第二章为当前章高亮）：仅在套件 header_footer 含 {{chapter_indicator}} 时被填入。
-        chapter_indicator_sample = (
-            '<div class="chapter-indicator">'
-            '<span class="chapter-item">第一章 · 项目概述</span>'
-            '<span class="chapter-item current">第二章 · 核心方案</span>'
-            '<span class="chapter-item">第三章 · 实施路径</span>'
-            '<span class="chapter-item">第四章 · 总结展望</span>'
-            '</div>'
-        )
+        indicator_enabled = SlideMediaService._suite_has_chapter_indicator(suite)
+        chapter_indicator_sample = ""
+        if indicator_enabled and preview_chapters:
+            preview_slides = [{
+                "slide_type": "agenda",
+                "title": "目录",
+                "content_points": preview_chapters,
+                "chapter": 0,
+            }]
+            chapter_indicator_sample = SlideMediaService.build_chapter_indicator_html(
+                preview_slides,
+                {"slide_type": "content", "chapter": current_chapter},
+            )
+            # 对已有空容器/错误示例列表，先替换整个元素；只有裸槽位时由 _fill 填入。
+            hf = SlideMediaService._upsert_chapter_indicator(hf, chapter_indicator_sample)
         hf = _fill(
             hf,
             {
@@ -810,6 +851,11 @@ class TemplateSuiteService:
             },
         )
         content = self._wrap_content_preview(hf)
+        if indicator_enabled:
+            content = SlideMediaService._upsert_chapter_indicator(
+                content, chapter_indicator_sample
+            )
+            content = SlideMediaService._ensure_chapter_indicator_style(content, suite)
 
         return {
             "cover": cover,

@@ -3163,23 +3163,32 @@ def test_chapter_indicator_constants_and_structure_slots():
 
 
 def test_build_chapter_indicator_html():
-    """build_chapter_indicator_html 确定性构建全部章节名块列表，当前章节 .current 高亮。"""
+    """章节提示只取目录章节，不混入每个内容页标题，并高亮当前章节。"""
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     all_slides = [
         {"slide_type": "cover", "title": "封面", "chapter": 0},
-        {"slide_type": "content", "title": "项目概述", "chapter": 1},
+        {"slide_type": "agenda", "title": "目录", "content_points": [
+            "一、项目概述", "二、核心方案：规划与落地", "三、实施路径"
+        ], "chapter": 0},
+        {"slide_type": "content", "title": "项目背景与目标", "chapter": 1},
         {"slide_type": "content", "title": "项目概述子页", "chapter": 1},
-        {"slide_type": "content", "title": "核心方案", "chapter": 2},
-        {"slide_type": "content", "title": "实施路径", "chapter": 3},
+        {"slide_type": "content", "title": "技术架构设计", "chapter": 2},
+        {"slide_type": "content", "title": "里程碑安排", "chapter": 3},
         {"slide_type": "ending", "title": "致谢", "chapter": 0},
     ]
     html = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 2})
-    assert html.startswith('<div class="chapter-indicator">')
+    assert html.startswith('<div class="chapter-indicator"')
     assert html.endswith("</div>")
-    assert "项目概述" in html and "核心方案" in html and "实施路径" in html
+    assert "项目概述" in html and "核心方案：规划与落地" in html and "实施路径" in html
+    assert "项目背景与目标" not in html
+    assert "技术架构设计" not in html
+    assert "里程碑安排" not in html
+    assert 'data-chapter-source="directory"' in html
+    assert 'data-chapter-count="3"' in html
     assert html.count("chapter-item current") == 1
-    assert 'class="chapter-item current">核心方案' in html
+    assert 'class="chapter-item current"' in html
+    assert "核心方案：规划与落地" in html
 
     assert SlideMediaService.build_chapter_indicator_html([], {"chapter": 1}) == ""
     assert SlideMediaService.build_chapter_indicator_html(
@@ -3192,15 +3201,39 @@ def test_build_chapter_indicator_html_current_differs():
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     all_slides = [
-        {"slide_type": "content", "title": "第一章标题", "chapter": 1},
-        {"slide_type": "content", "title": "第二章标题", "chapter": 2},
-        {"slide_type": "content", "title": "第三章标题", "chapter": 3},
+        {"slide_type": "agenda", "title": "目录", "content_points": [
+            "背景概述", "核心方案", "实施路径"
+        ]},
+        {"slide_type": "content", "title": "第一页内容", "chapter": 1},
+        {"slide_type": "content", "title": "第二页内容", "chapter": 2},
+        {"slide_type": "content", "title": "第三页内容", "chapter": 3},
     ]
     h1 = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 1})
     h3 = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 3})
-    assert 'class="chapter-item current">第一章标题' in h1
-    assert 'class="chapter-item current">第三章标题' in h3
+    assert 'class="chapter-item current"' in h1 and "背景概述" in h1
+    assert 'class="chapter-item current"' in h3 and "实施路径" in h3
     assert h1 != h3
+
+
+def test_chapter_indicator_adapts_font_size_for_full_directory_names():
+    """章节较多且名称较长时动态缩小字号，并保留完整目录文本而非省略。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    chapters = [
+        "组织与人员管理现状分析",
+        "大模型方向：ZA38、ClawPartner与训练推理",
+        "低代码方向：安全合规、模板建设与用户牵引",
+        "现状洞察与下一阶段完整规划",
+        "团队建设与技术创新成果",
+        "问题挑战及后续改进措施",
+    ]
+    all_slides = [{"slide_type": "agenda", "content_points": chapters}]
+    html = SlideMediaService.build_chapter_indicator_html(all_slides, {"chapter": 3})
+    assert SlideMediaService._chapter_indicator_font_size(chapters) < 13
+    assert "text-overflow:clip" in html
+    assert "white-space:normal" in html
+    for name in chapters:
+        assert name in html
 
 
 def test_replace_remaining_content_slots_fills_chapter_indicator():
@@ -3208,8 +3241,9 @@ def test_replace_remaining_content_slots_fills_chapter_indicator():
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     indicator = SlideMediaService.build_chapter_indicator_html(
-        [{"slide_type": "content", "title": "第一章", "chapter": 1},
-         {"slide_type": "content", "title": "第二章", "chapter": 2}],
+        [{"slide_type": "agenda", "content_points": ["第一章", "第二章"]},
+         {"slide_type": "content", "title": "第一页内容", "chapter": 1},
+         {"slide_type": "content", "title": "第二页内容", "chapter": 2}],
         {"chapter": 2},
     )
     html = '<header>{{page_title}}</header><div>{{chapter_indicator}}</div>'
@@ -3219,7 +3253,7 @@ def test_replace_remaining_content_slots_fills_chapter_indicator():
     )
     assert "{{chapter_indicator}}" not in out
     assert "chapter-indicator" in out
-    assert 'chapter-item current">第二章' in out, "当前章节块应高亮"
+    assert "chapter-item current" in out and "第二章" in out, "当前章节块应高亮"
 
     html2 = '<div>{{ chapter_indicator }}</div>'
     out2 = SlideMediaService._replace_remaining_content_slots(
@@ -3301,7 +3335,7 @@ def test_suite_part_prompt_header_footer_chapter_indicator():
 
 
 def test_preview_html_chapter_indicator():
-    """内容页预览：header_footer 含 {{chapter_indicator}} 时填入示例章节块且无 {{ 残留。"""
+    """内容页预览复用目录章节、覆盖原容器，且不产生嵌套章节导航。"""
     from landppt.services.template.template_suite_service import TemplateSuiteService
 
     suite = dict(SUITE)
@@ -3314,10 +3348,53 @@ def test_preview_html_chapter_indicator():
     assert "{{" not in content, "预览不得有 {{ 残留"
     assert "chapter-item current" in content, "预览章节提示应含当前章高亮"
     assert "chapter-indicator" in content
+    assert content.count('class="chapter-indicator"') == 1, "章节提示容器不得嵌套"
+    for title in ("概述", "核心方案", "实施路径", "总结与展望"):
+        assert title in preview["catalog"]
+        assert title in content
+
+
+def test_preview_html_chapter_indicator_uses_project_directory_titles():
+    """项目套件预览应读取真实目录项，目录和内容页章节提示名称、顺序保持一致。"""
+    from landppt.services.template.template_suite_service import TemplateSuiteService
+
+    suite = dict(SUITE)
+    suite["catalog"] = "<!DOCTYPE html><html><body>{{catalog_items}}</body></html>"
+    suite["header_footer"] = (
+        "<style>.chapter-indicator{display:flex}.chapter-item.current{font-weight:bold}</style>"
+        "<div class='chapter-indicator'><span class='chapter-item'>旧预览章节</span></div>"
+        "<main class='suite-stage'>{{page_content}}</main>"
+    )
+    all_slides = [
+        {"slide_type": "cover", "title": "封面"},
+        {
+            "slide_type": "agenda",
+            "title": "目录",
+            "content_points": ["第一章 业务现状", "第二章 核心方案", "第三章 落地计划"],
+        },
+        {"slide_type": "content", "title": "不应成为章节的页面标题", "chapter": 1},
+    ]
+
+    preview = TemplateSuiteService.__new__(TemplateSuiteService).build_preview_html(
+        suite, all_slides=all_slides
+    )
+    catalog = preview["catalog"]
+    content = preview["content"]
+    expected = ("业务现状", "核心方案", "落地计划")
+    for title in expected:
+        assert title in catalog
+        assert title in content
+    assert [content.index(title) for title in expected] == sorted(
+        content.index(title) for title in expected
+    )
+    assert "旧预览章节" not in content
+    assert "不应成为章节的页面标题" not in content
+    assert content.count('class="chapter-indicator"') == 1
+    assert content.count("chapter-item current") == 1
 
 
 def test_chapter_indicator_content_page_postprocess_wired():
-    """内容页后处理链（wire 逻辑）：替换残留 {{chapter_indicator}} + 兜底样式，当前章节高亮。"""
+    """内容页后处理强制覆盖 LLM 错误列表；容器缺失时也会补入。"""
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     suite = {
@@ -3329,31 +3406,45 @@ def test_chapter_indicator_content_page_postprocess_wired():
     }
     all_slides = [
         {"slide_type": "cover", "chapter": 0},
-        {"slide_type": "content", "title": "第一章 概述", "chapter": 1},
-        {"slide_type": "content", "title": "第二章 方案", "chapter": 2},
-        {"slide_type": "content", "title": "第二章 方案子页", "chapter": 2},
+        {"slide_type": "agenda", "title": "目录", "content_points": [
+            "第一章 概述", "第二章 方案"
+        ], "chapter": 0},
+        {"slide_type": "content", "title": "背景详情", "chapter": 1},
+        {"slide_type": "content", "title": "技术实现", "chapter": 2},
+        {"slide_type": "content", "title": "第二章方案子页", "chapter": 2},
         {"slide_type": "ending", "chapter": 0},
     ]
-    slide_data = {"title": "第二章 方案子页", "chapter": 2, "content_points": ["x"]}
+    slide_data = {"title": "第二章方案子页", "chapter": 2, "content_points": ["x"]}
 
     indicator = SlideMediaService.build_chapter_indicator_html(all_slides, slide_data)
-    html = (
+    html_with_wrong_list = (
         "<!DOCTYPE html><html><head></head><body>"
         "<header>{{page_title}}</header>"
-        "<div class='chapter-indicator'>{{chapter_indicator}}</div>"
+        "<div class='chapter-indicator'><div class='chapter-item'>错误的每页标题</div></div>"
         "<div class='suite-stage'>{{page_content}}</div>"
         "<footer>{{current_page_number}} / {{total_page_count}}</footer>"
         "</body></html>"
     )
     html = SlideMediaService._replace_remaining_content_slots(
-        html, slide_data, 4, 10, chapter_indicator_html=indicator
+        html_with_wrong_list, slide_data, 4, 10, chapter_indicator_html=""
     )
+    html = SlideMediaService._upsert_chapter_indicator(html, indicator)
     html = SlideMediaService._ensure_chapter_indicator_style(html, suite)
     assert "{{chapter_indicator}}" not in html, "章节提示槽位应被填充"
-    assert "{{}}" not in html
+    assert "错误的每页标题" not in html
     assert "chapter-item current" in html
-    assert "第一章 概述" in html
-    assert "第二章 方案" in html
+    assert "概述" in html
+    assert "方案" in html
+
+    html_without_container = (
+        "<!DOCTYPE html><html><body><header>标题</header>"
+        "<div class='suite-stage'>正文</div></body></html>"
+    )
+    injected = SlideMediaService._upsert_chapter_indicator(
+        html_without_container, indicator
+    )
+    assert injected.count('class="chapter-indicator"') == 1
+    assert injected.index("chapter-indicator") < injected.index("suite-stage")
 
 
 def test_build_content_suite_constraint_preserves_chapter_indicator():
