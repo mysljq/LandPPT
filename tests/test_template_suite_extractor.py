@@ -1292,6 +1292,144 @@ def test_stream_generate_suite_from_images_no_images_errors():
     assert "至少上传" in events[0]["message"]
 
 
+def test_stream_generate_suite_from_reference_image_analyzes_style_then_generates():
+    """任意单图先提取画风/HEX 色板，再用同一视觉报告生成完整独立套件。"""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService
+
+    analysis_json = """{
+      "style_name": "赛璐璐暖红动漫",
+      "style_summary": "高对比赛璐璐上色，暖红与炭黑形成鲜明轮廓",
+      "dominant_colors": [
+        {"hex": "#C63D32", "role": "主强调色", "ratio_percent": 30},
+        {"hex": "#252126", "role": "深色背景", "ratio_percent": 50},
+        {"hex": "#F2D6B3", "role": "柔和高光", "ratio_percent": 20}
+      ],
+      "line_and_shape": "硬朗深色轮廓与斜切色块",
+      "texture_and_lighting": "平涂色块和少量柔和高光",
+      "composition": "偏心主体，大面积留白",
+      "visual_elements": ["发梢弧线", "红黑斜切角标"],
+      "typography": "中文黑体配窄体英文",
+      "ppt_translation": ["封面使用偏心构图", "内容页使用红黑角标"],
+      "avoid": ["紫蓝霓虹渐变"]
+    }"""
+
+    class FakeVision:
+        async def chat_completion(self, messages, **kwargs):
+            return type("R", (), {"content": analysis_json})()
+
+    captured = {"prompts": []}
+
+    class FakeHost:
+        async def _text_completion_for_role(self, role, *, prompt, **kwargs):
+            captured["prompts"].append(prompt)
+            if "内容页的自包含页头页脚片段" in prompt:
+                content = (
+                    "<style>.suite-stage{}</style><div>{{ page_title }}"
+                    "{{ page_content }}{{ current_page_number }}{{ total_page_count }}"
+                    "{{ chapter_indicator }}</div>"
+                )
+            else:
+                content = "<!DOCTYPE html><html><body>PAGE</body></html>"
+            return type("R", (), {"content": content})()
+
+    svc = GlobalTemplateSuiteService()
+    svc._build_host = lambda: FakeHost()
+
+    async def run():
+        events = []
+        async for event in svc.stream_generate_suite_from_reference_image(
+            b"\x89PNG\r\n\x1a\nmock",
+            creativity=4,
+            user_id=7,
+            requirement_text="正文空间更大",
+            chapter_indicator=True,
+        ):
+            events.append(event)
+        return events
+
+    with patch(
+        "landppt.services.db_config_service.get_vision_provider",
+        new=AsyncMock(return_value=(FakeVision(), {"model": "gpt-4o", "temperature": 0.3, "top_p": 0.9})),
+    ):
+        events = asyncio.run(run())
+
+    assert events[-1]["type"] == "complete"
+    assert [event["type"] for event in events].count("status") == 6
+    suite = events[-1]["suite"]
+    assert suite["suite_name"] == "赛璐璐暖红动漫套件"
+    assert suite["template_id"] is None and suite["template_name"] is None
+    assert suite["reference_analysis"]["dominant_colors"][0]["hex"] == "#C63D32"
+    assert len(captured["prompts"]) == 5, "应拆成五个较小的页面生成请求，避免整套大响应超时"
+    assert all("#C63D32" in prompt for prompt in captured["prompts"])
+    assert all("只继承颜色配比，不继承颜色位置" in prompt for prompt in captured["prompts"])
+    assert all("下方/上方/左侧/右侧" in prompt for prompt in captured["prompts"])
+    assert all("正文空间更大" in prompt for prompt in captured["prompts"])
+    content_prompt = next(
+        prompt for prompt in captured["prompts"] if "内容页的自包含页头页脚片段" in prompt
+    )
+    assert "{{chapter_indicator}}" in content_prompt
+    assert "#C63D32(30%)" in suite["design_tokens"]
+    assert "不得继承某颜色在原图中的上、下、左、右" in suite["reference_analysis"]["color_position_policy"]
+
+
+def test_reference_image_analysis_helpers_and_empty_input():
+    """参考图 JSON 兼容代码块，设计报告保留颜色；空图直接返回友好错误。"""
+    import asyncio
+
+    from landppt.services.prompts.template_prompts import TemplatePrompts
+    from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService as G
+
+    parsed = G._parse_reference_analysis(
+        '```json\n{"style_name":"水彩","style_summary":"柔和晕染","dominant_colors":[{"hex":"#AABBCC"}]}\n```'
+    )
+    assert parsed["style_name"] == "水彩"
+    assert "#AABBCC" in G._build_reference_design_brief(parsed)
+    assert "颜色在原图中的空间位置完全不可迁移" in G._build_reference_design_brief(parsed)
+
+    prompt = TemplatePrompts.build_template_suite_prompt(
+        template_html="主色 #AABBCC，柔和水彩晕染",
+        custom_requirements="正文清晰",
+        source_kind="reference_image",
+    )
+    assert "参考图片视觉分析报告" in prompt
+    assert "最高优先级" in prompt
+    assert "不得继承其在原图中的上下左右位置" in prompt
+    assert "母版 HTML 原文" not in prompt
+
+    async def run():
+        events = []
+        async for event in G().stream_generate_suite_from_reference_image(b""):
+            events.append(event)
+        return events
+
+    events = asyncio.run(run())
+    assert events == [{"type": "error", "message": "请上传一张参考图片"}]
+
+
+def test_reference_image_sse_sends_heartbeat_while_model_is_busy():
+    """长时间没有业务事件时仍输出 SSE 注释心跳，避免代理按空闲连接超时。"""
+    import asyncio
+
+    from landppt.api.template_suite_library_api import _sse_events_with_heartbeat
+
+    async def slow_events():
+        await asyncio.sleep(0.04)
+        yield {"type": "complete", "suite": {"cover": "ok"}}
+
+    async def run():
+        chunks = []
+        async for chunk in _sse_events_with_heartbeat(slow_events(), heartbeat_seconds=0.01):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(run())
+    assert any(chunk.startswith(": keepalive ") for chunk in chunks)
+    assert any('"type": "complete"' in chunk for chunk in chunks)
+
+
 def test_image_suite_helpers():
     """视觉服务的工具函数：代码块剥离 / 独立 HTML 包裹 / 图片 MIME 识别。"""
     from landppt.services.template.global_template_suite_service import GlobalTemplateSuiteService as G
