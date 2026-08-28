@@ -4,9 +4,12 @@ Global Template Suite Library API endpoints — shared, cross-project suite libr
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
-from typing import Dict, Optional
+import time
+from typing import AsyncIterator, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -20,6 +23,40 @@ from ..services.template.global_template_suite_service import GlobalTemplateSuit
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/template-suites", tags=["Global Template Suites"])
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    # 禁止 Nginx 等反向代理缓存小块 SSE 数据，否则心跳无法及时到达客户端。
+    "X-Accel-Buffering": "no",
+}
+
+
+async def _sse_events_with_heartbeat(
+    events: AsyncIterator[dict], heartbeat_seconds: float = 10.0
+):
+    """把事件异步迭代器编码为 SSE，并在模型计算期间持续发送注释心跳。"""
+    iterator = events.__aiter__()
+    pending = asyncio.create_task(iterator.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=heartbeat_seconds)
+            if pending not in done:
+                yield f": keepalive {int(time.time())}\n\n"
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            pending = asyncio.create_task(iterator.__anext__())
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+        with contextlib.suppress(Exception):
+            await iterator.aclose()
 
 
 def _suite_service_for_user(user) -> GlobalTemplateSuiteService:
@@ -368,6 +405,66 @@ async def generate_suite_from_images(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/generate-from-reference-image")
+async def generate_suite_from_reference_image(
+    image: UploadFile = File(...),
+    creativity: int = Form(5),
+    requirement_text: str = Form(""),
+    chapter_indicator: bool = Form(False),
+    user=Depends(get_current_user_required),
+):
+    """读取一张任意参考图的画风、色板与视觉元素，并生成完整 PPT 套件。"""
+    if creativity < 0 or creativity > 10:
+        raise HTTPException(status_code=400, detail="创意度必须在 0-10 之间")
+    content_type = (image.content_type or "").lower()
+    if content_type and not content_type.startswith("image/"):
+        await image.close()
+        raise HTTPException(status_code=400, detail="请上传图片文件")
+    try:
+        image_bytes = await image.read()
+    finally:
+        await image.close()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="参考图片为空")
+    if len(image_bytes) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="参考图片不能超过 15MB")
+
+    logger.info(
+        "收到基于任意参考图片生成套件请求：user_id=%s, creativity=%s, image_size=%s, requirement_len=%s",
+        user.id, creativity, len(image_bytes), len((requirement_text or "")),
+    )
+    credits_error = await _generate_credits_error(user)
+    if credits_error:
+        async def _credits_error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'message': credits_error['message']}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            _credits_error_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    svc = _suite_service_for_user(user)
+
+    async def event_stream():
+        try:
+            events = svc.stream_generate_suite_from_reference_image(
+                image_bytes, creativity=creativity, user_id=user.id,
+                requirement_text=requirement_text, chapter_indicator=chapter_indicator,
+            )
+            async for chunk in _sse_events_with_heartbeat(events):
+                yield chunk
+        except Exception as exc:
+            logger.error("基于任意参考图片生成套件失败: %s", exc)
+            yield f"data: {json.dumps({'type': 'error', 'message': f'生成失败：{exc}'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 

@@ -98,6 +98,16 @@ class OpenAIProvider(AIProvider):
         self.use_responses_api = self._coerce_bool(config.get("use_responses_api"))
         self.enable_reasoning = self._coerce_bool(config.get("enable_reasoning"))
         self.reasoning_effort = self._normalize_reasoning_effort(config.get("reasoning_effort")) or "medium"
+        # opencode.ai 等 OpenAI 兼容通道的 GLM-5 系列是「强制思考且无法关闭」的模型，
+        # 且这些端点把 max_tokens 视为「推理 + 可见输出」总预算：长提示词下普通模式
+        # 光思考就会耗尽预算（可见输出为空 / finish_reason=length）或把单次请求拖到
+        # 超时（实测 glm-5.3 对中等提示词要 ~4 分钟、glm-5.3-flash 对套件提示词 320s
+        # 仍是 0 字符）。对该模型族默认用 reasoning_effort=low 压住推理、保住可见输出
+        # 空间（实测仅 low 被接受；none/minimal/medium 均被端点以 [1210] 拒绝）。
+        # 配置里显式写入 enable_reasoning / reasoning_effort 时仍优先采用配置值。
+        if str(self.model or "").lower().startswith("glm-5"):
+            self.enable_reasoning = True
+            self.reasoning_effort = "low"
         try:
             import openai
             timeout = _build_httpx_timeout(config)

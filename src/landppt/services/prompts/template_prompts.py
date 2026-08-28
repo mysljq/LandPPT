@@ -409,7 +409,8 @@ class TemplatePrompts:
         custom_requirements：用户自定义要求（如主题色/风格），设计时须遵循。
         source_kind："master"=基于 PPT 母版模板（默认，保持现有行为）；
         "web"=基于用户粘贴的网页 HTML（template_html 即网页 HTML），套件配色/字体/版式/
-        背景装饰/视觉语言须与该网页保持一致；无母版页头页脚原文可用。
+        背景装饰/视觉语言须与该网页保持一致；"reference_image"=基于多模态模型从任意
+        参考图提取出的视觉分析报告生成；后二者均无母版页头页脚原文可用。
         chapter_indicator：True 时内容页 header_footer 需设计一个 {{chapter_indicator}}
         章节提示槽位（容器 + 章节块 + 当前章节高亮样式），仅内容页展示。
         """
@@ -473,6 +474,15 @@ class TemplatePrompts:
                 f"{web_html_raw or '(未提供网页 HTML，请按文字需求自行设计一套)'}"
             )
             hf_section = ""  # 网页无 PPT 页头页脚原文，避免把网页导航当内容页页头
+        elif source_kind == "reference_image":
+            source_section = (
+                "**参考图片视觉分析报告（这是最高优先级的设计依据）**\n"
+                f"{(template_html or '').strip() or '(未获得视觉分析报告)'}\n"
+                "请把报告里的画风、主辅色、线条、材质、构图节奏和装饰母题系统化迁移到 PPT；"
+                "颜色只继承面积配比和功能角色，不得继承其在原图中的上下左右位置；"
+                "不要把参考图机械拉伸成页面背景，也不要照抄图中具体文字。"
+            )
+            hf_section = ""
         else:
             source_section = (
                 "**母版 HTML 原文**\n"
@@ -504,8 +514,14 @@ class TemplatePrompts:
             )
         )
 
+        task_intro = (
+            "请基于参考图片视觉分析报告，生成一套通用的\"模板套件\"——封面模板、过渡页模板、目录页模板、结尾页模板和内容页规范页头页脚。"
+            if source_kind == "reference_image"
+            else "请基于已选母版的设计风格与主题色，生成一套通用的\"模板套件\"——封面模板、过渡页模板、内容页规范页头页脚。"
+        )
+
         return f"""
-请基于已选母版的设计风格与主题色，生成一套通用的"模板套件"——封面模板、过渡页模板、内容页规范页头页脚。
+{task_intro}
 
 {project_context}
 {custom_req_section}

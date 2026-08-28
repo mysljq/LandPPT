@@ -23,6 +23,14 @@ from .master_layout_extractor import MasterLayoutExtractor
 
 logger = logging.getLogger(__name__)
 
+# 套件 AI 输出预算（token）。注意：对 glm-5.3-flash（opencode.ai 备用 OpenAI 通道）等
+# 强制思考模型，端点把 max_tokens 视为「推理 + 可见输出」的总预算；长任务里推理几乎
+# 吃光预算，可见内容直接为空（finish_reason=length）。套件一次要输出 5 大段 HTML，
+# 预算必须同时盖住推理与可见 JSON，故整体放宽到 32000；重试是最后一次兜底，再留裕量
+# 到 48000（端点实测接受 ≥50000）。
+_SUITE_AI_OUTPUT_BUDGET = 32000
+_SUITE_AI_RETRY_OUTPUT_BUDGET = 48000
+
 
 class TemplateSuiteService:
     """Own template-suite generation, caching, and retrieval."""
@@ -1502,10 +1510,9 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         creativity：0-10 刻度；reference_outline：为 True 时把项目主题/大纲传入模型。
         allow_no_template=True：无母版（大纲智能套件）——模型根据项目大纲/主题自行设计一套。
         custom_requirements：用户自定义要求（如主题色/风格），注入 prompt 让模型遵循。
-        source_kind："master"=基于 PPT 母版（默认）；"web"=基于用户粘贴的网页 HTML，
-        此时 template["html_template"] 即网页 HTML，套件风格须与该网页一致。web 模式下
-        生成 header_footer 时传空 template_html 给 _ensure_header_footer_complete——网页
-        DOM 不适合当内容页母版骨架注入，避免把网页结构硬塞进内容页。
+        source_kind："master"=基于 PPT 母版（默认）；"web"=基于用户粘贴的网页 HTML；
+        "reference_image"=基于视觉模型生成的参考图设计报告。后二者生成 header_footer 时
+        传空 template_html 给 _ensure_header_footer_complete，避免把非母版内容注入页面骨架。
         chapter_indicator：True 时内容页 header_footer 生成 {{chapter_indicator}} 章节提示槽位。
         """
         template = template or {}
@@ -1543,9 +1550,10 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
         # max_output_tokens 显式放宽：套件一次输出 5 大段 HTML，模型默认输出上限
         # 可能不足以容纳完整 JSON，导致截断后无法解析（本项目 max_tokens 是分块参数，
-        # 不能用；max_output_tokens 才是输出长度）。
+        # 不能用；max_output_tokens 才是输出长度）。glm-5.3-flash 等强制思考模型的
+        # max_tokens 是「推理+可见输出」总预算，预算需同时覆盖推理量与 JSON 本身。
         response = await self._text_completion_for_role(
-            "template", prompt=prompt, temperature=0.7, max_output_tokens=12000
+            "template", prompt=prompt, temperature=0.7, max_output_tokens=_SUITE_AI_OUTPUT_BUDGET
         )
         raw = (response.content or "").strip()
         logger.info("套件 AI 调用完成，耗时 %.1fs，响应 %s 字符", time.time() - _t0, len(raw))
@@ -1572,9 +1580,9 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
 
         identity = self._template_identity(template)
         header_footer = validated["header_footer"]
-        # web 模式：网页 DOM 不适合当内容页母版骨架，传空 html 跳过骨架注入
+        # web / 参考图模式没有 PPT 母版骨架，传空 html 跳过骨架注入
         # （仍保留 :root 变量内联与 main-stage 兜底）。master 模式沿用原逻辑。
-        hf_template_html = "" if source_kind == "web" else html
+        hf_template_html = "" if source_kind in ("web", "reference_image") else html
         header_footer = self._ensure_header_footer_complete(
             header_footer, hf_template_html, extracted.get("root_variables") or ""
         )
@@ -1618,7 +1626,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         )
         try:
             response = await self._text_completion_for_role(
-                "template", prompt=repair_prompt, temperature=0.2, max_output_tokens=12000
+                "template", prompt=repair_prompt, temperature=0.2, max_output_tokens=_SUITE_AI_OUTPUT_BUDGET
             )
         except Exception as exc:
             logger.warning("套件 JSON 修正重试调用失败: %s", exc)
@@ -1640,7 +1648,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         )
         try:
             response = await self._text_completion_for_role(
-                "template", prompt=retry_prompt, temperature=0.2, max_output_tokens=16000
+                "template", prompt=retry_prompt, temperature=0.2, max_output_tokens=_SUITE_AI_RETRY_OUTPUT_BUDGET
             )
         except Exception as exc:
             logger.warning("套件空响应重试调用失败: %s", exc)
@@ -1712,7 +1720,7 @@ body {{ display: flex; flex-direction: column; font-family: -apple-system, 'Ping
         )
 
         response = await self._text_completion_for_role(
-            "template", prompt=prompt, temperature=0.7, max_output_tokens=12000
+            "template", prompt=prompt, temperature=0.7, max_output_tokens=_SUITE_AI_OUTPUT_BUDGET
         )
         raw = (response.content or "").strip()
         if not raw:

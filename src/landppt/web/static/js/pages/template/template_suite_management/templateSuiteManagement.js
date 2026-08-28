@@ -15,6 +15,8 @@ const state = {
     previewSuiteId: null,        // 当前预览的库中套件 id
     editPart: null,              // 编辑器正在编辑的套件部分（cover/transition/catalog/ending/header_footer）
     aiGeneratedSuite: null,      // 基于需求/网页生成的套件
+    referenceGeneratedSuite: null, // 基于任意参考图片风格生成的套件
+    referenceFile: null,
 };
 
 const dom = {};
@@ -72,6 +74,24 @@ function cacheDom() {
     dom.imgSuiteNameInput = document.getElementById('imgSuiteNameInput');
     dom.imgSaveStatus = document.getElementById('imgSaveStatus');
 
+    dom.referenceGenerateModal = document.getElementById('referenceGenerateModal');
+    dom.refGenInput = document.getElementById('refGenInput');
+    dom.refGenProgress = document.getElementById('refGenProgress');
+    dom.refGenComplete = document.getElementById('refGenComplete');
+    dom.refGenStatus = document.getElementById('refGenStatus');
+    dom.refGenElapsed = document.getElementById('refGenElapsed');
+    dom.refImageInput = document.getElementById('refImageInput');
+    dom.refImageThumb = document.getElementById('refImageThumb');
+    dom.refImagePlaceholder = document.getElementById('refImagePlaceholder');
+    dom.refRequirementInput = document.getElementById('refRequirementInput');
+    dom.refCreativitySlider = document.getElementById('refCreativitySlider');
+    dom.refCreativityLabel = document.getElementById('refCreativityLabel');
+    dom.refAnalysisSummary = document.getElementById('refAnalysisSummary');
+    dom.refPreviewBox = document.getElementById('refPreviewBox');
+    dom.refPreviewFrame = document.getElementById('refPreviewFrame');
+    dom.refSuiteNameInput = document.getElementById('refSuiteNameInput');
+    dom.refSaveStatus = document.getElementById('refSaveStatus');
+
     dom.aiGenerateModal = document.getElementById('aiGenerateModal');
     dom.aiGenInput = document.getElementById('aiGenInput');
     dom.aiGenProgress = document.getElementById('aiGenProgress');
@@ -114,6 +134,14 @@ function bindEvents() {
     document.getElementById('closePreviewModal').addEventListener('click', closePreviewModal);
     document.getElementById('generateSuiteFromImagesBtn').addEventListener('click', openImageGenerateModal);
     document.getElementById('closeImageGenerateModal').addEventListener('click', closeImageGenerateModal);
+    document.getElementById('generateSuiteFromReferenceBtn').addEventListener('click', openReferenceGenerateModal);
+    document.getElementById('closeReferenceGenerateModal').addEventListener('click', closeReferenceGenerateModal);
+    document.getElementById('refCloseCompleteBtn').addEventListener('click', closeReferenceGenerateModal);
+    document.getElementById('refStartGenerateBtn').addEventListener('click', startReferenceGenerateSuite);
+    document.getElementById('refSaveSuiteBtn').addEventListener('click', saveReferenceGeneratedSuiteToLibrary);
+    document.getElementById('clearRefImageBtn').addEventListener('click', clearReferenceImage);
+    dom.refImageInput.addEventListener('change', handleReferenceFileSelected);
+    dom.refCreativitySlider.addEventListener('input', updateReferenceCreativityLabel);
     document.getElementById('generateSuiteFromAiBtn').addEventListener('click', openAiGenerateModal);
     document.getElementById('closeAiGenerateModal').addEventListener('click', closeAiGenerateModal);
 
@@ -126,7 +154,8 @@ function bindEvents() {
     // 点击遮罩层关闭弹窗（生成类弹窗除外：生成过程/表单填写不应误关闭，需用 ✕ 或「关闭」按钮）
     document.addEventListener('click', (e) => {
         if (e.target.classList && e.target.classList.contains('modal')
-            && e.target !== dom.generateModal && e.target !== dom.aiGenerateModal) {
+            && e.target !== dom.generateModal && e.target !== dom.aiGenerateModal
+            && e.target !== dom.referenceGenerateModal) {
             e.target.style.display = 'none';
             if (e.target === dom.previewModal) state.previewData = null;
         }
@@ -136,6 +165,7 @@ function bindEvents() {
         if (e.key !== 'Escape') return;
         if (dom.generateModal && dom.generateModal.style.display !== 'none') closeGenerateModal();
         if (dom.aiGenerateModal && dom.aiGenerateModal.style.display !== 'none') closeAiGenerateModal();
+        if (dom.referenceGenerateModal && dom.referenceGenerateModal.style.display !== 'none') closeReferenceGenerateModal();
         if (dom.previewModal && dom.previewModal.style.display !== 'none') closePreviewModal();
     });
 }
@@ -570,6 +600,211 @@ window.suiteMgmtDelete = async (id) => {
         alert(`删除失败：${error.message}`);
     }
 };
+
+// ---------------- 参考图片生成套件（任意单图 → 风格/色板分析 → 完整套件） ----------------
+
+function openReferenceGenerateModal() {
+    if (!dom.referenceGenerateModal) return;
+    state.referenceGeneratedSuite = null;
+    clearReferenceImage();
+    if (dom.refRequirementInput) dom.refRequirementInput.value = '';
+    if (dom.refCreativitySlider) dom.refCreativitySlider.value = 5;
+    if (dom.refSuiteNameInput) dom.refSuiteNameInput.value = '';
+    if (dom.refSaveStatus) dom.refSaveStatus.textContent = '';
+    if (dom.refAnalysisSummary) {
+        dom.refAnalysisSummary.style.display = 'none';
+        dom.refAnalysisSummary.innerHTML = '';
+    }
+    dom.refGenInput.style.display = 'block';
+    dom.refGenProgress.style.display = 'none';
+    dom.refGenComplete.style.display = 'none';
+    updateReferenceCreativityLabel();
+    dom.referenceGenerateModal.style.display = 'flex';
+}
+
+function closeReferenceGenerateModal() {
+    if (!dom.referenceGenerateModal) return;
+    dom.referenceGenerateModal.style.display = 'none';
+    state.referenceGeneratedSuite = null;
+    clearReferenceImage();
+}
+
+function handleReferenceFileSelected() {
+    const file = dom.refImageInput?.files?.[0];
+    if (!file) return;
+    if (!String(file.type || '').startsWith('image/')) {
+        alert('请选择图片文件');
+        clearReferenceImage();
+        return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+        alert('参考图片不能超过 15MB');
+        clearReferenceImage();
+        return;
+    }
+    state.referenceFile = file;
+    if (dom.refImageThumb) {
+        dom.refImageThumb.src = URL.createObjectURL(file);
+        dom.refImageThumb.style.display = 'block';
+    }
+    if (dom.refImagePlaceholder) dom.refImagePlaceholder.style.display = 'none';
+    const clearBtn = document.getElementById('clearRefImageBtn');
+    if (clearBtn) clearBtn.style.display = 'inline-block';
+}
+
+function clearReferenceImage() {
+    state.referenceFile = null;
+    if (dom.refImageInput) dom.refImageInput.value = '';
+    if (dom.refImageThumb) {
+        if (dom.refImageThumb.src?.startsWith('blob:')) URL.revokeObjectURL(dom.refImageThumb.src);
+        dom.refImageThumb.src = '';
+        dom.refImageThumb.style.display = 'none';
+    }
+    if (dom.refImagePlaceholder) dom.refImagePlaceholder.style.display = 'block';
+    const clearBtn = document.getElementById('clearRefImageBtn');
+    if (clearBtn) clearBtn.style.display = 'none';
+}
+
+function updateReferenceCreativityLabel() {
+    if (!dom.refCreativitySlider || !dom.refCreativityLabel) return;
+    const val = parseInt(dom.refCreativitySlider.value, 10);
+    let text = String(val);
+    if (val <= 1) text += ' · 严格沿用画风';
+    else if (val <= 3) text += ' · 以参考图为主';
+    else if (val <= 6) text += ' · 风格与创意平衡';
+    else if (val <= 8) text += ' · 大胆衍生';
+    else text += ' · 高度创意衍生';
+    dom.refCreativityLabel.textContent = text;
+}
+
+async function startReferenceGenerateSuite() {
+    if (!state.referenceFile) {
+        alert('请先上传一张参考图片');
+        return;
+    }
+    const startBtn = document.getElementById('refStartGenerateBtn');
+    if (startBtn) startBtn.disabled = true;
+    dom.refGenInput.style.display = 'none';
+    dom.refGenProgress.style.display = 'block';
+    if (dom.refGenStatus) dom.refGenStatus.textContent = '正在上传并读取参考图片...';
+
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        if (dom.refGenElapsed) dom.refGenElapsed.textContent = `已耗时 ${seconds} 秒`;
+    }, 1000);
+    const finish = () => clearInterval(timer);
+
+    try {
+        const fd = new FormData();
+        fd.append('image', state.referenceFile);
+        fd.append('creativity', String(parseInt(dom.refCreativitySlider.value, 10) || 0));
+        fd.append('requirement_text', (dom.refRequirementInput?.value || '').trim());
+        fd.append('chapter_indicator', String(!!document.getElementById('refChapterIndicator')?.checked));
+        const resp = await fetch('/api/template-suites/generate-from-reference-image', {
+            method: 'POST',
+            body: fd,
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+        }
+        let data;
+        if (resp.headers.get('content-type')?.includes('text/event-stream')) {
+            data = await readSuiteGenerateStream(resp, dom.refGenStatus);
+        } else {
+            data = await resp.json();
+        }
+        if (data?.success === false) throw new Error(data.message || '生成失败');
+        if (!data?.suite) throw new Error('生成未返回套件数据');
+        state.referenceGeneratedSuite = data.suite;
+        if (dom.refSuiteNameInput) dom.refSuiteNameInput.value = data.suite.suite_name || '';
+        renderReferenceAnalysis(data.suite.reference_analysis || {});
+        await renderReferenceGenPreview('cover');
+        finish();
+        dom.refGenProgress.style.display = 'none';
+        dom.refGenComplete.style.display = 'block';
+    } catch (error) {
+        finish();
+        console.error('Reference image suite generation error:', error);
+        dom.refGenProgress.style.display = 'none';
+        dom.refGenInput.style.display = 'block';
+        alert(`生成失败：${error.message}`);
+    } finally {
+        if (startBtn) startBtn.disabled = false;
+    }
+}
+
+function renderReferenceAnalysis(analysis) {
+    if (!dom.refAnalysisSummary || !analysis || !Object.keys(analysis).length) return;
+    const colors = (analysis.dominant_colors || []).map(item => {
+        const hex = typeof item === 'string' ? item : item?.hex;
+        const role = typeof item === 'string' ? '' : item?.role;
+        const ratio = typeof item === 'object' && item?.ratio_percent != null ? `${item.ratio_percent}%` : '';
+        if (!/^#[0-9a-f]{6}$/i.test(String(hex || ''))) return '';
+        return `<span title="${escapeHtml(role || hex)}" style="display:inline-flex;align-items:center;gap:5px;margin:3px 6px 3px 0;font-size:0.72rem;color:var(--text-secondary);"><i style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${hex};border:1px solid rgba(15,23,42,.15);"></i>${escapeHtml(hex)}${ratio ? ` · ${escapeHtml(ratio)}` : ''}</span>`;
+    }).join('');
+    const elements = (analysis.visual_elements || []).slice(0, 5).map(escapeHtml).join('、');
+    dom.refAnalysisSummary.innerHTML = `
+        <div style="font-size:0.82rem;font-weight:700;color:var(--text-primary);margin-bottom:5px;">识别到：${escapeHtml(analysis.style_name || '参考图视觉风格')}</div>
+        <div style="font-size:0.78rem;line-height:1.55;color:var(--text-secondary);">${escapeHtml(analysis.style_summary || '')}</div>
+        ${colors ? `<div style="margin-top:7px;">${colors}</div>` : ''}
+        ${elements ? `<div style="margin-top:5px;font-size:0.75rem;color:var(--text-secondary);"><b>视觉元素：</b>${elements}</div>` : ''}`;
+    dom.refAnalysisSummary.style.display = 'block';
+}
+
+async function renderReferenceGenPreview(tab) {
+    state.currentPreviewTab = tab;
+    const s = state.referenceGeneratedSuite;
+    if (!s) return;
+    let html = '';
+    if (tab === 'cover') html = s.cover;
+    else if (tab === 'transition') html = s.transition;
+    else if (tab === 'catalog') html = s.catalog || '';
+    else if (tab === 'ending') html = s.ending || '';
+    else html = wrapContentPreview(s.header_footer);
+    setPreviewDoc(dom.refPreviewFrame, dom.refPreviewBox, html);
+    highlightTab('refGenComplete');
+}
+
+window.suiteMgmtShowReferenceGenTab = (tab) => renderReferenceGenPreview(tab);
+
+async function saveReferenceGeneratedSuiteToLibrary() {
+    const s = state.referenceGeneratedSuite;
+    if (!s) {
+        alert('没有可保存的套件');
+        return;
+    }
+    const name = (dom.refSuiteNameInput?.value || '').trim() || s.suite_name || '参考图风格套件';
+    const saveBtn = document.getElementById('refSaveSuiteBtn');
+    if (saveBtn) saveBtn.disabled = true;
+    if (dom.refSaveStatus) dom.refSaveStatus.textContent = '保存中...';
+    try {
+        await api('/api/template-suites', {
+            method: 'POST',
+            body: JSON.stringify({
+                suite_name: name,
+                description: s.description || '基于任意参考图片的画风与配色生成',
+                cover: s.cover,
+                transition: s.transition,
+                catalog: s.catalog || '',
+                ending: s.ending || '',
+                header_footer: s.header_footer,
+                design_tokens: s.design_tokens || '',
+                template_id: null,
+                template_hash: null,
+                template_name: null,
+                tags: s.tags || ['参考图', 'AI读图'],
+            }),
+        });
+        if (dom.refSaveStatus) dom.refSaveStatus.textContent = '✅ 已保存到套件库';
+        loadSuites(1);
+    } catch (error) {
+        if (dom.refSaveStatus) dom.refSaveStatus.textContent = `❌ 保存失败：${error.message}`;
+    } finally {
+        if (saveBtn) saveBtn.disabled = false;
+    }
+}
 
 // ---------------- 基于AI读图生成套件 ----------------
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import re as _re
 import time
@@ -460,6 +461,337 @@ class GlobalTemplateSuiteService:
         except Exception as exc:
             logger.error("基于需求/网页生成套件失败: %s", exc)
             yield {"type": "error", "message": f"套件生成失败：{exc}"}
+
+    # ------------------------------------------------------------------
+    # 基于任意参考图片的视觉风格生成套件（多模态分析 + 整套生成）
+    # ------------------------------------------------------------------
+
+    async def stream_generate_suite_from_reference_image(
+        self,
+        image_bytes: bytes,
+        creativity: int = 5,
+        user_id: Optional[int] = None,
+        requirement_text: str = "",
+        chapter_indicator: bool = False,
+    ):
+        """从一张任意参考图提取视觉语言，并据此生成完整 PPT 套件。
+
+        与 ``stream_generate_suite_from_images`` 的“页面截图逐类型复刻”不同，本流程先把
+        动漫角色、海报、照片、插画等任意图片归纳为可迁移的画风、色板和视觉元素，再将
+        同一份设计报告作为整套五类页面的强约束，确保结果风格一致。
+        """
+        if not image_bytes:
+            yield {"type": "error", "message": "请上传一张参考图片"}
+            return
+
+        resolved_user_id = user_id if user_id is not None else self.user_id
+        try:
+            from ..db_config_service import get_vision_provider
+
+            vision_provider, settings = await get_vision_provider(resolved_user_id)
+            vision_model = settings["model"]
+            vision_temperature = settings.get("temperature")
+            vision_top_p = settings.get("top_p")
+        except Exception as exc:
+            logger.error("获取参考图多模态模型失败: %s", exc)
+            yield {"type": "error", "message": str(exc)}
+            return
+
+        yield {"type": "status", "message": "正在读取参考图的画风、主色和视觉元素..."}
+        try:
+            raw_analysis = await self._analyze_reference_image(
+                vision_provider,
+                vision_model,
+                image_bytes,
+                temperature=vision_temperature,
+                top_p=vision_top_p,
+            )
+            analysis = self._parse_reference_analysis(raw_analysis)
+            if not analysis:
+                analysis = {
+                    "style_name": "参考图视觉风格",
+                    "style_summary": raw_analysis.strip(),
+                    "dominant_colors": [],
+                    "visual_elements": [],
+                }
+            if not str(analysis.get("style_summary") or "").strip():
+                raise ValueError("视觉模型未返回有效的风格分析")
+            # 颜色在原图中的空间位置不属于可迁移规则；只保留色板、角色和面积配比。
+            analysis["color_position_policy"] = (
+                "仅继承各颜色的面积占比与功能角色；不得继承某颜色在原图中的上、下、左、右、"
+                "中心或边缘位置。PPT 中颜色位置必须根据每类页面的信息层级重新布局。"
+            )
+        except Exception as exc:
+            logger.error("参考图片风格分析失败: %s", exc)
+            yield {"type": "error", "message": f"参考图片分析失败：{exc}"}
+            return
+
+        design_brief = self._build_reference_design_brief(analysis)
+        extra_requirement = (requirement_text or "").strip()
+        normalized_creativity = max(0, min(10, int(creativity)))
+
+        # 不再要求模型在一个巨大 JSON 响应里同时输出五类 HTML。逐类型生成能显著缩短
+        # 单次上游请求时间，避开常见的 60-120 秒模型网关硬超时；所有页面仍共享同一
+        # 份视觉报告，因此设计语言和色板保持一致。
+        parts: Dict[str, str] = {}
+        total = len(_SUITE_IMAGE_PARTS)
+        for index, part in enumerate(_SUITE_IMAGE_PARTS, start=1):
+            label = _SUITE_IMAGE_PARTS[part][0]
+            yield {
+                "type": "status",
+                "message": f"风格与色板已提取，正在生成{label}（{index}/{total}）...",
+            }
+            try:
+                html = await self._generate_reference_part(
+                    part,
+                    design_brief,
+                    normalized_creativity,
+                    extra_requirement,
+                    chapter_indicator=chapter_indicator,
+                )
+                if not html:
+                    raise ValueError("模型返回空内容")
+                parts[part] = html
+            except Exception as exc:
+                logger.error("参考图套件生成 %s 失败: %s", part, exc)
+                yield {"type": "error", "message": f"{label}生成失败：{exc}"}
+                return
+
+        try:
+            suite = self._assemble_image_suite(parts)
+            suite["design_tokens"] = self._build_reference_design_tokens(analysis)
+            self._decorate_suite_from_reference_image(suite, analysis)
+        except Exception as exc:
+            logger.error("参考图套件组装失败: %s", exc)
+            yield {"type": "error", "message": f"套件组装失败：{exc}"}
+            return
+
+        logger.info(
+            "基于参考图片风格生成套件完成：style=%s",
+            analysis.get("style_name") or "",
+        )
+        yield {
+            "type": "complete",
+            "message": "参考图片风格套件生成完成！",
+            "suite": suite,
+        }
+
+    async def _analyze_reference_image(
+        self,
+        vision_provider,
+        vision_model: str,
+        image_bytes: bytes,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ) -> str:
+        """把任意图片分析为适合驱动 PPT 套件生成的结构化视觉报告。"""
+        prompt = """请分析这张任意参考图片，并把它转译成可用于设计一整套 16:9 PPT 模板的视觉系统。
+图片可能是动漫角色、插画、海报、摄影作品、UI 截图或其它内容，不要假设它本身是 PPT 页面。
+
+只输出严格 JSON 对象，不要 Markdown 或解释，字段如下：
+{
+  "style_name": "简短风格名",
+  "style_summary": "画风与整体气质的准确概括",
+  "dominant_colors": [{"hex":"#RRGGBB","role":"该颜色在设计中的作用","ratio_percent":35}],
+  "line_and_shape": "线条、轮廓、几何/有机形状特征",
+  "texture_and_lighting": "材质、肌理、明暗、光影特征",
+  "composition": "构图、留白、视觉重心与层级节奏；不要记录任何颜色位于上/下/左/右的位置关系",
+  "visual_elements": ["可迁移到 PPT 的视觉母题或装饰元素"],
+  "typography": "与图片气质匹配的中英文字体和字重建议",
+  "ppt_translation": ["如何分别迁移到封面/过渡/目录/内容/结尾页"],
+  "avoid": ["为保持同源感应避免的颜色、材质或套路"]
+}
+
+要求：
+- dominant_colors 提取 4-8 个真实主辅色，必须给出准确的 #RRGGBB；说明背景色、主色、强调色、文字色等角色，并估算每种颜色在原图中的面积占比 ratio_percent，全部颜色占比之和约为 100。
+- 颜色分析只提取“HEX + 功能角色 + 面积占比”。严禁把某颜色位于图片上方、下方、左侧、右侧、中心或边缘写成 PPT 布局约束；颜色的原始空间位置不可迁移。
+- 若图片含人物或动漫角色，重点提取画风、配色、轮廓语言、服饰色块、光影与标志性但可抽象化的视觉元素；不要仅描述人物身份或剧情。
+- visual_elements 必须是可用于边框、角标、分隔、背景纹样、卡片或图标的抽象设计元素。
+- ppt_translation 要让五种页面一眼同源，同时为正文留出清晰、可读的内容区。
+- 不要建议把原图整张拉伸为背景，不要照抄图片里的文字。"""
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        mime = self._guess_image_mime(image_bytes)
+        messages = [
+            AIMessage(
+                role=MessageRole.SYSTEM,
+                content="You are a senior visual art director. Analyze images into precise, reusable presentation design systems. Output only JSON.",
+            ),
+            AIMessage(
+                role=MessageRole.USER,
+                content=[
+                    TextContent(text=prompt),
+                    ImageContent(image_url={"url": f"data:{mime};base64,{b64}"}),
+                ],
+            ),
+        ]
+        response = await self._call_vision_with_retry(
+            vision_provider,
+            vision_model,
+            messages,
+            max_tokens=5000,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        return (response.content or "").strip()
+
+    @staticmethod
+    def _parse_reference_analysis(raw: str) -> Dict[str, Any]:
+        """解析视觉分析 JSON；兼容代码块或前后带少量说明的模型响应。"""
+        text = (raw or "").strip()
+        if not text:
+            return {}
+        candidates = [text]
+        try:
+            from summeryanyfile.core.json_parser import JSONParser
+
+            candidates.extend(JSONParser._extract_fenced_code_blocks(text))
+            cleaned = JSONParser._clean_response(text)
+            if cleaned:
+                candidates.append(cleaned)
+            candidates.extend(JSONParser._extract_json_candidates(text))
+        except Exception:
+            start, end = text.find("{"), text.rfind("}")
+            if start >= 0 and end > start:
+                candidates.append(text[start : end + 1])
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate.strip())
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    @staticmethod
+    def _build_reference_design_brief(analysis: Dict[str, Any]) -> str:
+        """将结构化视觉分析包装成对套件模型清晰、不可误解的设计依据。"""
+        return (
+            "以下报告由多模态模型直接读取用户上传的参考图片得到。必须优先、系统地沿用其中的"
+            "画风、色板、线条、形状、材质、构图与装饰母题，使五类 PPT 页面一眼同源；"
+            "主色和强调色只能优先从报告给出的 HEX 色板选取，并大致保持各颜色的面积占比。"
+            "颜色在原图中的空间位置完全不可迁移：不得因为某颜色原本在下方/上方/左侧/右侧，"
+            "就在 PPT 的相同位置放置该颜色；每页必须按信息层级重新安排颜色位置。不要复制参考图文字，也不要把原图"
+            "整张铺成背景；人物或角色特征应转译为抽象边框、色块、纹样、角标或图形语言。\n\n"
+            + json.dumps(analysis, ensure_ascii=False, indent=2)
+        )
+
+    async def _generate_reference_part(
+        self,
+        part: str,
+        design_brief: str,
+        creativity: int,
+        requirement_text: str = "",
+        chapter_indicator: bool = False,
+    ) -> str:
+        """依据统一视觉报告生成单个套件页面，减少单次输出体积和上游超时概率。"""
+        prompt = self._build_reference_part_prompt(
+            part,
+            design_brief,
+            creativity,
+            requirement_text,
+            chapter_indicator=chapter_indicator,
+        )
+        host = self._ensure_host()
+        last_exc = None
+        for attempt in range(3):
+            try:
+                response = await host._text_completion_for_role(
+                    "template", prompt=prompt, temperature=0.7, max_output_tokens=8000
+                )
+                raw = self._strip_code_fence((response.content or "").strip())
+                if raw:
+                    return self._ensure_standalone_html(raw) if part != "header_footer" else raw
+                last_exc = ValueError("模型返回空内容")
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc).lower()
+                if any(
+                    key in msg
+                    for key in (
+                        "401", "400", "invalid", "not found", "认证", "api key",
+                        "api_key", "unknown model", "不存在",
+                    )
+                ):
+                    raise
+            if attempt < 2:
+                logger.warning(
+                    "参考图套件 %s 第 %s 次生成失败（%s），准备重试",
+                    part, attempt + 1, last_exc,
+                )
+                await asyncio.sleep(1.0 * (attempt + 1))
+        raise last_exc or ValueError("模型返回空内容")
+
+    @classmethod
+    def _build_reference_part_prompt(
+        cls,
+        part: str,
+        design_brief: str,
+        creativity: int,
+        requirement_text: str = "",
+        chapter_indicator: bool = False,
+    ) -> str:
+        label, spec = _SUITE_IMAGE_PARTS.get(part, (part, "对应页面 HTML"))
+        chapter_rule = ""
+        if part == "header_footer":
+            chapter_rule = (
+                "- 必须设计 {{chapter_indicator}} 章节导航槽位及 .chapter-indicator / "
+                ".chapter-item / .chapter-item.current 样式。\n"
+                if chapter_indicator
+                else "- 不要生成 {{chapter_indicator}} 章节导航槽位。\n"
+            )
+        extra = (
+            f"\n【用户补充要求（同时遵守）】\n{requirement_text.strip()}\n"
+            if (requirement_text or "").strip()
+            else ""
+        )
+        return (
+            f"你是一位专业 PPT 模板设计师。请严格依据下方同一份参考图片视觉报告，生成套件中的【{label}】。\n"
+            f"请生成{spec}。\n\n"
+            "要求：\n"
+            "- 只输出 HTML 本身，不要 Markdown 代码块、JSON 或解释。\n"
+            "- 画面固定 1280×720，overflow:hidden，禁止滚动条、@media 和 transform scale。\n"
+            "- 色彩优先使用报告中的 HEX 色板，并大致遵循 ratio_percent 的面积配比。\n"
+            "- 只继承颜色配比，不继承颜色位置：严禁因某颜色在原图下方/上方/左侧/右侧，"
+            "就在本页相同方位使用它；颜色位置必须按当前页面内容和层级自由重排。\n"
+            "- 画风、线条、材质、图形母题必须与报告同源。\n"
+            "- 不复制参考图片里的具体文字，不把原图整张铺成背景；人物特征转译成抽象设计语言。\n"
+            "- 必须完整保留规格中的所有 {{...}} 槽位，页面同时具备专业可用的示例排版。\n"
+            f"{chapter_rule}"
+            f"- 创意度：{creativity}/10。\n"
+            f"{extra}\n"
+            "【参考图片视觉报告（最高优先级）】\n"
+            + design_brief
+        )
+
+    @staticmethod
+    def _build_reference_design_tokens(analysis: Dict[str, Any]) -> str:
+        colors = []
+        for item in analysis.get("dominant_colors") or []:
+            value = item if isinstance(item, str) else item.get("hex") if isinstance(item, dict) else ""
+            if value:
+                ratio = item.get("ratio_percent") if isinstance(item, dict) else None
+                colors.append(f"{value}({ratio}%)" if ratio is not None else str(value))
+        chunks = [f"风格：{analysis.get('style_name') or '参考图视觉风格'}"]
+        if colors:
+            chunks.append("色板：" + " / ".join(colors[:8]))
+        if analysis.get("typography"):
+            chunks.append("字体：" + str(analysis["typography"]))
+        return "；".join(chunks)
+
+    @staticmethod
+    def _decorate_suite_from_reference_image(
+        suite: Dict[str, Any], analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        style_name = str(analysis.get("style_name") or "").strip()
+        summary = str(analysis.get("style_summary") or "").strip()
+        suite["suite_name"] = f"{style_name}套件" if style_name else "参考图风格套件"
+        suite["description"] = (summary[:120] or "基于任意参考图片的画风与配色生成")
+        suite["tags"] = ["参考图", "AI读图"] + ([style_name[:20]] if style_name else [])
+        suite["template_id"] = None
+        suite["template_hash"] = None
+        suite["template_name"] = None
+        suite["reference_analysis"] = analysis
+        return suite
 
     # ------------------------------------------------------------------
     # 基于 AI 读图生成套件（多模态）
