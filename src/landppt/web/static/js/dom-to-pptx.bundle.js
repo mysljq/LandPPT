@@ -64375,7 +64375,12 @@
   /**
    * Converts an SVG node to a PNG data URL (rasterized)
    */
-  function svgToPng(node) {
+  function stripSvgTextFromClone(clone) {
+    if (!clone || !clone.querySelectorAll) return;
+    clone.querySelectorAll('text').forEach((textNode) => textNode.remove());
+  }
+
+  function svgToPng(node, options = {}) {
     return new Promise((resolve) => {
       const clone = node.cloneNode(true);
       const rect = node.getBoundingClientRect();
@@ -64383,6 +64388,7 @@
       const height = rect.height || 150;
 
       inlineSvgStyles(node, clone);
+      if (options.stripText) stripSvgTextFromClone(clone);
       clone.setAttribute('width', width);
       clone.setAttribute('height', height);
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -64410,7 +64416,7 @@
    * Converts an SVG node to an SVG data URL (preserves vector format)
    * This allows "Convert to Shape" in PowerPoint
    */
-  function svgToSvg(node) {
+  function svgToSvg(node, options = {}) {
     return new Promise((resolve) => {
       try {
         const clone = node.cloneNode(true);
@@ -64419,6 +64425,7 @@
         const height = rect.height || 150;
 
         inlineSvgStyles(node, clone);
+        if (options.stripText) stripSvgTextFromClone(clone);
         clone.setAttribute('width', width);
         clone.setAttribute('height', height);
         clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -65109,6 +65116,10 @@
    * @param {'png'|'jpeg'} [options.imageType='png'] - Raster output type when `renderMode='image'`
    * @param {number} [options.imageQuality=0.92] - JPEG quality in [0,1] when `imageType='jpeg'`
    * @param {number} [options.maxRasterPixels=6000000] - Upper bound for rasterized pixel count
+   * @param {boolean} [options.hybridRiskFallback=true] - Rasterize risky visual subtrees and restore editable text
+   * @param {number} [options.riskRasterScale=2] - Raster scale for risky subtree captures
+   * @param {number} [options.riskRasterPadding] - Optional CSS-pixel padding around risky captures
+   * @param {number} [options.maxRiskRasterPixels=7000000] - Pixel budget for each risky subtree matte pass
    * @param {Object} [options.iconRules] - Runtime icon whitelist/fallback rules (hot-updatable JSON)
    * @param {Array<string>|Object<number,string>} [options.slideNotes] - Speaker notes text per slide index
    * @param {(root: HTMLElement, index: number) => (string|Promise<string>)} [options.getSlideNotes] - Callback to provide notes per slide
@@ -65146,6 +65157,451 @@
     }
   }
 
+  function resetRiskFallbackDebug() {
+    const win = typeof window !== 'undefined' ? window : null;
+    if (!win) return [];
+    const store = [];
+    win.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__ = store;
+    return store;
+  }
+
+  function getRiskFallbackDebug() {
+    const win = typeof window !== 'undefined' ? window : null;
+    if (!win) return [];
+    if (!Array.isArray(win.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__)) {
+      return resetRiskFallbackDebug();
+    }
+    return win.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__;
+  }
+
+  function isNonTrivialCssValue(value, normalValue = 'none') {
+    const normalized = String(value || '').trim().toLowerCase();
+    return !!normalized && normalized !== normalValue && normalized !== 'initial' && normalized !== 'unset';
+  }
+
+  function getStyleProperty(style, camelName, cssName = null) {
+    if (!style) return '';
+    return style[camelName] || (style.getPropertyValue && style.getPropertyValue(cssName || camelName)) || '';
+  }
+
+  function isComplexClipPath(value) {
+    const clipPath = String(value || '').trim().toLowerCase();
+    if (!isNonTrivialCssValue(clipPath)) return false;
+    // Basic inset/circle/ellipse clips can be represented by the existing shape/image path.
+    // Polygon/path/url clips and compound expressions need browser rasterization.
+    return !/^(?:inset|circle|ellipse)\s*\(/i.test(clipPath);
+  }
+
+  function hasTransformedDescendant(node, maxNodes = 240) {
+    if (!node || !node.querySelectorAll) return false;
+    const boundaryRect = node.getBoundingClientRect();
+    const descendants = node.querySelectorAll('*');
+    const limit = Math.min(descendants.length, maxNodes);
+    for (let i = 0; i < limit; i++) {
+      const child = descendants[i];
+      const childStyle = getNodeWindow(child).getComputedStyle(child);
+      if (!isNonTrivialCssValue(childStyle.transform)) continue;
+      const childRect = child.getBoundingClientRect();
+      const crossesClipBoundary =
+        childRect.left < boundaryRect.left - 0.5 ||
+        childRect.top < boundaryRect.top - 0.5 ||
+        childRect.right > boundaryRect.right + 0.5 ||
+        childRect.bottom > boundaryRect.bottom + 0.5;
+      if (crossesClipBoundary) return true;
+    }
+    return false;
+  }
+
+  function isComplexSvg(node) {
+    if (!node || String(node.nodeName || '').toUpperCase() !== 'SVG') return false;
+    if (node.querySelector('filter, mask, clipPath, pattern, foreignObject, symbol, use')) return true;
+    if (node.querySelectorAll('*').length > 80) return true;
+    const viewBox = node.getAttribute('viewBox');
+    const width = node.getAttribute('width');
+    const height = node.getAttribute('height');
+    return !!viewBox && (!width || !height);
+  }
+
+  /**
+   * Classifies a DOM subtree root whose browser-composited appearance cannot be
+   * represented reliably with native PowerPoint primitives.
+   */
+  function analyzeRiskSubtree(node, computedStyle = null) {
+    const result = { risky: false, reasons: [] };
+    if (!node || node.nodeType !== 1) return result;
+    if (node.hasAttribute('data-pptx-no-risk-raster')) return result;
+    if (node.hasAttribute('data-pptx-force-risk-raster')) result.reasons.push('forced');
+
+    const style = computedStyle || getNodeWindow(node).getComputedStyle(node);
+    const maskImage =
+      getStyleProperty(style, 'webkitMaskImage', '-webkit-mask-image') ||
+      getStyleProperty(style, 'maskImage', 'mask-image');
+    const mask = getStyleProperty(style, 'mask', 'mask');
+    if (isNonTrivialCssValue(maskImage) || isNonTrivialCssValue(mask)) result.reasons.push('mask');
+
+    const clipPath =
+      getStyleProperty(style, 'webkitClipPath', '-webkit-clip-path') ||
+      getStyleProperty(style, 'clipPath', 'clip-path');
+    if (isComplexClipPath(clipPath)) result.reasons.push('complex-clip-path');
+
+    if (isNonTrivialCssValue(style.filter)) result.reasons.push('filter');
+    const backdropFilter =
+      getStyleProperty(style, 'backdropFilter', 'backdrop-filter') ||
+      getStyleProperty(style, 'webkitBackdropFilter', '-webkit-backdrop-filter');
+    if (isNonTrivialCssValue(backdropFilter)) result.reasons.push('backdrop-filter');
+
+    if (String(style.mixBlendMode || '').toLowerCase() !== 'normal' && style.mixBlendMode) {
+      result.reasons.push('mix-blend-mode');
+    }
+
+    const backgroundImage = String(style.backgroundImage || '');
+    const gradientLayerCount = splitTopLevelCommaParts(backgroundImage).filter((part) =>
+      /\b(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(part)
+    ).length;
+    if (gradientLayerCount > 1) result.reasons.push('multi-layer-gradient');
+
+    const overflowX = String(style.overflowX || style.overflow || '').toLowerCase();
+    const overflowY = String(style.overflowY || style.overflow || '').toLowerCase();
+    const clipsOverflow = ['hidden', 'clip', 'scroll', 'auto'].includes(overflowX) ||
+      ['hidden', 'clip', 'scroll', 'auto'].includes(overflowY);
+    if (clipsOverflow && hasTransformedDescendant(node)) {
+      result.reasons.push('transformed-descendant-clipping');
+    } else if (isNonTrivialCssValue(style.transform) && node.parentElement) {
+      const parentStyle = getNodeWindow(node.parentElement).getComputedStyle(node.parentElement);
+      const parentOverflow = `${parentStyle.overflowX || parentStyle.overflow} ${
+        parentStyle.overflowY || parentStyle.overflow
+      }`.toLowerCase();
+      if (/\b(?:hidden|clip|scroll|auto)\b/.test(parentOverflow)) result.reasons.push('transformed-clipping');
+    }
+
+    if (isComplexSvg(node)) result.reasons.push('complex-svg');
+    result.reasons = Array.from(new Set(result.reasons));
+    result.risky = result.reasons.length > 0;
+    return result;
+  }
+
+  function shouldSkipEditableTextNode(textNode, boundary) {
+    const value = String(textNode && textNode.nodeValue ? textNode.nodeValue : '');
+    if (!value || !value.trim()) return true;
+    let element = textNode.parentElement;
+    while (element) {
+      if (/^(?:SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(element.tagName)) return true;
+      const style = getNodeWindow(element).getComputedStyle(element);
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse' ||
+        parseFloat(style.opacity) === 0
+      ) {
+        return true;
+      }
+      if (element === boundary) break;
+      element = element.parentElement;
+    }
+    return false;
+  }
+
+  function getRelativeTextOpacity(element, boundary, boundaryOpacity) {
+    let opacity = Number.isFinite(boundaryOpacity) ? boundaryOpacity : 1;
+    let current = element;
+    while (current && current !== boundary) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const ownOpacity = parseFloat(style.opacity);
+      if (Number.isFinite(ownOpacity)) opacity *= Math.max(0, Math.min(1, ownOpacity));
+      const fillOpacity = parseFloat(style.fillOpacity);
+      if (Number.isFinite(fillOpacity)) opacity *= Math.max(0, Math.min(1, fillOpacity));
+      current = current.parentElement;
+    }
+    return Math.max(0, Math.min(1, opacity));
+  }
+
+  function getCumulativeTextRotation(element, boundary) {
+    let rotation = 0;
+    let current = element;
+    while (current) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      rotation += getRotation(style.transform);
+      if (current === boundary) break;
+      current = current.parentElement;
+    }
+    return rotation;
+  }
+
+  function normalizeCapturedLineText(text, whiteSpace) {
+    const value = String(text || '').replace(/\r/g, '');
+    if (/^(?:pre|pre-wrap|break-spaces)$/.test(String(whiteSpace || ''))) return value.replace(/\n/g, '');
+    return value.replace(/[\n\t ]+/g, ' ').trim();
+  }
+
+  /** Extracts editable text one browser-laid-out line at a time using Range rects. */
+  function collectEditableTextLineItems(boundary, config, zIndex, domOrder, boundaryOpacity = 1) {
+    if (!boundary || !boundary.ownerDocument) return [];
+    const doc = boundary.ownerDocument;
+    const win = doc.defaultView || window;
+    const filter = win.NodeFilter || NodeFilter;
+    const walker = doc.createTreeWalker(boundary, filter.SHOW_TEXT);
+    const items = [];
+    let textNode;
+    let lineOrder = 0;
+
+    while ((textNode = walker.nextNode())) {
+      if (shouldSkipEditableTextNode(textNode, boundary)) continue;
+      const parent = textNode.parentElement;
+      if (!parent) continue;
+      const style = win.getComputedStyle(parent);
+      const raw = String(textNode.nodeValue || '');
+      const lines = [];
+      let currentLine = null;
+      let offset = 0;
+
+      const flushLine = () => {
+        if (!currentLine) return;
+        const text = normalizeCapturedLineText(currentLine.text, style.whiteSpace);
+        if (text && currentLine.rect) lines.push({ text, rect: currentLine.rect });
+        currentLine = null;
+      };
+
+      for (const character of Array.from(raw)) {
+        const charLength = character.length;
+        if (character === '\n') {
+          flushLine();
+          offset += charLength;
+          continue;
+        }
+
+        const range = doc.createRange();
+        let charRect = null;
+        try {
+          range.setStart(textNode, offset);
+          range.setEnd(textNode, Math.min(raw.length, offset + charLength));
+          const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0.01 && rect.height > 0.01);
+          if (rects.length) charRect = rects[0];
+        } catch (_) {
+          charRect = null;
+        }
+        if (range.detach) range.detach();
+        offset += charLength;
+
+        if (!charRect) {
+          if (currentLine && /\s/.test(character)) currentLine.text += character;
+          continue;
+        }
+
+        const centerY = charRect.top + charRect.height / 2;
+        const sameLine =
+          currentLine &&
+          Math.abs(centerY - currentLine.centerY) <= Math.max(2, Math.min(charRect.height, currentLine.rect.height) * 0.45);
+        if (!sameLine) {
+          flushLine();
+          currentLine = {
+            text: character,
+            centerY,
+            rect: {
+              left: charRect.left,
+              top: charRect.top,
+              right: charRect.right,
+              bottom: charRect.bottom,
+              width: charRect.width,
+              height: charRect.height,
+            },
+          };
+        } else {
+          currentLine.text += character;
+          const left = Math.min(currentLine.rect.left, charRect.left);
+          const top = Math.min(currentLine.rect.top, charRect.top);
+          const right = Math.max(currentLine.rect.right, charRect.right);
+          const bottom = Math.max(currentLine.rect.bottom, charRect.bottom);
+          currentLine.rect = { left, top, right, bottom, width: right - left, height: bottom - top };
+          currentLine.centerY = (currentLine.centerY + centerY) / 2;
+        }
+      }
+      flushLine();
+
+      const textOpacity = getRelativeTextOpacity(parent, boundary, boundaryOpacity);
+      const textStyle = applyOpacityToTextStyle(getTextStyle(style, config.scale, parent), textOpacity);
+      if (textStyle.hidden) continue;
+      delete textStyle.hidden;
+      if (String(parent.namespaceURI || '').includes('svg') && style.fill && style.fill !== 'none') {
+        const fill = parseColor(style.fill);
+        if (fill.hex) textStyle.color = fill.hex;
+      }
+
+      let rotation = getCumulativeTextRotation(parent, boundary);
+      if (/vertical|sideways/i.test(style.writingMode || '')) rotation += 90;
+
+      for (const line of lines) {
+        const rect = line.rect;
+        const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
+        const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
+        const w = Math.max(0.01, (rect.width + 1.5) * PX_TO_INCH * config.scale);
+        const h = Math.max(0.01, rect.height * 1.08 * PX_TO_INCH * config.scale);
+        items.push({
+          type: 'text',
+          zIndex: nextRenderableZIndex(zIndex, 2),
+          domOrder: domOrder + (++lineOrder) / 10000,
+          textParts: [{ text: line.text, options: { ...textStyle } }],
+          options: {
+            x,
+            y,
+            w,
+            h,
+            margin: 0,
+            autoFit: false,
+            fit: 'shrink',
+            valign: 'mid',
+            wrap: false,
+            rotate: rotation || 0,
+          },
+        });
+      }
+    }
+    return items;
+  }
+
+  function hideEditableTextInCaptureClone(clonedRoot) {
+    if (!clonedRoot || !clonedRoot.ownerDocument) return;
+    const doc = clonedRoot.ownerDocument;
+    const win = doc.defaultView;
+    const filter = win.NodeFilter;
+    const walker = doc.createTreeWalker(clonedRoot, filter.SHOW_TEXT);
+    const htmlTextNodes = [];
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      if (!String(textNode.nodeValue || '').trim() || !textNode.parentElement) continue;
+      const isSvgText = String(textNode.parentElement.namespaceURI || '').includes('svg');
+      if (!isSvgText) htmlTextNodes.push(textNode);
+    }
+    // Wrap only the text node instead of making its parent transparent. This keeps
+    // currentColor-driven icons and other visual descendants intact.
+    htmlTextNodes.forEach((node) => {
+      if (!node.parentNode) return;
+      const wrapper = doc.createElement('span');
+      wrapper.setAttribute('data-landppt-hidden-editable-text', 'true');
+      wrapper.textContent = node.nodeValue;
+      wrapper.style.setProperty('color', 'transparent', 'important');
+      wrapper.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+      wrapper.style.setProperty('text-shadow', 'none', 'important');
+      wrapper.style.setProperty('text-decoration-color', 'transparent', 'important');
+      wrapper.style.setProperty('font', 'inherit', 'important');
+      wrapper.style.setProperty('letter-spacing', 'inherit', 'important');
+      wrapper.style.setProperty('line-height', 'inherit', 'important');
+      node.parentNode.replaceChild(wrapper, node);
+    });
+    clonedRoot.querySelectorAll('svg text, svg tspan').forEach((element) => {
+      element.style.setProperty('visibility', 'hidden', 'important');
+    });
+  }
+
+  function estimateRiskCapturePadding(style, options = {}) {
+    const configured = Number(options.riskRasterPadding);
+    if (Number.isFinite(configured)) return Math.max(0, Math.min(96, Math.round(configured)));
+    const effects = `${style.boxShadow || ''} ${style.filter || ''}`;
+    const numbers = Array.from(effects.matchAll(/(-?\d+(?:\.\d+)?)px/gi)).map((match) => Math.abs(Number(match[1])));
+    return Math.max(12, Math.min(64, Math.ceil((numbers.length ? Math.max(...numbers) : 0) + 8)));
+  }
+
+  function reconstructAlphaMatte(blackCanvas, whiteCanvas) {
+    if (!blackCanvas || !whiteCanvas || blackCanvas.width !== whiteCanvas.width || blackCanvas.height !== whiteCanvas.height) {
+      return null;
+    }
+    const width = blackCanvas.width;
+    const height = blackCanvas.height;
+    const blackCtx = blackCanvas.getContext('2d', { willReadFrequently: true });
+    const whiteCtx = whiteCanvas.getContext('2d', { willReadFrequently: true });
+    const black = blackCtx.getImageData(0, 0, width, height);
+    const white = whiteCtx.getImageData(0, 0, width, height);
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const outputCtx = output.getContext('2d');
+    const image = outputCtx.createImageData(width, height);
+
+    for (let i = 0; i < image.data.length; i += 4) {
+      const deltaR = Math.max(0, white.data[i] - black.data[i]);
+      const deltaG = Math.max(0, white.data[i + 1] - black.data[i + 1]);
+      const deltaB = Math.max(0, white.data[i + 2] - black.data[i + 2]);
+      const alpha = Math.max(0, Math.min(255, 255 - Math.max(deltaR, deltaG, deltaB)));
+      image.data[i + 3] = alpha;
+      if (alpha <= 1) {
+        image.data[i] = 0;
+        image.data[i + 1] = 0;
+        image.data[i + 2] = 0;
+      } else {
+        const multiplier = 255 / alpha;
+        image.data[i] = Math.max(0, Math.min(255, Math.round(black.data[i] * multiplier)));
+        image.data[i + 1] = Math.max(0, Math.min(255, Math.round(black.data[i + 1] * multiplier)));
+        image.data[i + 2] = Math.max(0, Math.min(255, Math.round(black.data[i + 2] * multiplier)));
+      }
+    }
+    outputCtx.putImageData(image, 0, 0);
+    return output;
+  }
+
+  /** Captures only a risky visual subtree, excluding editable DOM/SVG text. */
+  async function captureRiskSubtreeVisual(node, options = {}) {
+    const sourceDoc = node.ownerDocument || document;
+    const sourceWin = sourceDoc.defaultView || window;
+    const rect = node.getBoundingClientRect();
+    const style = sourceWin.getComputedStyle(node);
+    const widthPx = Math.max(1, Math.ceil(rect.width));
+    const heightPx = Math.max(1, Math.ceil(rect.height));
+    const padding = estimateRiskCapturePadding(style, options);
+    const requestedScale = Number.isFinite(Number(options.riskRasterScale)) ? Number(options.riskRasterScale) : 2;
+    const maxPixels = Number.isFinite(Number(options.maxRiskRasterPixels))
+      ? Number(options.maxRiskRasterPixels)
+      : 7_000_000;
+    let scale = Math.max(1, Math.min(3, requestedScale));
+    const pixelArea = (widthPx + padding * 2) * (heightPx + padding * 2) * scale * scale;
+    if (pixelArea > maxPixels) {
+      scale = Math.max(1, Math.sqrt(maxPixels / Math.max(1, (widthPx + padding * 2) * (heightPx + padding * 2))));
+    }
+
+    const attributeName = 'data-landppt-risk-capture-id';
+    const previousAttribute = node.getAttribute(attributeName);
+    const captureId = `risk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    node.setAttribute(attributeName, captureId);
+
+    const renderPass = (backgroundColor) =>
+      html2canvas(node, {
+        backgroundColor,
+        logging: false,
+        scale,
+        useCORS: true,
+        width: widthPx + padding * 2,
+        height: heightPx + padding * 2,
+        x: -padding,
+        y: -padding,
+        removeContainer: true,
+        imageTimeout: 4000,
+        onclone: (clonedDoc) => {
+          const clonedNode = clonedDoc.querySelector(`[${attributeName}="${captureId}"]`);
+          if (clonedNode) hideEditableTextInCaptureClone(clonedNode);
+        },
+      });
+
+    try {
+      const blackCanvas = await renderPass('#000000');
+      const whiteCanvas = await renderPass('#ffffff');
+      const alphaCanvas = reconstructAlphaMatte(blackCanvas, whiteCanvas);
+      if (!alphaCanvas) return null;
+      return { data: alphaCanvas.toDataURL('image/png'), paddingPx: padding };
+    } catch (error) {
+      console.warn('Risk subtree alpha-matte capture failed; retrying transparent capture:', error);
+      try {
+        const fallbackCanvas = await renderPass(null);
+        return fallbackCanvas
+          ? { data: fallbackCanvas.toDataURL('image/png'), paddingPx: padding }
+          : null;
+      } catch (fallbackError) {
+        console.warn('Risk subtree capture failed:', fallbackError);
+        return null;
+      }
+    } finally {
+      if (previousAttribute === null) node.removeAttribute(attributeName);
+      else node.setAttribute(attributeName, previousAttribute);
+    }
+  }
+
   async function exportToPptx(target, options = {}) {
     const resolvePptxConstructor = (pkg) => {
       if (!pkg) return null;
@@ -65162,6 +65618,7 @@
     const pptx = new PptxConstructor();
     pptx.layout = 'LAYOUT_16x9';
     resetFontExportDebug();
+    resetRiskFallbackDebug();
     try {
       if (options && options.iconRules) {
         setIconRules(options.iconRules);
@@ -66708,6 +67165,58 @@
 
     const items = [];
 
+    // Browser-composited effects are captured as a visual island. Text is deliberately
+    // removed from the bitmap and restored below as editable, line-positioned text.
+    if (node.nodeName.toUpperCase() !== 'SVG' && globalOptions.hybridRiskFallback !== false) {
+      const risk = analyzeRiskSubtree(node, style);
+      if (risk.risky) {
+        const visualX = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
+        const visualY = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
+        const visualW = effectiveRectWidth * PX_TO_INCH * config.scale;
+        const visualH = effectiveRectHeight * PX_TO_INCH * config.scale;
+        const imageItem = {
+          type: 'image',
+          zIndex,
+          domOrder,
+          // html2canvas captures the final transformed bounding box, so applying the
+          // CSS rotation again in PowerPoint would double-transform the visual island.
+          options: { x: visualX, y: visualY, w: visualW, h: visualH, rotate: 0, data: null },
+        };
+        const textItems = collectEditableTextLineItems(
+          node,
+          config,
+          zIndex,
+          domOrder,
+          safeOpacity
+        );
+        const debugEntry = {
+          tagName: node.tagName,
+          reasons: risk.reasons.slice(),
+          textLineCount: textItems.length,
+          captured: false,
+        };
+        getRiskFallbackDebug().push(debugEntry);
+
+        const job = async () => {
+          const captured = await captureRiskSubtreeVisual(node, globalOptions);
+          if (!captured || !captured.data) {
+            imageItem.skip = true;
+            debugEntry.error = 'capture-failed';
+            return;
+          }
+          const padIn = captured.paddingPx * PX_TO_INCH * config.scale;
+          imageItem.options.data = captured.data;
+          imageItem.options.x = visualX - padIn;
+          imageItem.options.y = visualY - padIn;
+          imageItem.options.w = visualW + padIn * 2;
+          imageItem.options.h = visualH + padIn * 2;
+          debugEntry.captured = true;
+        };
+
+        return { items: [imageItem, ...textItems], job, stopRecursion: true };
+      }
+    }
+
     if (node.tagName === 'TABLE') {
       const tableData = extractTableData(node, config.scale);
 
@@ -66951,8 +67460,15 @@
       return { items: [item], job, stopRecursion: true };
     }
 
-    // --- ASYNC JOB: SVG Tags ---
+    // --- ASYNC JOB: SVG visual layer + editable SVG text layer ---
     if (node.nodeName.toUpperCase() === 'SVG') {
+      const svgTextItems = collectEditableTextLineItems(
+        node,
+        config,
+        zIndex,
+        domOrder,
+        safeOpacity
+      );
       const item = {
         type: 'image',
         zIndex,
@@ -66964,12 +67480,20 @@
         // Use svgToSvg for vector output (Convert to Shape in PowerPoint)
         // Use svgToPng for rasterized output (pixel perfect)
         const converter = globalOptions.svgAsVector ? svgToSvg : svgToPng;
-        const processed = await converter(node);
+        const processed = await converter(node, { stripText: svgTextItems.length > 0 });
         if (processed) item.options.data = processed;
         else item.skip = true;
       };
 
-      return { items: [item], job, stopRecursion: true };
+      if (svgTextItems.length > 0 || isComplexSvg(node)) {
+        getRiskFallbackDebug().push({
+          tagName: 'SVG',
+          reasons: [isComplexSvg(node) ? 'complex-svg' : 'svg-text-split'],
+          textLineCount: svgTextItems.length,
+          captured: true,
+        });
+      }
+      return { items: [item, ...svgTextItems], job, stopRecursion: true };
     }
 
     // --- ASYNC JOB: IMG Tags ---
@@ -67687,12 +68211,15 @@
     return items;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-04-25-layer-clip-v21';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-08-28-risk-subtree-v22';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
   exports.__landpptResolveFontFace = resolveExportFontFace;
   exports.__landpptResolveLatinFontFace = resolveLatinExportFontFace;
+  exports.__landpptAnalyzeRiskSubtree = analyzeRiskSubtree;
+  exports.__landpptCollectEditableTextLineItems = collectEditableTextLineItems;
+  exports.__landpptReconstructAlphaMatte = reconstructAlphaMatte;
   exports.__landpptPatchVersion = LANDPPT_DOM_TO_PPTX_PATCH_VERSION;
 
 }));

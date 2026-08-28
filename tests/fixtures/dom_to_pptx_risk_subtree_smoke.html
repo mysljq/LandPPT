@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; background: #ddd; font-family: Arial, sans-serif; }
+      #slide {
+        position: relative; width: 1280px; height: 720px; overflow: hidden;
+        background: #f7f9fc; color: #14213d;
+      }
+      .card { position: absolute; width: 250px; height: 120px; padding: 16px; box-sizing: border-box; }
+      .mask { left: 35px; top: 35px; background: #57cc99; -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent); mask-image: linear-gradient(90deg, #000 70%, transparent); }
+      .clip { left: 335px; top: 35px; background: #ffd166; clip-path: polygon(0 0, 100% 10%, 85% 100%, 5% 88%); }
+      .filter { left: 635px; top: 35px; background: #ef476f; filter: drop-shadow(12px 10px 8px rgba(0,0,0,.38)); }
+      .backdrop { left: 935px; top: 35px; background: rgba(255,255,255,.35); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.7); }
+      .blend { left: 35px; top: 205px; background: #118ab2; mix-blend-mode: multiply; }
+      .gradient { left: 335px; top: 205px; background-image: radial-gradient(circle at 20% 20%, #fff, transparent 40%), linear-gradient(135deg, #8338ec, #3a86ff); color: white; }
+      .clipper { left: 635px; top: 205px; overflow: hidden; background: #073b4c; color: white; }
+      .clipper > span { display: block; width: 290px; transform: rotate(-7deg) translateX(12px); }
+      .svg-wrap { position: absolute; left: 935px; top: 205px; width: 260px; height: 150px; }
+      .two-lines { width: 170px; line-height: 24px; }
+    </style>
+  </head>
+  <body>
+    <div id="slide">
+      <div id="mask" class="card mask">遮罩文字仍可编辑</div>
+      <div id="clip" class="card clip">复杂裁剪文字</div>
+      <div id="filter" class="card filter"><div class="two-lines">滤镜中的文字会按浏览器换行提取</div></div>
+      <div id="backdrop" class="card backdrop">毛玻璃文字</div>
+      <div id="blend" class="card blend">混合模式文字</div>
+      <div id="gradient" class="card gradient">多层渐变文字</div>
+      <div id="clipper" class="card clipper"><span>变换后的子节点受到父容器裁剪</span></div>
+      <svg id="complex-svg" class="svg-wrap" viewBox="0 0 260 150">
+        <defs>
+          <filter id="glow"><feGaussianBlur stdDeviation="4" /></filter>
+          <linearGradient id="paint"><stop stop-color="#06d6a0"/><stop offset="1" stop-color="#118ab2"/></linearGradient>
+        </defs>
+        <rect x="2" y="2" width="256" height="146" rx="22" fill="url(#paint)" />
+        <circle cx="45" cy="48" r="25" fill="#fff" filter="url(#glow)" />
+        <text x="82" y="58" font-size="24" font-weight="700" fill="#fff">SVG 标题</text>
+        <text x="82" y="94" font-size="16" fill="#fff"><tspan>SVG 副标题</tspan></text>
+      </svg>
+    </div>
+    <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+    <script>
+      window.runRiskSubtreePptxSmokeTest = async function () {
+        const ids = ['mask', 'clip', 'filter', 'backdrop', 'blend', 'gradient', 'clipper', 'complex-svg'];
+        const detectedReasons = [];
+        ids.forEach((id) => {
+          const element = document.getElementById(id);
+          const analysis = window.domToPptx.__landpptAnalyzeRiskSubtree(element, getComputedStyle(element));
+          detectedReasons.push(...analysis.reasons);
+        });
+
+        const layoutConfig = { rootX: 0, rootY: 0, offX: 0, offY: 0, scale: 1 };
+        const editableLines = window.domToPptx.__landpptCollectEditableTextLineItems(
+          document.getElementById('filter'), layoutConfig, 0, 0, 1
+        );
+        const svgTextLines = window.domToPptx.__landpptCollectEditableTextLineItems(
+          document.getElementById('complex-svg'), layoutConfig, 0, 0, 1
+        );
+
+        const black = document.createElement('canvas');
+        const white = document.createElement('canvas');
+        black.width = black.height = white.width = white.height = 1;
+        black.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([100, 50, 25, 255]), 1, 1), 0, 0);
+        white.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray([228, 178, 153, 255]), 1, 1), 0, 0);
+        const matte = window.domToPptx.__landpptReconstructAlphaMatte(black, white);
+        const mattePixel = Array.from(matte.getContext('2d').getImageData(0, 0, 1, 1).data);
+
+        const blob = await window.domToPptx.exportToPptx(document.getElementById('slide'), {
+          skipDownload: true,
+          autoEmbedFonts: false,
+          svgAsVector: false,
+          riskRasterScale: 1,
+          maxRiskRasterPixels: 1500000,
+        });
+        const debug = window.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__ || [];
+        return {
+          patchVersion: window.domToPptx.__landpptPatchVersion,
+          blobSize: blob.size,
+          editableLineCount: editableLines.length,
+          svgTextLineCount: svgTextLines.length,
+          detectedReasons,
+          allCapturesSucceeded: debug.filter((entry) => entry.tagName !== 'SVG').every((entry) => entry.captured),
+          riskCaptureCount: debug.length,
+          rootWasRasterized: debug.some((entry) =>
+            entry.tagName === 'DIV' && entry.reasons.includes('transformed-descendant-clipping') && entry.textLineCount > 7
+          ),
+          mattePixel,
+        };
+      };
+    </script>
+  </body>
+</html>
