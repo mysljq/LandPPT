@@ -12940,8 +12940,11 @@
       const eastAsiaFontFace = normalizePowerPointEastAsianFontFace(opts.eaFontFace || opts.fontFace || latinFontFace);
       const complexScriptFontFace = normalizePowerPointEastAsianFontFace(opts.csFontFace || eastAsiaFontFace || latinFontFace);
       if (latinFontFace || eastAsiaFontFace || complexScriptFontFace) {
-        // NOTE: 'cs' = Complex Script, 'ea' = East Asian (use "-120" instead of "0" - per Issue #174); ea must come first (Issue #174)
-        runProps += "<a:ea typeface=\"".concat(eastAsiaFontFace, "\" pitchFamily=\"34\" charset=\"-122\"/><a:latin typeface=\"").concat(latinFontFace, "\" pitchFamily=\"34\" charset=\"0\"/><a:cs typeface=\"").concat(complexScriptFontFace, "\" pitchFamily=\"34\" charset=\"-120\"/>");
+        // CT_TextCharacterProperties requires latin -> ea -> cs. Office ignores
+        // latin font declarations that appear after ea and silently falls back
+        // to the theme font (typically Calibri), even though the XML still
+        // contains the requested typeface.
+        runProps += "<a:latin typeface=\"".concat(latinFontFace, "\" pitchFamily=\"34\" charset=\"0\"/><a:ea typeface=\"").concat(eastAsiaFontFace, "\" pitchFamily=\"34\" charset=\"-122\"/><a:cs typeface=\"").concat(complexScriptFontFace, "\" pitchFamily=\"34\" charset=\"-120\"/>");
       }
     }
     // Hyperlink support
@@ -62400,12 +62403,16 @@
   // src/font-embedder.js
 
   const START_RID = 201314;
+  const PACKAGE_CONTENT_TYPES_NS = 'http://schemas.openxmlformats.org/package/2006/content-types';
+  const PACKAGE_RELATIONSHIPS_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const PRESENTATIONML_NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+  const OFFICE_RELATIONSHIPS_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
   class PPTXEmbedFonts {
     constructor() {
       this.zip = null;
       this.rId = START_RID;
-      this.fonts = []; // { name, data, rid }
+      this.fonts = []; // { name, data, rid, weight, style, slot }
     }
 
     async loadZip(zip) {
@@ -62428,11 +62435,20 @@
       }
     }
 
-    async addFont(fontFace, fontBuffer, type) {
+    async addFont(fontFace, fontBuffer, type, variant = {}) {
       // Convert to EOT/fntdata for PPTX compatibility
       const eotData = await fontToEot(type, fontBuffer);
       const rid = this.rId++;
-      this.fonts.push({ name: fontFace, data: eotData, rid });
+      const weight = normalizeFontWeightForEmbedding(variant.weight);
+      const style = normalizeFontStyleForEmbedding(variant.style);
+      this.fonts.push({
+        name: fontFace,
+        data: eotData,
+        rid,
+        weight,
+        style,
+        slot: getPowerPointFontVariantSlot(weight, style),
+      });
     }
 
     async updateFiles() {
@@ -62467,7 +62483,7 @@
       const hasFntData = defaults.some((el) => el.getAttribute('Extension') === 'fntdata');
 
       if (!hasFntData) {
-        const el = doc.createElement('Default');
+        const el = doc.createElementNS(PACKAGE_CONTENT_TYPES_NS, 'Default');
         el.setAttribute('Extension', 'fntdata');
         el.setAttribute('ContentType', 'application/x-fontdata');
         types.insertBefore(el, types.firstChild);
@@ -62486,14 +62502,14 @@
       const presentation = doc.getElementsByTagName('p:presentation')[0];
 
       // Enable embedding flags
-      presentation.setAttribute('saveSubsetFonts', 'true');
-      presentation.setAttribute('embedTrueTypeFonts', 'true');
+      presentation.setAttribute('saveSubsetFonts', '1');
+      presentation.setAttribute('embedTrueTypeFonts', '1');
 
       // Find or create embeddedFontLst
       let embeddedFontLst = presentation.getElementsByTagName('p:embeddedFontLst')[0];
 
       if (!embeddedFontLst) {
-        embeddedFontLst = doc.createElement('p:embeddedFontLst');
+        embeddedFontLst = doc.createElementNS(PRESENTATIONML_NS, 'p:embeddedFontLst');
 
         // Insert before defaultTextStyle or at end
         const defaultTextStyle = presentation.getElementsByTagName('p:defaultTextStyle')[0];
@@ -62504,25 +62520,29 @@
         }
       }
 
-      // Add font references
+      // Add one embedded-font entry per family and wire each face into the
+      // correct PowerPoint slot (regular/bold/italic/boldItalic).
       this.fonts.forEach((font) => {
-        // Check if already exists
-        const existing = Array.from(embeddedFontLst.getElementsByTagName('p:font')).find(
-          (node) => node.getAttribute('typeface') === font.name
+        let embedFont = Array.from(embeddedFontLst.getElementsByTagName('p:embeddedFont')).find(
+          (node) => {
+            const fontNode = node.getElementsByTagName('p:font')[0];
+            return fontNode && fontNode.getAttribute('typeface') === font.name;
+          }
         );
-
-        if (!existing) {
-          const embedFont = doc.createElement('p:embeddedFont');
-
-          const fontNode = doc.createElement('p:font');
+        if (!embedFont) {
+          embedFont = doc.createElementNS(PRESENTATIONML_NS, 'p:embeddedFont');
+          const fontNode = doc.createElementNS(PRESENTATIONML_NS, 'p:font');
           fontNode.setAttribute('typeface', font.name);
           embedFont.appendChild(fontNode);
-
-          const regular = doc.createElement('p:regular');
-          regular.setAttribute('r:id', `rId${font.rid}`);
-          embedFont.appendChild(regular);
-
           embeddedFontLst.appendChild(embedFont);
+        }
+
+        const slotTag = `p:${font.slot || 'regular'}`;
+        let slotNode = Array.from(embedFont.childNodes).find((node) => node.nodeName === slotTag);
+        if (!slotNode) {
+          slotNode = doc.createElementNS(PRESENTATIONML_NS, slotTag);
+          slotNode.setAttributeNS(OFFICE_RELATIONSHIPS_NS, 'r:id', `rId${font.rid}`);
+          embedFont.appendChild(slotNode);
         }
       });
 
@@ -62539,7 +62559,7 @@
       const relationships = doc.getElementsByTagName('Relationships')[0];
 
       this.fonts.forEach((font) => {
-        const rel = doc.createElement('Relationship');
+        const rel = doc.createElementNS(PACKAGE_RELATIONSHIPS_NS, 'Relationship');
         rel.setAttribute('Id', `rId${font.rid}`);
         rel.setAttribute('Target', `fonts/${font.rid}.fntdata`);
         rel.setAttribute(
@@ -62765,26 +62785,19 @@
    * Analyzes computed border styles and determines the rendering strategy.
    */
   function getBorderInfo(style, scale) {
-    const top = {
-      width: parseFloat(style.borderTopWidth) || 0,
-      style: style.borderTopStyle,
-      color: parseColor(style.borderTopColor).hex,
+    const makeSide = (widthValue, styleValue, colorValue) => {
+      const parsed = parseColor(colorValue);
+      return {
+        width: parseFloat(widthValue) || 0,
+        style: styleValue,
+        color: parsed.hex,
+        opacity: parsed.opacity,
+      };
     };
-    const right = {
-      width: parseFloat(style.borderRightWidth) || 0,
-      style: style.borderRightStyle,
-      color: parseColor(style.borderRightColor).hex,
-    };
-    const bottom = {
-      width: parseFloat(style.borderBottomWidth) || 0,
-      style: style.borderBottomStyle,
-      color: parseColor(style.borderBottomColor).hex,
-    };
-    const left = {
-      width: parseFloat(style.borderLeftWidth) || 0,
-      style: style.borderLeftStyle,
-      color: parseColor(style.borderLeftColor).hex,
-    };
+    const top = makeSide(style.borderTopWidth, style.borderTopStyle, style.borderTopColor);
+    const right = makeSide(style.borderRightWidth, style.borderRightStyle, style.borderRightColor);
+    const bottom = makeSide(style.borderBottomWidth, style.borderBottomStyle, style.borderBottomColor);
+    const left = makeSide(style.borderLeftWidth, style.borderLeftStyle, style.borderLeftColor);
 
     const hasAnyBorder = top.width > 0 || right.width > 0 || bottom.width > 0 || left.width > 0;
     if (!hasAnyBorder) return { type: 'none' };
@@ -62799,7 +62812,10 @@
       top.style === left.style &&
       top.color === right.color &&
       top.color === bottom.color &&
-      top.color === left.color;
+      top.color === left.color &&
+      top.opacity === right.opacity &&
+      top.opacity === bottom.opacity &&
+      top.opacity === left.opacity;
 
     if (isUniform) {
       return {
@@ -62843,6 +62859,145 @@
     }
   }
 
+  function rasterizeSvgDataUri(svgData, width, height, pixelRatio = 3) {
+    return new Promise((resolve) => {
+      if (!svgData || width <= 0 || height <= 0) {
+        resolve(null);
+        return;
+      }
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const ratio = Math.max(1, Math.min(4, Number(pixelRatio) || 3));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.ceil(width * ratio));
+          canvas.height = Math.max(1, Math.ceil(height * ratio));
+          const context = canvas.getContext('2d');
+          context.scale(ratio, ratio);
+          context.drawImage(image, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/png'));
+        } catch (_) {
+          resolve(null);
+        }
+      };
+      image.onerror = () => resolve(null);
+      image.src = svgData;
+    });
+  }
+
+  function parseSimpleDropShadow(filterValue) {
+    const value = String(filterValue || '').trim();
+    const match = value.match(
+      /^drop-shadow\(\s*(rgba?\([^)]+\)|#[0-9a-f]{3,8}|[a-z]+)\s+(-?[\d.]+)px\s+(-?[\d.]+)px(?:\s+([\d.]+)px)?\s*\)$/i
+    );
+    if (!match) return null;
+    const color = parseColor(match[1]);
+    if (!color.hex || color.opacity <= 0) return null;
+    return {
+      color: color.hex,
+      opacity: color.opacity,
+      dx: parseFloat(match[2]) || 0,
+      dy: parseFloat(match[3]) || 0,
+      blur: parseFloat(match[4]) || 0,
+    };
+  }
+
+  function parseClipPolygonCoordinate(value, axisSize) {
+    const token = String(value || '').trim().toLowerCase();
+    if (!token) return null;
+    if (token.endsWith('%')) {
+      const percent = parseFloat(token);
+      return Number.isFinite(percent) ? (percent / 100) * axisSize : null;
+    }
+    if (token.endsWith('px')) {
+      const pixels = parseFloat(token);
+      return Number.isFinite(pixels) ? pixels : null;
+    }
+    const numeric = parseFloat(token);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  /** Converts a solid CSS polygon leaf into SVG instead of a rectangular canvas fallback. */
+  function generatePolygonClipSVG(width, height, clipPath, color, opacity = 1, dropShadow = null) {
+    const match = String(clipPath || '').trim().match(/^polygon\s*\((.*)\)$/i);
+    if (!match || width <= 0 || height <= 0 || !color) return null;
+    let parts = splitTopLevelCommaParts(match[1]);
+    if (parts.length > 0 && /^(?:evenodd|nonzero)$/i.test(parts[0].trim())) parts = parts.slice(1);
+    if (parts.length < 3) return null;
+
+    const points = [];
+    for (const part of parts) {
+      const coordinates = part.trim().split(/\s+/).filter(Boolean);
+      if (coordinates.length !== 2) return null;
+      const x = parseClipPolygonCoordinate(coordinates[0], width);
+      const y = parseClipPolygonCoordinate(coordinates[1], height);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      points.push(`${x.toFixed(3)},${y.toFixed(3)}`);
+    }
+    const safeOpacity = Math.max(0, Math.min(1, Number(opacity)));
+    const shadowPadding = dropShadow
+      ? Math.ceil(Math.max(Math.abs(dropShadow.dx), Math.abs(dropShadow.dy)) + dropShadow.blur * 2 + 2)
+      : 0;
+    const filterMarkup = dropShadow
+      ? `<defs><filter id="shadow" x="-100%" y="-100%" width="300%" height="300%"><feDropShadow dx="${dropShadow.dx}" dy="${dropShadow.dy}" stdDeviation="${Math.max(0, dropShadow.blur / 2)}" flood-color="#${dropShadow.color}" flood-opacity="${dropShadow.opacity}"/></filter></defs>`
+      : '';
+    const filterAttribute = dropShadow ? ' filter="url(#shadow)"' : '';
+    return {
+      data: encodeSvgDataUri(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width + shadowPadding * 2}" height="${height + shadowPadding * 2}" viewBox="${-shadowPadding} ${-shadowPadding} ${width + shadowPadding * 2} ${height + shadowPadding * 2}">${filterMarkup}<polygon points="${points.join(
+          ' '
+        )}" fill="#${color}" fill-opacity="${safeOpacity}"${filterAttribute}/></svg>`
+      ),
+      paddingPx: shadowPadding,
+    };
+  }
+
+  /** Converts the classic zero-content-box CSS border triangle into a real vector triangle. */
+  function generateCssBorderTriangleSVG(node, style, width, height, opacity = 1) {
+    if (!node || !style || !isRenderableSvgSize(width, height)) return null;
+    if (node.children.length > 0 || String(node.textContent || '').trim()) return null;
+    // CSS triangles have no content box. Their painted bounding box consists only of borders.
+    if ((node.clientWidth || 0) > 0.5 || (node.clientHeight || 0) > 0.5) return null;
+
+    const sides = ['top', 'right', 'bottom', 'left'].map((name) => {
+      const cap = name[0].toUpperCase() + name.slice(1);
+      const color = parseColor(style[`border${cap}Color`]);
+      return {
+        name,
+        width: parseFloat(style[`border${cap}Width`]) || 0,
+        borderStyle: String(style[`border${cap}Style`] || '').toLowerCase(),
+        color,
+      };
+    });
+    const visible = sides.filter(
+      (side) =>
+        side.width > 0 &&
+        side.borderStyle !== 'none' &&
+        side.borderStyle !== 'hidden' &&
+        side.color.hex &&
+        side.color.opacity > 0.001
+    );
+    if (visible.length !== 1) return null;
+    const painted = visible[0];
+    const adjacentNames =
+      painted.name === 'top' || painted.name === 'bottom'
+        ? ['left', 'right']
+        : ['top', 'bottom'];
+    const adjacent = adjacentNames.map((name) => sides.find((side) => side.name === name));
+    if (adjacent.some((side) => !side || side.width <= 0 || side.color.opacity > 0.001)) return null;
+
+    let points;
+    if (painted.name === 'top') points = `0,0 ${width},0 ${width / 2},${height}`;
+    else if (painted.name === 'bottom') points = `0,${height} ${width},${height} ${width / 2},0`;
+    else if (painted.name === 'left') points = `0,0 0,${height} ${width},${height / 2}`;
+    else points = `${width},0 ${width},${height} 0,${height / 2}`;
+
+    const finalOpacity = Math.max(0, Math.min(1, painted.color.opacity * opacity));
+    return encodeSvgDataUri(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><polygon points="${points}" fill="#${painted.color.hex}" fill-opacity="${finalOpacity}"/></svg>`
+    );
+  }
+
   function generateCompositeBorderSVG(w, h, radius, sides) {
     if (!isRenderableSvgSize(w, h))
       return null;
@@ -62850,17 +63005,21 @@
     const clipId = 'clip_' + Math.random().toString(36).substr(2, 9);
     let borderRects = '';
 
+    const sideRect = (x, y, width, height, side) =>
+      side.width > 0 && side.color && side.style !== 'none' && side.style !== 'hidden'
+        ? `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#${side.color}" fill-opacity="${Math.max(0, Math.min(1, side.opacity))}" />`
+        : '';
     if (sides.top.width > 0 && sides.top.color) {
-      borderRects += `<rect x="0" y="0" width="${w}" height="${sides.top.width}" fill="#${sides.top.color}" />`;
+      borderRects += sideRect(0, 0, w, sides.top.width, sides.top);
     }
     if (sides.right.width > 0 && sides.right.color) {
-      borderRects += `<rect x="${w - sides.right.width}" y="0" width="${sides.right.width}" height="${h}" fill="#${sides.right.color}" />`;
+      borderRects += sideRect(w - sides.right.width, 0, sides.right.width, h, sides.right);
     }
     if (sides.bottom.width > 0 && sides.bottom.color) {
-      borderRects += `<rect x="0" y="${h - sides.bottom.width}" width="${w}" height="${sides.bottom.width}" fill="#${sides.bottom.color}" />`;
+      borderRects += sideRect(0, h - sides.bottom.width, w, sides.bottom.width, sides.bottom);
     }
     if (sides.left.width > 0 && sides.left.color) {
-      borderRects += `<rect x="0" y="0" width="${sides.left.width}" height="${h}" fill="#${sides.left.color}" />`;
+      borderRects += sideRect(0, 0, sides.left.width, h, sides.left);
     }
 
     const svg = `
@@ -62991,6 +63150,69 @@
       (parseFloat(style.paddingBottom) || 0) * pxToInch * scale,
       (parseFloat(style.paddingLeft) || 0) * pxToInch * scale,
     ];
+  }
+
+  /** PptxGenJS text margins use points in [left, right, bottom, top] order. */
+  function getTextBoxMargin(style, scale) {
+    const pxToPoint = 0.75 * scale;
+    return [
+      (parseFloat(style.paddingLeft) || 0) * pxToPoint,
+      (parseFloat(style.paddingRight) || 0) * pxToPoint,
+      (parseFloat(style.paddingBottom) || 0) * pxToPoint,
+      (parseFloat(style.paddingTop) || 0) * pxToPoint,
+    ];
+  }
+
+  /** Accounts for empty visual pseudo-elements that participate in a flex row before text. */
+  function getLeadingFlexPseudoInset(node, style, scale) {
+    if (!node || !node.ownerDocument || !String(style.display || '').includes('flex')) return 0;
+    const direction = String(style.flexDirection || 'row').toLowerCase();
+    if (direction === 'row-reverse' || direction.startsWith('column')) return 0;
+    let pseudo;
+    try {
+      pseudo = node.ownerDocument.defaultView.getComputedStyle(node, '::before');
+    } catch (_) {
+      return 0;
+    }
+    if (!pseudo || pseudo.display === 'none' || pseudo.visibility === 'hidden') return 0;
+    if (decodePseudoContentValue(pseudo.content)) return 0;
+    if (/^(?:absolute|fixed)$/.test(String(pseudo.position || '').toLowerCase())) return 0;
+    const width = parseFloat(pseudo.width);
+    if (!Number.isFinite(width) || width <= 0) return 0;
+    const borderWidth =
+      (parseFloat(pseudo.borderLeftWidth) || 0) + (parseFloat(pseudo.borderRightWidth) || 0);
+    const renderedWidth =
+      String(pseudo.boxSizing || '').toLowerCase() === 'border-box' ? width : width + borderWidth;
+    let gap = parseFloat(style.columnGap);
+    if (!Number.isFinite(gap)) gap = parseFloat(style.gap);
+    if (!Number.isFinite(gap)) gap = 0;
+    return (renderedWidth + gap) * 0.75 * scale;
+  }
+
+  /** Counts browser-laid-out text lines, grouping multiple inline Range rects by baseline. */
+  function getBrowserTextVisualLineCount(node) {
+    if (!node || !node.ownerDocument) return 0;
+    const doc = node.ownerDocument;
+    const range = doc.createRange();
+    try {
+      range.selectNodeContents(node);
+      const rects = Array.from(range.getClientRects()).filter(
+        (rect) => rect.width > 0.01 && rect.height > 0.01
+      );
+      const lineCenters = [];
+      for (const rect of rects) {
+        const centerY = rect.top + rect.height / 2;
+        const sameLine = lineCenters.some(
+          (existing) => Math.abs(existing - centerY) <= Math.max(2, rect.height * 0.4)
+        );
+        if (!sameLine) lineCenters.push(centerY);
+      }
+      return lineCenters.length;
+    } catch (_) {
+      return 0;
+    } finally {
+      if (range.detach) range.detach();
+    }
   }
 
   function getSoftEdges(filterStr, scale) {
@@ -63382,8 +63604,42 @@
   const EXPORT_FONT_MEASURE_CACHE = new WeakMap();
   const EXPORT_FONT_FACE_FAMILY_CACHE = new WeakMap();
 
+  function normalizeCssFontWhitespace(value) {
+    return String(value || '').replace(/[\u00a0\u2007\u202f]/g, ' ');
+  }
+
+  function normalizeFontWeightForEmbedding(value) {
+    const normalized = String(value === undefined || value === null ? '' : value).trim().toLowerCase();
+    if (normalized === 'bold' || normalized === 'bolder') return 700;
+    if (normalized === 'normal' || normalized === 'lighter' || !normalized) return 400;
+    const numeric = parseInt(normalized, 10);
+    if (!Number.isFinite(numeric)) return 400;
+    return Math.max(100, Math.min(900, Math.round(numeric / 100) * 100));
+  }
+
+  function normalizeFontStyleForEmbedding(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'italic' || normalized.startsWith('oblique') ? 'italic' : 'normal';
+  }
+
+  function getPowerPointFontVariantSlot(weight, style) {
+    const isBold = normalizeFontWeightForEmbedding(weight) >= 600;
+    const isItalic = normalizeFontStyleForEmbedding(style) === 'italic';
+    if (isBold && isItalic) return 'boldItalic';
+    if (isBold) return 'bold';
+    if (isItalic) return 'italic';
+    return 'regular';
+  }
+
+  function getFontVariantKey(font) {
+    return [
+      normalizeFontFamilyKey(font && font.name),
+      getPowerPointFontVariantSlot(font && font.weight, font && font.style),
+    ].join('|');
+  }
+
   function parseFontFamilyList(fontFamilyValue) {
-    const raw = String(fontFamilyValue || '').trim();
+    const raw = normalizeCssFontWhitespace(fontFamilyValue).trim();
     if (!raw) return [];
     const families = [];
     let current = '';
@@ -63460,7 +63716,7 @@
   }
 
   function normalizeFontFamilyKey(fontFamilyName) {
-    return String(fontFamilyName || '')
+    return normalizeCssFontWhitespace(fontFamilyName)
       .trim()
       .replace(/^['"]+|['"]+$/g, '')
       .replace(/\s+/g, ' ')
@@ -63488,25 +63744,24 @@
     return map[key] || raw;
   }
 
-  function contextContainsCjkText(fontContext) {
-    if (!fontContext || typeof fontContext !== 'object') return false;
-    const text =
+  function getFontContextRawText(fontContext, textSampleOverride = null) {
+    if (textSampleOverride !== null && textSampleOverride !== undefined) return String(textSampleOverride);
+    if (!fontContext || typeof fontContext !== 'object') return '';
+    return (
       typeof fontContext.textContent === 'string'
         ? fontContext.textContent
         : typeof fontContext.nodeValue === 'string'
         ? fontContext.nodeValue
-        : '';
-    return CJK_TEXT_RE.test(text);
+        : ''
+    );
   }
 
-  function getFontContextTextSample(fontContext) {
-    if (!fontContext || typeof fontContext !== 'object') return '';
-    const text =
-      typeof fontContext.textContent === 'string'
-        ? fontContext.textContent
-        : typeof fontContext.nodeValue === 'string'
-        ? fontContext.nodeValue
-        : '';
+  function contextContainsCjkText(fontContext, textSampleOverride = null) {
+    return CJK_TEXT_RE.test(getFontContextRawText(fontContext, textSampleOverride));
+  }
+
+  function getFontContextTextSample(fontContext, textSampleOverride = null) {
+    const text = getFontContextRawText(fontContext, textSampleOverride);
     return text.replace(/\s+/g, ' ').trim().slice(0, 80);
   }
 
@@ -63910,6 +64165,9 @@
     const exportedFamilies = collectExportFontFamilies(fontFamilyValue);
     for (const family of exportedFamilies) {
       if (isLikelyCjkFontFamily(family)) continue;
+      // Keep common PowerPoint fonts by their declared typeface even when the
+      // browser host cannot measure them (for example, exporting on Linux).
+      if (LATIN_DOMINANT_FONT_NAMES.has(normalizeFontFamilyKey(family))) return family;
       if (isLatinFontFamilyLikelyAvailable(family, fontContext)) {
         return family;
       }
@@ -63917,12 +64175,29 @@
     return findBestLatinFontFallback(fontFamilyValue, fontContext);
   }
 
-  function resolveExportFontFace(fontFamilyValue, fontContext = null) {
+  function resolveExportFontFace(fontFamilyValue, fontContext = null, textSampleOverride = null) {
     const exportedFamilies = collectExportFontFamilies(fontFamilyValue);
-    const hasCjkText = contextContainsCjkText(fontContext);
-    const sample = hasCjkText ? getFontContextTextSample(fontContext) : '';
+    const hasCjkText = contextContainsCjkText(fontContext, textSampleOverride);
+    const sample = getFontContextTextSample(fontContext, textSampleOverride);
 
     if (hasCjkText) {
+      // A declared downloadable face is authoritative even when its family name
+      // is not covered by our CJK-name heuristics (brand and foundry fonts often aren't).
+      const declaredWebFont = exportedFamilies.find(
+        (family) => hasFontFaceRuleForFamily(family, fontContext) && isFontFamilyLikelyAvailable(family, fontContext)
+      );
+      if (declaredWebFont) {
+        recordFontExportDecision(fontContext, {
+          fontFamilyValue,
+          families: exportedFamilies,
+          resolved: declaredWebFont,
+          reason: 'declared-webfont-direct',
+          category: inferCjkFontCategory(fontFamilyValue),
+          hasCjkText,
+          sample,
+        });
+        return declaredWebFont;
+      }
       const cjkDecision = findBestCjkFontFallback(fontFamilyValue, fontContext, exportedFamilies);
       if (cjkDecision && cjkDecision.fontFace) {
         recordFontExportDecision(fontContext, {
@@ -63939,6 +64214,18 @@
     }
 
     for (const family of exportedFamilies) {
+      if (LATIN_DOMINANT_FONT_NAMES.has(normalizeFontFamilyKey(family))) {
+        recordFontExportDecision(fontContext, {
+          fontFamilyValue,
+          families: exportedFamilies,
+          resolved: family,
+          reason: 'powerpoint-safe-direct',
+          category: null,
+          hasCjkText,
+          sample,
+        });
+        return family;
+      }
       if (isFontFamilyLikelyAvailable(family, fontContext)) {
         recordFontExportDecision(fontContext, {
           fontFamilyValue,
@@ -63985,7 +64272,7 @@
     return (ownerDocument && ownerDocument.defaultView) || window;
   }
 
-  function getTextStyle(style, scale, fontContext = null) {
+  function getTextStyle(style, scale, fontContext = null, textSampleOverride = null) {
     let colorObj = parseColor(style.color);
 
     const bgClip = style.webkitBackgroundClip || style.backgroundClip;
@@ -64031,8 +64318,8 @@
       ? Math.max(0, Math.min(1, colorObj.opacity))
       : 1;
     const textTransparency = (1 - colorOpacity) * 100;
-    const hasCjkText = contextContainsCjkText(fontContext);
-    const exportFontFace = resolveExportFontFace(style.fontFamily, fontContext);
+    const hasCjkText = contextContainsCjkText(fontContext, textSampleOverride);
+    const exportFontFace = resolveExportFontFace(style.fontFamily, fontContext, textSampleOverride);
     const exportEastAsiaFontFace = hasCjkText ? exportFontFace : null;
     const exportLatinFontFace = exportEastAsiaFontFace
       ? resolveLatinExportFontFace(style.fontFamily, fontContext)
@@ -64041,6 +64328,10 @@
     const fontWeight = String(style.fontWeight || '').trim().toLowerCase();
     const fontStyle = String(style.fontStyle || '').trim().toLowerCase();
     const textDecoration = String(style.textDecoration || style.textDecorationLine || '').toLowerCase();
+    const cssLetterSpacingPx = parseFloat(style.letterSpacing);
+    const charSpacing = Number.isFinite(cssLetterSpacingPx)
+      ? cssLetterSpacingPx * 0.75 * scale
+      : 0;
 
     return {
       ...(isEffectivelyHiddenText ? { hidden: true } : { color: colorObj.hex || '000000' }),
@@ -64054,6 +64345,7 @@
       bold: fontWeight === 'bold' || parseInt(fontWeight, 10) >= 600,
       italic: fontStyle === 'italic' || fontStyle.startsWith('oblique'),
       underline: textDecoration.includes('underline'),
+      ...(Math.abs(charSpacing) > 0.01 ? { charSpacing } : {}),
       // Only add if we have a valid value
       ...(lineSpacing && { lineSpacing }),
       ...(paraSpaceBefore > 0 && { paraSpaceBefore }),
@@ -64145,6 +64437,13 @@
 
     const children = Array.from(node.children);
     if (children.length === 0) return true;
+
+    // Flex/grid containers are layout boundaries, not rich-text runs. Flattening
+    // their children into one PPT text box destroys gap/space-between placement
+    // and drops empty visual children such as status dots.
+    const containerStyle = getNodeWindow(node).getComputedStyle(node);
+    const containerDisplay = String(containerStyle.display || '').toLowerCase();
+    if (/^(?:inline-)?(?:flex|grid)$/.test(containerDisplay)) return false;
 
     const isSafeInline = (el) => {
       if (isFormulaElement(el)) return false;
@@ -64298,7 +64597,10 @@
 
       if (!textVal) return parts;
 
-      const textOptions = applyOpacityToTextStyle(getTextStyle(nodeStyle, scale, parent), effectiveOpacity);
+      const textOptions = applyOpacityToTextStyle(
+        getTextStyle(nodeStyle, scale, parent, textVal),
+        effectiveOpacity
+      );
       if (textOptions.hidden) return parts;
       delete textOptions.hidden;
 
@@ -64316,6 +64618,19 @@
     if (node.nodeType !== 1) return parts;
 
     const currentStyle = window.getComputedStyle(node);
+
+    const markLineBreakAfterLastTextPart = () => {
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const part = parts[i];
+        if (!part || part.options?.breakLine || typeof part.text !== 'string') continue;
+        part.text = part.text.trimEnd();
+        part.options = { ...(part.options || {}), breakLine: true };
+        trimState.trimNextLeading = true;
+        trimState.hasRenderableText = true;
+        return true;
+      }
+      return false;
+    };
 
     node.childNodes.forEach((child) => {
       if (child.nodeType === 1 && child.tagName === 'BR') {
@@ -64348,6 +64663,17 @@
         return;
       }
 
+      if (child.nodeType === 1) {
+        const childStyle = getNodeWindow(child).getComputedStyle(child);
+        const childDisplay = String(childStyle.display || '').toLowerCase();
+        const startsOwnVisualLine = /^(?:block|list-item|table|table-row|flex|grid)$/.test(
+          childDisplay
+        );
+        if (startsOwnVisualLine && trimState.hasRenderableText) {
+          markLineBreakAfterLastTextPart();
+        }
+      }
+
       parts.push(
         ...collectInlineTextParts(
           child,
@@ -64363,6 +64689,61 @@
     return parts;
   }
 
+  function settleFiniteAnimationsForExport(root) {
+    if (!root) return () => {};
+    let animations = [];
+    try {
+      if (typeof root.getAnimations === 'function') {
+        animations = root.getAnimations({ subtree: true }) || [];
+      } else {
+        const doc = root.ownerDocument;
+        animations = doc && typeof doc.getAnimations === 'function'
+          ? (doc.getAnimations({ subtree: true }) || []).filter((animation) => {
+              const target = animation && animation.effect && animation.effect.target;
+              return target && (target === root || root.contains(target));
+            })
+          : [];
+      }
+    } catch (_) {
+      return () => {};
+    }
+
+    const snapshots = [];
+    for (const animation of animations) {
+      if (!animation || typeof animation.finish !== 'function') continue;
+      try {
+        const timing = animation.effect && typeof animation.effect.getComputedTiming === 'function'
+          ? animation.effect.getComputedTiming()
+          : null;
+        if (!timing || !Number.isFinite(timing.endTime)) continue;
+        snapshots.push({
+          animation,
+          currentTime: animation.currentTime,
+          playState: animation.playState,
+          playbackRate: animation.playbackRate,
+        });
+        animation.finish();
+      } catch (_) {}
+    }
+
+    return () => {
+      for (const snapshot of snapshots) {
+        const animation = snapshot.animation;
+        try {
+          animation.playbackRate = snapshot.playbackRate;
+          if (snapshot.playState === 'idle') {
+            animation.cancel();
+            continue;
+          }
+          animation.currentTime = snapshot.currentTime;
+          if (snapshot.playState === 'running') animation.play();
+          else if (snapshot.playState === 'paused') animation.pause();
+          else if (snapshot.playState === 'finished') animation.finish();
+        } catch (_) {}
+      }
+    };
+  }
+
   function getRotation(transformStr) {
     if (!transformStr || transformStr === 'none') return 0;
     const values = transformStr.split('(')[1].split(')')[0].split(',');
@@ -64370,6 +64751,40 @@
     const a = parseFloat(values[0]);
     const b = parseFloat(values[1]);
     return Math.round(Math.atan2(b, a) * (180 / Math.PI));
+  }
+
+  function getWritingModeRotation(style) {
+    return style && /^(?:vertical|sideways)-/i.test(String(style.writingMode || '')) ? 90 : 0;
+  }
+
+  function getTextPayloadGeometry(textPayload, x, y, w, h, baseRotation) {
+    const widthBuffer = textPayload.widthBuffer || 0;
+    let textW = w + widthBuffer;
+    let textH = h;
+    let textX =
+      x -
+      (textPayload.align === 'right'
+        ? widthBuffer
+        : textPayload.align === 'center'
+          ? widthBuffer / 2
+          : 0);
+    let textY = y;
+    const writingModeRotation = textPayload.writingModeRotation || 0;
+    if (Math.abs(writingModeRotation) % 180 === 90) {
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      textW = h + widthBuffer;
+      textH = w;
+      textX = centerX - textW / 2;
+      textY = centerY - textH / 2;
+    }
+    return {
+      x: textX,
+      y: textY,
+      w: textW,
+      h: textH,
+      rotate: baseRotation + writingModeRotation,
+    };
   }
 
   /**
@@ -64753,7 +65168,8 @@
     const cleanUrl = String(urlRaw || '')
       .trim()
       .replace(/^['"]+|['"]+$/g, '');
-    if (!cleanUrl || cleanUrl.startsWith('data:')) return null;
+    if (!cleanUrl) return null;
+    if (/^(?:data|blob):/i.test(cleanUrl)) return cleanUrl;
 
     const baseUrl =
       (sheet && sheet.href) ||
@@ -64805,7 +65221,12 @@
         const url = extractFontFaceUrl(src, sheet, doc);
         if (url && !processedUrls.has(url)) {
           processedUrls.add(url);
-          foundFonts.push({ name: familyName, url: url });
+          foundFonts.push({
+            name: familyName,
+            url: url,
+            weight: normalizeFontWeightForEmbedding(rule.style.getPropertyValue('font-weight')),
+            style: normalizeFontStyleForEmbedding(rule.style.getPropertyValue('font-style')),
+          });
         }
         continue;
       }
@@ -65179,6 +65600,28 @@
     return !!normalized && normalized !== normalValue && normalized !== 'initial' && normalized !== 'unset';
   }
 
+  function isEffectivelyIdentityTransform(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!isNonTrivialCssValue(normalized)) return true;
+    const matrixMatch = normalized.match(/^matrix\(([^)]+)\)$/);
+    if (matrixMatch) {
+      const values = matrixMatch[1].split(',').map((part) => parseFloat(part.trim()));
+      const identity = [1, 0, 0, 1, 0, 0];
+      return values.length === identity.length && values.every(
+        (item, index) => Number.isFinite(item) && Math.abs(item - identity[index]) <= 0.0001
+      );
+    }
+    const matrix3dMatch = normalized.match(/^matrix3d\(([^)]+)\)$/);
+    if (matrix3dMatch) {
+      const values = matrix3dMatch[1].split(',').map((part) => parseFloat(part.trim()));
+      const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+      return values.length === identity.length && values.every(
+        (item, index) => Number.isFinite(item) && Math.abs(item - identity[index]) <= 0.0001
+      );
+    }
+    return false;
+  }
+
   function getStyleProperty(style, camelName, cssName = null) {
     if (!style) return '';
     return style[camelName] || (style.getPropertyValue && style.getPropertyValue(cssName || camelName)) || '';
@@ -65200,7 +65643,7 @@
     for (let i = 0; i < limit; i++) {
       const child = descendants[i];
       const childStyle = getNodeWindow(child).getComputedStyle(child);
-      if (!isNonTrivialCssValue(childStyle.transform)) continue;
+      if (isEffectivelyIdentityTransform(childStyle.transform)) continue;
       const childRect = child.getBoundingClientRect();
       const crossesClipBoundary =
         childRect.left < boundaryRect.left - 0.5 ||
@@ -65266,12 +65709,21 @@
       ['hidden', 'clip', 'scroll', 'auto'].includes(overflowY);
     if (clipsOverflow && hasTransformedDescendant(node)) {
       result.reasons.push('transformed-descendant-clipping');
-    } else if (isNonTrivialCssValue(style.transform) && node.parentElement) {
+    } else if (!isEffectivelyIdentityTransform(style.transform) && node.parentElement) {
       const parentStyle = getNodeWindow(node.parentElement).getComputedStyle(node.parentElement);
       const parentOverflow = `${parentStyle.overflowX || parentStyle.overflow} ${
         parentStyle.overflowY || parentStyle.overflow
       }`.toLowerCase();
-      if (/\b(?:hidden|clip|scroll|auto)\b/.test(parentOverflow)) result.reasons.push('transformed-clipping');
+      if (/\b(?:hidden|clip|scroll|auto)\b/.test(parentOverflow)) {
+        const nodeRect = node.getBoundingClientRect();
+        const parentRect = node.parentElement.getBoundingClientRect();
+        const crossesParentClip =
+          nodeRect.left < parentRect.left - 0.5 ||
+          nodeRect.top < parentRect.top - 0.5 ||
+          nodeRect.right > parentRect.right + 0.5 ||
+          nodeRect.bottom > parentRect.bottom + 0.5;
+        if (crossesParentClip) result.reasons.push('transformed-clipping');
+      }
     }
 
     if (isComplexSvg(node)) result.reasons.push('complex-svg');
@@ -65418,18 +65870,20 @@
       flushLine();
 
       const textOpacity = getRelativeTextOpacity(parent, boundary, boundaryOpacity);
-      const textStyle = applyOpacityToTextStyle(getTextStyle(style, config.scale, parent), textOpacity);
-      if (textStyle.hidden) continue;
-      delete textStyle.hidden;
-      if (String(parent.namespaceURI || '').includes('svg') && style.fill && style.fill !== 'none') {
-        const fill = parseColor(style.fill);
-        if (fill.hex) textStyle.color = fill.hex;
-      }
-
       let rotation = getCumulativeTextRotation(parent, boundary);
       if (/vertical|sideways/i.test(style.writingMode || '')) rotation += 90;
 
       for (const line of lines) {
+        const textStyle = applyOpacityToTextStyle(
+          getTextStyle(style, config.scale, parent, line.text),
+          textOpacity
+        );
+        if (textStyle.hidden) continue;
+        delete textStyle.hidden;
+        if (String(parent.namespaceURI || '').includes('svg') && style.fill && style.fill !== 'none') {
+          const fill = parseColor(style.fill);
+          if (fill.hex) textStyle.color = fill.hex;
+        }
         const rect = line.rect;
         const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
         const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
@@ -65537,6 +65991,158 @@
     return output;
   }
 
+  function shouldRasterizeDecorativeText(node, style) {
+    if (!node || node.nodeType !== 1 || !style) return false;
+    if (node.children && node.children.length > 0) return false;
+    const text = String(node.textContent || '').trim();
+    if (!text) return false;
+
+    const color = parseColor(style.color);
+    const fontSize = parseFloat(style.fontSize) || 0;
+    const letterSpacing = parseFloat(style.letterSpacing);
+    const hasSignificantTracking = Number.isFinite(letterSpacing) && Math.abs(letterSpacing) >= 0.75;
+    const hasTextShadow = !!style.textShadow && style.textShadow !== 'none';
+    const className = String((node.getAttribute && node.getAttribute('class')) || '');
+    const explicitlyDecorative =
+      /(?:deco|decorative|watermark|year-mark|chapter[-_]?num(?:ber)?|section[-_]?num(?:ber)?)/i.test(
+        className
+      );
+    const primaryFont = parseFontFamilyList(style.fontFamily)[0] || '';
+    const primaryFontKey = normalizeFontFamilyKey(primaryFont);
+    const editableBodyFonts = new Set([
+      'arial',
+      'calibri',
+      'aptos',
+      'segoe ui',
+      'microsoft yahei',
+      '微软雅黑',
+      'simsun',
+      '宋体',
+      'sans-serif',
+    ]);
+    const usesDisplayFont = !!primaryFontKey && !editableBodyFonts.has(primaryFontKey);
+    const containsCjk = CJK_TEXT_RE.test(text);
+    const compactLatinDisplay =
+      !containsCjk &&
+      text.length <= 20 &&
+      /^[A-Z0-9\s./·›»«_+\-–—]+$/u.test(text);
+    const positioned = style.position === 'absolute' || style.position === 'fixed';
+    const isFaintWatermark = color.opacity <= 0.35 && positioned;
+    const isLargeNamedDecoration = explicitlyDecorative && fontSize >= 48;
+    const isStyledLatinDisplay =
+      !containsCjk &&
+      (hasTextShadow ||
+        (usesDisplayFont && (hasSignificantTracking || compactLatinDisplay)) ||
+        (hasSignificantTracking && compactLatinDisplay));
+    return (
+      color.hex &&
+      color.opacity > 0.001 &&
+      (isStyledLatinDisplay ||
+        (fontSize >= 36 && (isFaintWatermark || isLargeNamedDecoration)))
+    );
+  }
+
+  function hasEmbeddableExportFont(node, style, options = {}) {
+    const primaryFamily = parseFontFamilyList(style && style.fontFamily)[0];
+    const familyKey = normalizeFontFamilyKey(primaryFamily);
+    if (!familyKey) return false;
+    const runtimeFonts =
+      typeof window !== 'undefined' && Array.isArray(window.__LANDPPT_PPTX_FONT_MANIFEST__)
+        ? window.__LANDPPT_PPTX_FONT_MANIFEST__
+        : [];
+    const configuredFonts = Array.isArray(options.fonts) ? options.fonts : [];
+    if (
+      [...configuredFonts, ...runtimeFonts].some(
+        (font) => font && normalizeFontFamilyKey(font.name) === familyKey && font.url
+      )
+    ) {
+      return true;
+    }
+    try {
+      return hasFontFaceRuleForFamily(primaryFamily, getNodeWindow(node).document);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  let runtimeFontManifestPromise = null;
+  async function loadRuntimeFontManifest(options = {}) {
+    if (typeof window === 'undefined') return [];
+    if (Array.isArray(window.__LANDPPT_PPTX_FONT_MANIFEST__) && window.__LANDPPT_PPTX_FONT_MANIFEST__.length) {
+      return window.__LANDPPT_PPTX_FONT_MANIFEST__;
+    }
+    if (options.loadServerFonts === false || !/^https?:$/.test(String(window.location && window.location.protocol))) {
+      return [];
+    }
+    if (!runtimeFontManifestPromise) {
+      runtimeFontManifestPromise = fetch('/api/export/fonts/manifest', {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((payload) => {
+          const fonts = payload && Array.isArray(payload.fonts) ? payload.fonts : [];
+          window.__LANDPPT_PPTX_FONT_MANIFEST__ = fonts;
+          return fonts;
+        })
+        .catch((error) => {
+          console.warn('Unable to load the server PPTX font manifest:', error);
+          return [];
+        });
+    }
+    return runtimeFontManifestPromise;
+  }
+
+  /** Captures low-opacity decorative text exactly as the browser paints it. */
+  async function captureDecorativeTextVisual(node, options = {}) {
+    const sourceDoc = node.ownerDocument || document;
+    const rect = node.getBoundingClientRect();
+    const widthPx = Math.max(1, Math.ceil(rect.width));
+    const heightPx = Math.max(1, Math.ceil(rect.height));
+    const padding = Math.max(2, Math.min(16, Math.round(Number(options.decorativeTextPadding) || 6)));
+    const scale = Math.max(2, Math.min(4, Number(options.decorativeTextRasterScale) || 3));
+    const attributeName = 'data-landppt-decorative-text-capture-id';
+    const previousAttribute = node.getAttribute(attributeName);
+    const captureId = `decorative-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    node.setAttribute(attributeName, captureId);
+
+    const renderPass = (backgroundColor) =>
+      html2canvas(node, {
+        backgroundColor,
+        logging: false,
+        scale,
+        useCORS: true,
+        width: widthPx + padding * 2,
+        height: heightPx + padding * 2,
+        x: -padding,
+        y: -padding,
+        removeContainer: true,
+        imageTimeout: 4000,
+      });
+
+    try {
+      const blackCanvas = await renderPass('#000000');
+      const whiteCanvas = await renderPass('#ffffff');
+      const alphaCanvas = reconstructAlphaMatte(blackCanvas, whiteCanvas);
+      if (!alphaCanvas) return null;
+      return { data: alphaCanvas.toDataURL('image/png'), paddingPx: padding };
+    } catch (error) {
+      console.warn('Decorative text alpha-matte capture failed; retrying transparent capture:', error);
+      try {
+        const fallbackCanvas = await renderPass(null);
+        return fallbackCanvas
+          ? { data: fallbackCanvas.toDataURL('image/png'), paddingPx: padding }
+          : null;
+      } catch (fallbackError) {
+        console.warn('Decorative text capture failed:', fallbackError);
+        return null;
+      }
+    } finally {
+      if (previousAttribute === null) node.removeAttribute(attributeName);
+      else node.setAttribute(attributeName, previousAttribute);
+    }
+  }
+
   /** Captures only a risky visual subtree, excluding editable DOM/SVG text. */
   async function captureRiskSubtreeVisual(node, options = {}) {
     const sourceDoc = node.ownerDocument || document;
@@ -65619,6 +66225,7 @@
     pptx.layout = 'LAYOUT_16x9';
     resetFontExportDebug();
     resetRiskFallbackDebug();
+    await loadRuntimeFontManifest(options);
     try {
       if (options && options.iconRules) {
         setIconRules(options.iconRules);
@@ -65744,7 +66351,22 @@
 
     // 3. Font Embedding Logic
     let finalBlob;
-    let fontsToEmbed = Array.isArray(options.fonts) ? options.fonts.slice() : [];
+    const runtimeFontManifest =
+      typeof window !== 'undefined' && Array.isArray(window.__LANDPPT_PPTX_FONT_MANIFEST__)
+        ? window.__LANDPPT_PPTX_FONT_MANIFEST__
+        : [];
+    let fontsToEmbed = [
+      ...(Array.isArray(options.fonts) ? options.fonts : []),
+      ...runtimeFontManifest,
+    ];
+    const initialFontVariants = new Set();
+    fontsToEmbed = fontsToEmbed.filter((font) => {
+      if (!font || !font.name || !font.url) return false;
+      const key = getFontVariantKey(font);
+      if (initialFontVariants.has(key)) return false;
+      initialFontVariants.add(key);
+      return true;
+    });
 
     if (options.autoEmbedFonts) {
       throwIfExportAborted(options);
@@ -65762,22 +66384,28 @@
       );
       throwIfExportAborted(options);
       if (fontDebug) {
-        fontDebug.detectedFonts = detectedFonts.map((f) => ({ name: f.name, url: f.url }));
+        fontDebug.detectedFonts = detectedFonts.map((f) => ({
+          name: f.name,
+          url: f.url,
+          weight: f.weight,
+          style: f.style,
+          slot: getPowerPointFontVariantSlot(f.weight, f.style),
+        }));
       }
 
       // C. Merge (Avoid duplicates)
-      const explicitNames = new Set(
+      const explicitVariants = new Set(
         fontsToEmbed
-          .map((f) => normalizeFontFamilyKey(f && f.name))
+          .map((f) => getFontVariantKey(f))
           .filter(Boolean)
       );
       for (const autoFont of detectedFonts) {
-        const fontKey = normalizeFontFamilyKey(autoFont.name);
-        if (!fontKey || explicitNames.has(fontKey)) {
+        const fontKey = getFontVariantKey(autoFont);
+        if (!normalizeFontFamilyKey(autoFont.name) || explicitVariants.has(fontKey)) {
           continue;
         }
         fontsToEmbed.push(autoFont);
-        explicitNames.add(fontKey);
+        explicitVariants.add(fontKey);
       }
 
       if (detectedFonts.length > 0) {
@@ -65810,14 +66438,33 @@
           throwIfExportAborted(options);
 
           // Infer type
-          const ext = fontCfg.url.split('.').pop().split(/[?#]/)[0].toLowerCase();
-          let type = 'ttf';
-          if (['woff', 'woff2', 'otf'].includes(ext)) type = ext;
+          const explicitType = String(fontCfg.type || '').trim().toLowerCase();
+          const cleanUrl = String(fontCfg.url || '').split(/[?#]/)[0].toLowerCase();
+          const extensionMatch = cleanUrl.match(/\.([a-z0-9]+)$/i);
+          const mimeMatch = cleanUrl.match(/^data:font\/([a-z0-9.+-]+)/i);
+          let type = ['ttf', 'woff', 'woff2', 'otf'].includes(explicitType) ? explicitType : 'ttf';
+          if (!explicitType && extensionMatch && ['woff', 'woff2', 'otf', 'ttf'].includes(extensionMatch[1])) {
+            type = extensionMatch[1];
+          } else if (!explicitType && mimeMatch) {
+            const mimeType = mimeMatch[1].replace('x-', '');
+            if (['woff', 'woff2', 'otf', 'ttf'].includes(mimeType)) type = mimeType;
+          }
 
-          await embedder.addFont(fontCfg.name, buffer, type);
+          await embedder.addFont(fontCfg.name, buffer, type, {
+            weight: fontCfg.weight,
+            style: fontCfg.style,
+          });
           const fontDebug = getFontExportDebugStore();
           if (fontDebug) {
-            fontDebug.embeddedFonts.push({ name: fontCfg.name, url: fontCfg.url, type, status: 'ok' });
+            fontDebug.embeddedFonts.push({
+              name: fontCfg.name,
+              url: fontCfg.url,
+              type,
+              weight: normalizeFontWeightForEmbedding(fontCfg.weight),
+              style: normalizeFontStyleForEmbedding(fontCfg.style),
+              slot: getPowerPointFontVariantSlot(fontCfg.weight, fontCfg.style),
+              status: 'ok',
+            });
           }
         } catch (e) {
           if (isExportAbortError(e)) throw e;
@@ -65826,6 +66473,9 @@
             fontDebug.embeddedFonts.push({
               name: fontCfg.name,
               url: fontCfg.url,
+              weight: normalizeFontWeightForEmbedding(fontCfg.weight),
+              style: normalizeFontStyleForEmbedding(fontCfg.style),
+              slot: getPowerPointFontVariantSlot(fontCfg.weight, fontCfg.style),
               status: 'failed',
               error: e && e.message ? e.message : String(e),
             });
@@ -65870,6 +66520,8 @@
    */
   async function processSlide(root, slide, pptx, globalOptions = {}) {
     throwIfExportAborted(globalOptions);
+    const restoreAnimations = settleFiniteAnimationsForExport(root);
+    try {
     const rootRect = root.getBoundingClientRect();
     const PPTX_WIDTH_IN = 10;
     const PPTX_HEIGHT_IN = 5.625;
@@ -65999,6 +66651,9 @@
           fill: { color: 'FFFFFF', transparency: 100 },
         });
       }
+    }
+    } finally {
+      restoreAnimations();
     }
   }
 
@@ -66999,17 +67654,43 @@
       if (!Number.isFinite(pseudoWidth) || !Number.isFinite(pseudoHeight)) continue;
       if (pseudoWidth < 0.5 || pseudoHeight < 0.5) continue;
 
+      const borderLeftPx = parseFloat(pseudoStyle.borderLeftWidth) || 0;
+      const borderRightPx = parseFloat(pseudoStyle.borderRightWidth) || 0;
+      const borderTopPx = parseFloat(pseudoStyle.borderTopWidth) || 0;
+      const borderBottomPx = parseFloat(pseudoStyle.borderBottomWidth) || 0;
+      const isBorderBox = String(pseudoStyle.boxSizing || '').toLowerCase() === 'border-box';
+      const renderedWidth = pseudoWidth + (isBorderBox ? 0 : borderLeftPx + borderRightPx);
+      const renderedHeight = pseudoHeight + (isBorderBox ? 0 : borderTopPx + borderBottomPx);
+
       let leftPx = parseFloat(pseudoStyle.left);
       if (!Number.isFinite(leftPx)) {
         const rightPx = parseFloat(pseudoStyle.right);
-        leftPx = Number.isFinite(rightPx) ? geometry.widthPx - pseudoWidth - rightPx : 0;
+        if (Number.isFinite(rightPx)) {
+          leftPx = geometry.widthPx - renderedWidth - rightPx;
+        } else if (
+          String(baseStyle.display || '').includes('flex') &&
+          String(baseStyle.justifyContent || '').toLowerCase() === 'center'
+        ) {
+          leftPx = (geometry.widthPx - renderedWidth) / 2;
+        } else {
+          leftPx = 0;
+        }
       }
       if (!Number.isFinite(leftPx)) leftPx = 0;
 
       let topPx = parseFloat(pseudoStyle.top);
       if (!Number.isFinite(topPx)) {
         const bottomPx = parseFloat(pseudoStyle.bottom);
-        topPx = Number.isFinite(bottomPx) ? geometry.heightPx - pseudoHeight - bottomPx : 0;
+        if (Number.isFinite(bottomPx)) {
+          topPx = geometry.heightPx - renderedHeight - bottomPx;
+        } else if (
+          String(baseStyle.display || '').includes('flex') &&
+          String(baseStyle.alignItems || '').toLowerCase() === 'center'
+        ) {
+          topPx = (geometry.heightPx - renderedHeight) / 2;
+        } else {
+          topPx = 0;
+        }
       }
       if (!Number.isFinite(topPx)) topPx = 0;
 
@@ -67019,11 +67700,19 @@
         options: {
           x: geometry.x + leftPx * pxToInchScale,
           y: geometry.y + topPx * pxToInchScale,
-          w: pseudoWidth * pxToInchScale,
-          h: pseudoHeight * pxToInchScale,
+          w: renderedWidth * pxToInchScale,
+          h: renderedHeight * pxToInchScale,
           rotate: geometry.rotation,
         },
       };
+
+      const pseudoRadiusRaw = String(pseudoStyle.borderRadius || '');
+      const pseudoRadiusPx = parseFloat(pseudoRadiusRaw) || 0;
+      const pseudoMinDimension = Math.min(renderedWidth, renderedHeight);
+      const pseudoIsEllipse =
+        (pseudoRadiusRaw.includes('%') && pseudoRadiusPx >= 50) ||
+        pseudoRadiusPx >= pseudoMinDimension / 2;
+      const pseudoShapeType = pseudoIsEllipse ? 'ellipse' : pseudoRadiusPx > 0 ? 'roundRect' : 'rect';
 
       const pseudoBgImage = String(pseudoStyle.backgroundImage || '').trim();
       if (pseudoBgImage && pseudoBgImage !== 'none' && pseudoBgImage.includes('gradient(')) {
@@ -67046,24 +67735,36 @@
       }
 
       const pseudoBg = parseColor(pseudoStyle.backgroundColor);
-      if (!pseudoBg.hex || pseudoBg.opacity <= 0) continue;
-      const finalAlpha = Math.max(0, Math.min(1, safeOpacity * pseudoOpacity * pseudoBg.opacity));
-      if (finalAlpha <= 0.001) continue;
-      const transparency = (1 - finalAlpha) * 100;
+      const borderInfo = getBorderInfo(pseudoStyle, scale);
+      const hasPseudoFill = pseudoBg.hex && pseudoBg.opacity > 0;
+      const hasPseudoBorder = borderInfo.type === 'uniform' && borderInfo.options;
+      if (!hasPseudoFill && !hasPseudoBorder) continue;
+
+      const finalAlpha = hasPseudoFill
+        ? Math.max(0, Math.min(1, safeOpacity * pseudoOpacity * pseudoBg.opacity))
+        : 0;
+      const lineOptions = hasPseudoBorder ? { ...borderInfo.options } : { type: 'none' };
+      if (hasPseudoBorder) {
+        const borderAlpha = 1 - (Number(lineOptions.transparency) || 0) / 100;
+        lineOptions.transparency =
+          (1 - Math.max(0, Math.min(1, borderAlpha * safeOpacity * pseudoOpacity))) * 100;
+      }
 
       items.push({
         type: 'shape',
         zIndex: itemBase.zIndex,
         domOrder: itemBase.domOrder,
-        shapeType: 'rect',
+        shapeType: pseudoShapeType,
         options: {
           x: itemBase.options.x,
           y: itemBase.options.y,
           w: itemBase.options.w,
           h: itemBase.options.h,
           rotate: itemBase.options.rotate,
-          fill: { color: pseudoBg.hex, transparency: transparency },
-          line: { type: 'none' },
+          fill: hasPseudoFill
+            ? { color: pseudoBg.hex, transparency: (1 - finalAlpha) * 100 }
+            : { type: 'none' },
+          line: lineOptions,
         },
       });
     }
@@ -67108,7 +67809,10 @@
 
       const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
       const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
-      const textOptions = applyOpacityToTextStyle(getTextStyle(style, config.scale, parent), effectiveOpacity);
+      const textOptions = applyOpacityToTextStyle(
+        getTextStyle(style, config.scale, parent, textContent),
+        effectiveOpacity
+      );
       if (textOptions.hidden) return null;
       delete textOptions.hidden;
 
@@ -67164,6 +67868,105 @@
     let h = unrotatedH;
 
     const items = [];
+
+    const directClipPath =
+      getStyleProperty(style, 'webkitClipPath', '-webkit-clip-path') ||
+      getStyleProperty(style, 'clipPath', 'clip-path');
+    const directClipBackground = parseColor(style.backgroundColor);
+    const directClipDropShadow = parseSimpleDropShadow(style.filter);
+    const isSolidPolygonLeaf =
+      /^polygon\s*\(/i.test(String(directClipPath || '').trim()) &&
+      !String(node.textContent || '').trim() &&
+      node.children.length === 0 &&
+      directClipBackground.hex &&
+      directClipBackground.opacity > 0 &&
+      (!style.backgroundImage || style.backgroundImage === 'none') &&
+      (!style.filter || style.filter === 'none' || !!directClipDropShadow) &&
+      (!style.boxShadow || style.boxShadow === 'none') &&
+      !(parseFloat(style.borderWidth) > 0);
+
+    if (isSolidPolygonLeaf) {
+      const polygonSvg = generatePolygonClipSVG(
+        widthPx,
+        heightPx,
+        directClipPath,
+        directClipBackground.hex,
+        directClipBackground.opacity * safeOpacity,
+        directClipDropShadow
+      );
+      if (polygonSvg && polygonSvg.data) {
+        const polygonPadIn = polygonSvg.paddingPx * PX_TO_INCH * config.scale;
+        const polygonItem = {
+          type: 'image',
+          zIndex,
+          domOrder,
+          options: {
+            data: directClipDropShadow ? null : polygonSvg.data,
+            x: x - polygonPadIn,
+            y: y - polygonPadIn,
+            w: w + polygonPadIn * 2,
+            h: h + polygonPadIn * 2,
+            rotate: rotation,
+          },
+        };
+        const polygonDebug = {
+          tagName: node.tagName,
+          reasons: [directClipDropShadow ? 'polygon-png' : 'polygon-svg'],
+          textLineCount: 0,
+          captured: !directClipDropShadow,
+        };
+        getRiskFallbackDebug().push(polygonDebug);
+        const polygonJob = directClipDropShadow
+          ? async () => {
+              const rasterData = await rasterizeSvgDataUri(
+                polygonSvg.data,
+                widthPx + polygonSvg.paddingPx * 2,
+                heightPx + polygonSvg.paddingPx * 2,
+                globalOptions.imageScale || 3
+              );
+              if (rasterData) {
+                polygonItem.options.data = rasterData;
+                polygonDebug.captured = true;
+              } else {
+                polygonItem.skip = true;
+                polygonDebug.error = 'polygon-raster-failed';
+              }
+            }
+          : null;
+        return {
+          items: [polygonItem],
+          job: polygonJob,
+          stopRecursion: true,
+        };
+      }
+    }
+
+    const cssBorderTriangleData = generateCssBorderTriangleSVG(
+      node,
+      style,
+      effectiveRectWidth,
+      effectiveRectHeight,
+      safeOpacity
+    );
+    if (cssBorderTriangleData) {
+      getRiskFallbackDebug().push({
+        tagName: node.tagName,
+        reasons: ['css-border-triangle-svg'],
+        textLineCount: 0,
+        captured: true,
+      });
+      return {
+        items: [
+          {
+            type: 'image',
+            zIndex,
+            domOrder,
+            options: { data: cssBorderTriangleData, x, y, w, h, rotate: rotation },
+          },
+        ],
+        stopRecursion: true,
+      };
+    }
 
     // Browser-composited effects are captured as a visual island. Text is deliberately
     // removed from the bitmap and restored below as editable, line-positioned text.
@@ -67601,6 +68404,49 @@
       return { items: [item], job, stopRecursion: true };
     }
 
+    // Large, faint watermark/decorative text is fidelity-sensitive: PowerPoint
+    // can substitute or reshape the declared font even when the typeface is
+    // present in DrawingML. Preserve the browser-painted pixels for this layer.
+    const displayTextRasterMode = globalOptions.rasterizeDisplayText;
+    const shouldUseDisplayTextFallback =
+      getWritingModeRotation(style) === 0 &&
+      (displayTextRasterMode === true ||
+      (displayTextRasterMode !== false &&
+        shouldRasterizeDecorativeText(node, style) &&
+        !hasEmbeddableExportFont(node, style, globalOptions)));
+    if (shouldUseDisplayTextFallback && shouldRasterizeDecorativeText(node, style)) {
+      const item = {
+        type: 'image',
+        zIndex,
+        domOrder,
+        options: { data: null, x, y, w, h, rotate: 0 },
+      };
+      const debugEntry = {
+        tagName: node.tagName,
+        className: (node.getAttribute && node.getAttribute('class')) || '',
+        reasons: ['display-font-raster'],
+        textLineCount: 0,
+        captured: false,
+      };
+      getRiskFallbackDebug().push(debugEntry);
+      const job = async () => {
+        const captured = await captureDecorativeTextVisual(node, globalOptions);
+        if (!captured || !captured.data) {
+          item.skip = true;
+          debugEntry.error = 'capture-failed';
+          return;
+        }
+        const padIn = captured.paddingPx * PX_TO_INCH * config.scale;
+        item.options.data = captured.data;
+        item.options.x = x - padIn;
+        item.options.y = y - padIn;
+        item.options.w = w + padIn * 2;
+        item.options.h = h + padIn * 2;
+        debugEntry.captured = true;
+      };
+      return { items: [item], job, stopRecursion: true };
+    }
+
     // Radii logic
     const borderRadiusValue = parseFloat(style.borderRadius) || 0;
     const borderBottomLeftRadius = parseFloat(style.borderBottomLeftRadius) || 0;
@@ -67805,15 +68651,43 @@
         let valign = 'top';
         if (style.alignItems === 'center') valign = 'middle';
         if (style.justifyContent === 'center' && style.display.includes('flex')) align = 'center';
+        if (
+          /^(?:flex-end|end|right)$/.test(String(style.justifyContent || '').toLowerCase()) &&
+          style.display.includes('flex')
+        ) {
+          align = 'right';
+        }
 
         const pt = parseFloat(style.paddingTop) || 0;
         const pb = parseFloat(style.paddingBottom) || 0;
         if (Math.abs(pt - pb) < 2 && bgColorObj.hex) valign = 'middle';
 
-        let padding = getPadding(style, config.scale);
-        if (align === 'center' && valign === 'middle') padding = [0, 0, 0, 0];
+        let margin = getTextBoxMargin(style, config.scale);
+        margin[0] += getLeadingFlexPseudoInset(node, style, config.scale);
+        if (align === 'center' && valign === 'middle') margin = [0, 0, 0, 0];
 
-        textPayload = { text: textParts, align, valign, inset: padding };
+        const browserLineCount = getBrowserTextVisualLineCount(node);
+        const canSafelyPadSingleLineTextBox =
+          browserLineCount === 1 &&
+          !bgColorObj.hex &&
+          !hasGradient &&
+          !hasUniformBorder &&
+          !hasCompositeBorder &&
+          !hasShadow;
+        const singleLineWidthBuffer = canSafelyPadSingleLineTextBox
+          ? Math.max(4, Math.min(12, (parseFloat(style.fontSize) || 16) * 0.25)) *
+            PX_TO_INCH *
+            config.scale
+          : 0;
+        textPayload = {
+          text: textParts,
+          align,
+          valign,
+          margin,
+          wrap: getWritingModeRotation(style) ? false : browserLineCount !== 1,
+          widthBuffer: singleLineWidthBuffer,
+          writingModeRotation: getWritingModeRotation(style),
+        };
       }
     }
 
@@ -67836,7 +68710,7 @@
           heightPx,
           style.backgroundImage,
           borderRadiusValue,
-          hasBorder ? { color: borderColorObj.hex, width: borderWidth } : null
+          hasUniformBorder ? { color: borderColorObj.hex, width: borderWidth } : null
         );
       }
 
@@ -67867,38 +68741,37 @@
       if (textPayload) {
         textPayload.text[0].options.fontSize =
           Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
+        const textGeometry = getTextPayloadGeometry(textPayload, x, y, w, h, rotation);
         items.push({
           type: 'text',
           zIndex: nextRenderableZIndex(zIndex),
           domOrder,
           textParts: textPayload.text,
           options: {
-            x,
-            y,
-            w,
-            h,
+            ...textGeometry,
             align: textPayload.align,
             valign: textPayload.valign,
-            inset: textPayload.inset,
-            rotate: rotation,
-            margin: 0,
-            wrap: true,
+            margin: textPayload.margin,
+            wrap: textPayload.wrap,
             autoFit: false,
           },
         });
       }
       if (hasCompositeBorder) {
-        const borderItems = createCompositeBorderItems(
-          borderInfo.sides,
-          x,
-          y,
-          w,
-          h,
-          config.scale,
-          zIndex,
-          domOrder
+        const borderSvgData = generateCompositeBorderSVG(
+          widthPx,
+          heightPx,
+          borderRadiusValue,
+          borderInfo.sides
         );
-        items.push(...borderItems);
+        if (borderSvgData) {
+          items.push({
+            type: 'image',
+            zIndex: nextRenderableZIndex(zIndex),
+            domOrder,
+            options: { data: borderSvgData, x, y, w, h, rotate: rotation },
+          });
+        }
       }
     } else if (
       (bgColorObj.hex && !isImageWrapper) ||
@@ -67942,7 +68815,10 @@
           fill: useSolidFill
             ? { color: bgColorObj.hex, transparency: transparency }
             : { type: 'none' },
-          line: hasUniformBorder && !splitUniformBorderOverlay ? borderInfo.options : null,
+          line:
+            hasUniformBorder && !splitUniformBorderOverlay
+              ? borderInfo.options
+              : { type: 'none' },
         };
 
         if (hasShadow) shapeOpts.shadow = getVisibleShadow(shadowStr, config.scale);
@@ -67984,15 +68860,15 @@
         if (textPayload) {
           textPayload.text[0].options.fontSize =
             Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
+          const textGeometry = getTextPayloadGeometry(textPayload, x, y, w, h, rotation);
           const textOptions = {
             shape: shapeType,
             ...shapeOpts,
-            rotate: rotation,
+            ...textGeometry,
             align: textPayload.align,
             valign: textPayload.valign,
-            inset: textPayload.inset,
-            margin: 0,
-            wrap: true,
+            margin: textPayload.margin,
+            wrap: textPayload.wrap,
             autoFit: false,
           };
           items.push({
@@ -68130,7 +69006,10 @@
         if (val) {
           // Use parent style if child is text node, otherwise current style
           const styleToUse = node.nodeType === 1 ? getNodeWindow(node).getComputedStyle(node) : parentStyle;
-          const textOptions = applyOpacityToTextStyle(getTextStyle(styleToUse, scale, node), effectiveOpacity);
+          const textOptions = applyOpacityToTextStyle(
+            getTextStyle(styleToUse, scale, node, val),
+            effectiveOpacity
+          );
           if (textOptions.hidden) {
             return;
           }
@@ -68164,54 +69043,7 @@
     return parts;
   }
 
-  function createCompositeBorderItems(sides, x, y, w, h, scale, zIndex, domOrder) {
-    const items = [];
-    const pxToInch = 1 / 96;
-    const common = { zIndex: nextRenderableZIndex(zIndex), domOrder, shapeType: 'rect' };
-
-    if (sides.top.width > 0)
-      items.push({
-        ...common,
-        options: { x, y, w, h: sides.top.width * pxToInch * scale, fill: { color: sides.top.color } },
-      });
-    if (sides.right.width > 0)
-      items.push({
-        ...common,
-        options: {
-          x: x + w - sides.right.width * pxToInch * scale,
-          y,
-          w: sides.right.width * pxToInch * scale,
-          h,
-          fill: { color: sides.right.color },
-        },
-      });
-    if (sides.bottom.width > 0)
-      items.push({
-        ...common,
-        options: {
-          x,
-          y: y + h - sides.bottom.width * pxToInch * scale,
-          w,
-          h: sides.bottom.width * pxToInch * scale,
-          fill: { color: sides.bottom.color },
-        },
-      });
-    if (sides.left.width > 0)
-      items.push({
-        ...common,
-        options: {
-          x,
-          y,
-          w: sides.left.width * pxToInch * scale,
-          h,
-          fill: { color: sides.left.color },
-        },
-      });
-
-    return items;
-  }
-
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-08-28-risk-subtree-v22';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-08-31-font-fidelity-v34';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      #slide { position: relative; width: 1280px; height: 720px; overflow: hidden; background: #f5f2ec; font-family: Arial, sans-serif; }
+      .catalog-text { position: absolute; left: 80px; top: 60px; width: 370px; height: 45px; font: 600 18px Georgia, serif; color: #1a2332; }
+      .catalog-text small { display: block; margin-top: 4px; font: 400 11px Arial, sans-serif; color: #7a8290; letter-spacing: 1px; }
+      .status-list { position: absolute; left: 80px; top: 150px; display: flex; gap: 20px; }
+      .status { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: #7a8290; }
+      .dot { width: 6px; height: 6px; border-radius: 50%; }
+      .green { background: #22c55e; }
+      .red { background: #ef4444; }
+      @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+      .animated-card { position: absolute; left: 80px; top: 220px; width: 520px; height: 72px; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; background: #ede8dc; border: 1px solid #cdc7b8; border-radius: 6px; animation: fadeInUp 20s ease forwards paused; opacity: 0; }
+      .animated-card:hover { border-color: #d4a574; box-shadow: 0 2px 8px rgba(184,118,61,.1); }
+      .numbered-row { position: absolute; left: 80px; top: 340px; width: 620px; display: flex; align-items: flex-start; gap: 14px; padding: 14px 18px; border-left: 3px solid #b8763d; background: rgba(127,127,127,.04); }
+      .number { flex-shrink: 0; font-size: 15px; font-weight: 700; line-height: 1.4; }
+      .number-copy { font-size: 16px; line-height: 1.55; }
+      .progress-head { position: absolute; left: 80px; top: 450px; width: 608px; display: flex; justify-content: space-between; }
+      .progress-head span { font-size: 11px; }
+      .progress-value { color: #b8763d; font-weight: 600; }
+      .year-number { position: absolute; left: 80px; top: 530px; width: 79.109375px; height: 48px; font: 700 48px/1 Arial, sans-serif; color: #d4a574; }
+      .evolution-connector { position: absolute; left: 850px; top: 250px; display: flex; flex-direction: column; align-items: center; }
+      .connector-arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 10px solid #b8763d; }
+      .connector-line { width: 1px; height: 60px; background: linear-gradient(to bottom, #b8763d, transparent); }
+      .connector-label { margin-top: 8px; font: 9px Arial, sans-serif; color: #b8763d; letter-spacing: 2px; writing-mode: vertical-rl; text-orientation: mixed; }
+    </style>
+  </head>
+  <body>
+    <div id="slide">
+      <div class="catalog-text">室组人员管理<small>TEAM MANAGEMENT</small></div>
+      <div class="status-list">
+        <span class="status"><span class="dot green"></span>招聘中 <strong>2人</strong></span>
+        <span class="status"><span class="dot red"></span>离职中 <strong>1人</strong></span>
+      </div>
+      <div class="animated-card"><span>大模型方向</span><span>10.5 人</span></div>
+      <div class="numbered-row"><span class="number">01</span><span class="number-copy">建设背景：这里保留编号与正文之间的真实间隔</span></div>
+      <div class="progress-head"><span>完成进度</span><span class="progress-value">40%</span></div>
+      <span class="year-number">176</span>
+      <div class="evolution-connector">
+        <div class="connector-arrow"></div>
+        <div class="connector-line"></div>
+        <div class="connector-label">EVOLUTION</div>
+      </div>
+    </div>
+    <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+    <script>
+      window.runLayoutSemanticsSmokeTest = async function () {
+        const card = document.querySelector('.animated-card');
+        const before = getComputedStyle(card);
+        const beforeState = { opacity: before.opacity, backgroundColor: before.backgroundColor, borderColor: before.borderColor };
+        const blob = await window.domToPptx.exportToPptx(document.getElementById('slide'), { skipDownload: true });
+        const after = getComputedStyle(card);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        return {
+          patchVersion: window.domToPptx.__landpptPatchVersion,
+          beforeState,
+          afterState: { opacity: after.opacity, backgroundColor: after.backgroundColor, borderColor: after.borderColor },
+          pptxBase64: btoa(binary),
+        };
+      };
+    </script>
+  </body>
+</html>

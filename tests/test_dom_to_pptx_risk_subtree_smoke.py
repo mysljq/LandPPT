@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_risk_subtree_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-08-28-risk-subtree-v22"
-EXPECTED_ASSET_VERSION = "20260828-risk-subtree-v22"
+EXPECTED_PATCH_VERSION = "2026-08-31-font-fidelity-v34"
+EXPECTED_ASSET_VERSION = "20260831-font-fidelity-v34"
 
 
 def test_dom_to_pptx_version_is_consistent_across_loaders():
@@ -28,12 +28,12 @@ def test_dom_to_pptx_version_is_consistent_across_loaders():
     for relative_path in patch_version_files:
         content = (project_root / relative_path).read_text(encoding="utf-8")
         assert EXPECTED_PATCH_VERSION in content, relative_path
-        assert "2026-04-25-layer-clip-v21" not in content, relative_path
+        assert "2026-08-28-risk-subtree-v22" not in content, relative_path
 
     for relative_path in asset_version_files:
         content = (project_root / relative_path).read_text(encoding="utf-8")
         assert EXPECTED_ASSET_VERSION in content, relative_path
-        assert "20260425-layer-clip-v21" not in content, relative_path
+        assert "20260828-risk-subtree-v22" not in content, relative_path
 
 
 def test_dom_to_pptx_risk_subtree_smoke():

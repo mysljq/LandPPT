@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; background: #ddd; }
+      #slide { position: relative; width: 1280px; height: 720px; overflow: hidden; background: #fff; }
+      .row { position: absolute; left: 80px; width: 1000px; height: 70px; font-size: 38px; line-height: 70px; color: #222; }
+      .cover-deco-area { position:absolute; top:90px; right:0; width:560px; height:570px; overflow:hidden; }
+      .cover-deco-circle { position:absolute; top:50%; right:80px; transform:translateY(-50%); width:300px; height:300px; border:2px solid rgba(192,0,0,.1); border-radius:50%; display:flex; align-items:center; justify-content:center; }
+      .cover-deco-circle::before { content:''; position:absolute; width:240px; height:240px; border:1px solid rgba(192,0,0,.12); border-radius:50%; }
+      .cover-deco-circle::after { content:''; position:absolute; width:180px; height:180px; border:1px dashed rgba(192,0,0,.08); border-radius:50%; }
+      .cover-deco-star-big { width:90px; height:90px; background:rgba(192,0,0,.1); clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%); }
+      .cover-deco-year { position:absolute; bottom:40px; right:60px; font-size:72px; font-weight:bold; color:rgba(192,0,0,.1); line-height:1; letter-spacing:-2px; font-family:Georgia,serif; }
+      .cover-extra { position:absolute; left:80px; top:600px; width:540px; font-size:15px; color:#888; line-height:1.7; padding-left:16px; border-left:3px solid #ffc107; }
+      .footer-year { position:absolute; left:80px; bottom:20px; color:#c00000; font:700 17px Arial,sans-serif; }
+      .trans-chapter-num { position:absolute; font-size:170px; font-weight:bold; color:#ffeb3b; line-height:1; letter-spacing:-5px; text-shadow:4px 4px 0 rgba(0,0,0,.15); font-family:Georgia,serif; }
+      .chapter-reference { position:absolute; right:30px; font:14px Arial,sans-serif; color:#333; }
+      .plain-kicker { position:absolute; right:30px; top:560px; font-size:13px; color:#c00000; letter-spacing:4px; font-weight:bold; font-family:Georgia,serif; }
+      .plain-catalog-num { position:absolute; right:220px; top:540px; font-size:38px; font-weight:bold; color:#c00000; line-height:1; letter-spacing:-2px; font-family:Georgia,serif; }
+      .trans-label { position:absolute; left:650px; top:610px; display:flex; align-items:center; gap:10px; color:#c00000; font:14px Arial,sans-serif; }
+      .trans-label::before { content:''; width:30px; height:2px; background:#c00000; }
+      .data-card { position:absolute; left:1080px; top:70px; width:150px; height:70px; background:linear-gradient(145deg,#fff 0%,#fafafa 100%); border:1px solid #e8e8e8; border-left:4px solid #c00000; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,.06); padding:8px; box-sizing:border-box; }
+      .direction-header-test { position:absolute; display:flex; align-items:center; gap:10px; padding:14px 20px; background:#c00000; }
+      .direction-title { font-size:16px; font-weight:bold; color:#fff; letter-spacing:1px; }
+      .suite-header-star { position:absolute; left:1120px; top:180px; width:26px; height:26px; background:#ffeb3b; clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%); filter:drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
+      .progress-bar { position:absolute; left:1050px; top:250px; width:160px; height:30px; display:flex; align-items:center; justify-content:flex-end; padding-right:8px; box-sizing:border-box; background:#c00000; color:white; font:11px Arial,sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="slide">
+      <div class="row" style="top:70px;font-family: Georgia, serif;font-weight:400">Georgia Regular 123</div>
+      <div class="row" style="top:170px;font-family: Georgia, serif;font-weight:700">Georgia Bold 456</div>
+      <div class="row" style="top:270px;font-family: Georgia, serif;font-style:italic">Georgia Italic 789</div>
+      <div class="row" style="top:370px;font-family: Georgia, serif;font-weight:700;font-style:italic">Georgia Bold Italic</div>
+      <div class="row" style="top:470px;font-family:'Microsoft YaHei',sans-serif">
+        中文容器 <span style="font-family: Georgia, serif">Georgia Inline Segment</span>
+      </div>
+      <div class="cover-deco-area">
+        <div class="cover-deco-circle"><div class="cover-deco-star-big"></div></div>
+        <div class="cover-deco-year">2026</div>
+      </div>
+      <p class="cover-extra">演示标题：部门工作情况汇报</p>
+      <span class="footer-year">2026</span>
+      <div class="trans-chapter-num" style="right:180px;top:60px">1</div>
+      <div class="trans-chapter-num" style="right:30px;top:260px">2</div>
+      <span class="chapter-reference" style="top:500px">第 1 章</span>
+      <span class="chapter-reference" style="top:530px">第 2 章</span>
+      <div class="plain-kicker">CONTENTS</div>
+      <div class="plain-catalog-num">01</div>
+      <div class="trans-label">第 1 章</div>
+      <div class="data-card">486个</div>
+      <div class="direction-header-test" style="left:760px;top:650px"><span class="direction-title">大模型方向</span></div>
+      <div class="direction-header-test" style="left:940px;top:650px"><span class="direction-title">低代码方向</span></div>
+      <div class="suite-header-star"></div>
+      <div class="progress-bar">8/20</div>
+    </div>
+    <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+    <script>
+      function arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+        }
+        return btoa(binary);
+      }
+
+      window.runGeorgiaFontPptxSmokeTest = async function (fonts) {
+        const georgiaNode = document.querySelector('.row');
+        const computedFamily = getComputedStyle(georgiaNode).fontFamily;
+        const blob = await window.domToPptx.exportToPptx(document.getElementById('slide'), {
+          skipDownload: true,
+          autoEmbedFonts: true,
+          fonts: fonts || [],
+        });
+        return {
+          patchVersion: window.domToPptx.__landpptPatchVersion,
+          computedFamily,
+          fontDebug: window.__LANDPPT_PPTX_FONT_EXPORT_DEBUG__,
+          riskDebug: window.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__,
+          pptxBase64: arrayBufferToBase64(await blob.arrayBuffer()),
+        };
+      };
+    </script>
+  </body>
+</html>

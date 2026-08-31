@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import logging
 import os
+import struct
 import tempfile
 import time
 import urllib.parse
+from functools import lru_cache
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -31,6 +34,101 @@ from .support import ppt_service
 router = APIRouter()
 
 _TASK_PATH_KEYS = {"pdf_path", "pptx_path", "video_path", "audio_path"}
+
+_EXPORT_FONT_VARIANTS = {
+    "georgia-regular": ("Georgia", "georgia.ttf", 400, "normal"),
+    "georgia-bold": ("Georgia", "georgiab.ttf", 700, "normal"),
+    "georgia-italic": ("Georgia", "georgiai.ttf", 400, "italic"),
+    "georgia-bold-italic": ("Georgia", "georgiaz.ttf", 700, "italic"),
+}
+
+
+def _font_embedding_allowed(path: Path) -> bool:
+    """Allow only installable/editable TrueType/OpenType fonts (OS/2 fsType)."""
+    try:
+        data = path.read_bytes()
+        if len(data) < 12:
+            return False
+        num_tables = struct.unpack_from(">H", data, 4)[0]
+        for index in range(num_tables):
+            record_offset = 12 + index * 16
+            if record_offset + 16 > len(data):
+                return False
+            tag, _, table_offset, table_length = struct.unpack_from(">4sIII", data, record_offset)
+            if tag != b"OS/2":
+                continue
+            if table_length < 10 or table_offset + 10 > len(data):
+                return False
+            fs_type = struct.unpack_from(">H", data, table_offset + 8)[0]
+            is_restricted = bool(fs_type & 0x0002)
+            is_bitmap_only = bool(fs_type & 0x0200)
+            is_editable = bool(fs_type & 0x0008)
+            return not is_restricted and not is_bitmap_only and (fs_type == 0 or is_editable)
+    except (OSError, struct.error):
+        return False
+    return False
+
+
+def _export_font_directories() -> list[Path]:
+    configured = os.getenv("LANDPPT_EXPORT_FONT_DIRS", "")
+    directories = [Path(value) for value in configured.split(os.pathsep) if value.strip()]
+    windows_dir = os.getenv("WINDIR")
+    if windows_dir:
+        directories.append(Path(windows_dir) / "Fonts")
+    directories.extend((Path("/usr/share/fonts"), Path("/usr/local/share/fonts")))
+    return directories
+
+
+@lru_cache(maxsize=1)
+def _available_export_fonts() -> dict[str, dict[str, object]]:
+    available: dict[str, dict[str, object]] = {}
+    for font_id, (name, filename, weight, style) in _EXPORT_FONT_VARIANTS.items():
+        for directory in _export_font_directories():
+            candidate = directory / filename
+            if candidate.is_file() and _font_embedding_allowed(candidate):
+                available[font_id] = {
+                    "id": font_id,
+                    "name": name,
+                    "path": candidate,
+                    "type": "otf" if candidate.suffix.lower() == ".otf" else "ttf",
+                    "weight": weight,
+                    "style": style,
+                }
+                break
+    return available
+
+
+@router.get("/api/export/fonts/manifest")
+async def get_export_font_manifest(
+    user: User = Depends(get_current_user_required),
+):
+    """Return fonts that the server may legally embed into editable PPTX files."""
+    del user
+    fonts = []
+    for font in _available_export_fonts().values():
+        fonts.append({
+            key: value
+            for key, value in font.items()
+            if key != "path"
+        } | {"url": f"/api/export/fonts/{font['id']}"})
+    return {"fonts": fonts}
+
+
+@router.get("/api/export/fonts/{font_id}")
+async def download_export_font(
+    font_id: str,
+    user: User = Depends(get_current_user_required),
+):
+    del user
+    font = _available_export_fonts().get(font_id)
+    if not font:
+        raise HTTPException(status_code=404, detail="Export font not found")
+    path = font["path"]
+    return FileResponse(
+        path,
+        media_type="font/otf" if font["type"] == "otf" else "font/ttf",
+        filename=path.name,
+    )
 
 
 def _sanitize_task_mapping(payload: object) -> object:
