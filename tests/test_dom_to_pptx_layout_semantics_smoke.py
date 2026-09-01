@@ -8,7 +8,7 @@ import pytest
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_layout_semantics_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-svg-pattern-alpha-v48"
+EXPECTED_PATCH_VERSION = "2026-09-01-premultiplied-gradient-v49"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -83,6 +83,19 @@ def test_block_lines_flex_layout_empty_dots_and_animation_snapshot_are_preserved
     assert gradient_angles
     assert all(0 <= angle <= 21_600_000 for angle in gradient_angles)
     assert 16_200_000 in gradient_angles  # `linear-gradient(to top, ...)`
+
+    # CSS uses premultiplied-alpha interpolation. The midpoint of opaque white
+    # -> transparent black must therefore remain white at 50% alpha, not gray.
+    corrected_midpoints = [
+        stop
+        for stop in root.iter(f"{{{DRAWING_NS}}}gs")
+        if stop.get("pos") == "50000"
+        and (color := stop.find(f"{{{DRAWING_NS}}}srgbClr")) is not None
+        and color.get("val") == "FFFFFF"
+        and (alpha := color.find(f"{{{DRAWING_NS}}}alpha")) is not None
+        and alpha.get("val") == "50000"
+    ]
+    assert corrected_midpoints
 
     catalog = _shape_for_text(root, "室组人员管理TEAM MANAGEMENT")
     catalog_paragraphs = catalog.findall(f".//{{{DRAWING_NS}}}p")

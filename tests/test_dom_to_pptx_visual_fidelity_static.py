@@ -55,3 +55,8 @@ def test_visual_fidelity_guards_are_present():
     assert "svgAncestorOpacity" in source
     assert "function shouldBakeComplexSvgAncestorOpacity" in source
     assert "ctx.globalAlpha = opacityMultiplier" in source
+
+    # Native PowerPoint gradients need extra stops to emulate CSS's
+    # premultiplied-alpha interpolation rather than fading through gray.
+    assert "function expandPremultipliedAlphaGradientStops" in source
+    assert "startValue * startAlpha * (1 - t)" in source

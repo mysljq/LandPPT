@@ -415,8 +415,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260901-svg-pattern-alpha-v48';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-01-svg-pattern-alpha-v48';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260901-premultiplied-gradient-v49';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-01-premultiplied-gradient-v49';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

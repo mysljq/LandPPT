@@ -65916,13 +65916,70 @@
     }
   }
 
+  function gradientHexToRgb(hex) {
+    const normalized = String(hex || '').replace('#', '').padEnd(6, '0').slice(0, 6);
+    return [0, 2, 4].map((offset) => parseInt(normalized.slice(offset, offset + 2), 16) || 0);
+  }
+
+  function gradientRgbToHex(rgb) {
+    return rgb.map((value) => Math.max(0, Math.min(255, Math.round(value)))
+      .toString(16).padStart(2, '0')).join('').toUpperCase();
+  }
+
+  /**
+   * CSS gradients interpolate colors in premultiplied-alpha space. DrawingML
+   * interpolates RGB and alpha independently, so an opaque-white -> transparent-
+   * black gradient becomes gray in PowerPoint. Insert corrected native stops so
+   * PowerPoint's straight interpolation follows the browser's visual curve.
+   */
+  function expandPremultipliedAlphaGradientStops(stops, subdivisions = 16) {
+    if (!Array.isArray(stops) || stops.length !== 2) return stops;
+    const start = stops[0];
+    const end = stops[1];
+    const startAlpha = 1 - Math.max(0, Math.min(100, Number(start.transparency) || 0)) / 100;
+    const endAlpha = 1 - Math.max(0, Math.min(100, Number(end.transparency) || 0)) / 100;
+    if (Math.abs(startAlpha - endAlpha) < 0.001) return stops;
+
+    const startRgb = gradientHexToRgb(start.color);
+    const endRgb = gradientHexToRgb(end.color);
+    if (startRgb.every((value, index) => value === endRgb[index])) return stops;
+
+    const startPos = Math.max(0, Math.min(100000, Number(start.pos) || 0));
+    const endPos = Math.max(startPos, Math.min(100000, Number(end.pos) || 100000));
+    const count = Math.max(4, Math.min(32, Math.round(subdivisions)));
+    const expanded = [];
+    for (let index = 0; index <= count; index++) {
+      const t = index / count;
+      const alpha = startAlpha * (1 - t) + endAlpha * t;
+      let rgb;
+      if (alpha > 0.000001) {
+        rgb = startRgb.map((startValue, channel) =>
+          (startValue * startAlpha * (1 - t) + endRgb[channel] * endAlpha * t) / alpha
+        );
+      } else if (startAlpha > endAlpha) {
+        rgb = startRgb;
+      } else if (endAlpha > startAlpha) {
+        rgb = endRgb;
+      } else {
+        rgb = startRgb;
+      }
+      expanded.push({
+        color: gradientRgbToHex(rgb),
+        transparency: (1 - alpha) * 100,
+        pos: startPos + (endPos - startPos) * t,
+      });
+    }
+    return expanded;
+  }
+
   // Simple two-stop CSS gradients can remain editable as native PowerPoint fills.
   function parseNativeLinearGradient(bgString) {
     const match = String(bgString || '').trim().match(/^linear-gradient\((.*)\)$/i);
     if (!match) return null;
     const parts = splitTopLevelCommaParts(match[1]);
-    if (parts.length !== 3) return null;
-    const direction = parts[0].trim().toLowerCase();
+    if (parts.length < 2 || parts.length > 3) return null;
+    const hasExplicitDirection = parts.length === 3;
+    const direction = hasExplicitDirection ? parts[0].trim().toLowerCase() : 'to bottom';
     let angle = null;
     if (/^-?[\d.]+deg$/.test(direction)) angle = parseFloat(direction);
     else if (direction === 'to right') angle = 90;
@@ -65930,17 +65987,23 @@
     else if (direction === 'to bottom') angle = 180;
     else if (direction === 'to top') angle = 0;
     else return null;
-    const stops = parts.slice(1).map((part, index) => {
+    const colorParts = parts.slice(hasExplicitDirection ? 1 : 0);
+    const stops = colorParts.map((part, index) => {
       const matchStop = String(part).trim().match(/^(.*?)(?:\s+(-?[\d.]+)(%|px)?)?$/);
       if (!matchStop) return null;
       const color = parseColor(matchStop[1].trim());
-      if (!color.hex) return null;
+      const colorHex = color.hex || (color.opacity <= 0.001 ? '000000' : null);
+      if (!colorHex || matchStop[3] === 'px') return null;
       const rawPos = matchStop[2] == null ? (index ? 100 : 0) : parseFloat(matchStop[2]);
-      const pos = matchStop[2] == null ? rawPos * 1000 : matchStop[3] === '%' ? rawPos * 1000 : rawPos;
-      return { color: color.hex, transparency: (1 - color.opacity) * 100, pos };
+      const pos = rawPos * 1000;
+      return { color: colorHex, transparency: (1 - color.opacity) * 100, pos };
     });
     if (stops.some((stop) => !stop)) return null;
-    return { type: 'gradient', stops, angle: ((angle - 90) % 360 + 360) % 360 };
+    return {
+      type: 'gradient',
+      stops: expandPremultipliedAlphaGradientStops(stops),
+      angle: ((angle - 90) % 360 + 360) % 360,
+    };
   }
 
   function resetRiskFallbackDebug() {
@@ -70002,7 +70065,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-01-svg-pattern-alpha-v48';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-01-premultiplied-gradient-v49';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
