@@ -1,10 +1,31 @@
+import base64
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_risk_subtree_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-08-31-font-fidelity-v34"
-EXPECTED_ASSET_VERSION = "20260831-font-fidelity-v34"
+EXPECTED_PATCH_VERSION = "2026-09-01-clipped-decoration-layer-v45"
+EXPECTED_ASSET_VERSION = "20260901-clipped-decoration-layer-v45"
+DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+
+def _shape_text(shape):
+    return "".join(node.text or "" for node in shape.iter(f"{{{DRAWING_NS}}}t"))
+
+
+def _shape_geometry(shape):
+    transform = shape.find(f"./{{{PRESENTATION_NS}}}spPr/{{{DRAWING_NS}}}xfrm")
+    assert transform is not None
+    offset = transform.find(f"{{{DRAWING_NS}}}off")
+    extent = transform.find(f"{{{DRAWING_NS}}}ext")
+    assert offset is not None and extent is not None
+    return tuple(int(value) for value in (
+        offset.get("x"), offset.get("y"), extent.get("cx"), extent.get("cy")
+    ))
 
 
 def test_dom_to_pptx_version_is_consistent_across_loaders():
@@ -69,10 +90,46 @@ def test_dom_to_pptx_risk_subtree_smoke():
     assert result["patchVersion"] == EXPECTED_PATCH_VERSION
     assert result["blobSize"] > 10_000
     assert result["editableLineCount"] >= 2
+    assert result["editableHasHighlight"] is False
     assert result["svgTextLineCount"] >= 2
     assert result["allCapturesSucceeded"] is True
     assert result["riskCaptureCount"] >= 7
+    assert result["hardShadowOverlayCount"] >= 1
     assert result["rootWasRasterized"] is False
+    assert result["editableGridRisky"] is False
+    assert result["editableCardRisky"] is False
+    assert result["isolatedDecorationCount"] >= 1
+
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(result["pptxBase64"]))) as pptx:
+        slide_xml = pptx.read("ppt/slides/slide1.xml")
+    root = ET.fromstring(slide_xml)
+    shapes = list(root.iter(f"{{{PRESENTATION_NS}}}sp"))
+    tag_labels = {"高可用", "可扩展", "易维护", "故障自愈"}
+    tag_text_shapes = [shape for shape in shapes if _shape_text(shape) in tag_labels]
+    assert len(tag_text_shapes) == 4
+    assert {_shape_text(shape) for shape in tag_text_shapes} == tag_labels
+
+    tag_background_shapes = []
+    for shape in shapes:
+        color = shape.find(
+            f"./{{{PRESENTATION_NS}}}spPr/{{{DRAWING_NS}}}solidFill/"
+            f"{{{DRAWING_NS}}}srgbClr"
+        )
+        if color is not None and color.get("val") == "21416B":
+            tag_background_shapes.append(shape)
+    assert len(tag_background_shapes) == 4
+
+    # Every editable tag text box must sit inside exactly one native background
+    # shape; duplicated screenshot/highlight layers used to break this relation.
+    background_rects = [_shape_geometry(shape) for shape in tag_background_shapes]
+    for text_shape in tag_text_shapes:
+        tx, ty, tw, th = _shape_geometry(text_shape)
+        matches = [
+            (bx, by, bw, bh)
+            for bx, by, bw, bh in background_rects
+            if bx <= tx and by <= ty and bx + bw >= tx + tw and by + bh >= ty + th
+        ]
+        assert len(matches) == 1
     assert set(result["detectedReasons"]) >= {
         "mask",
         "complex-clip-path",

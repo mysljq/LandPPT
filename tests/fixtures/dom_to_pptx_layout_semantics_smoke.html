@@ -27,6 +27,25 @@
       .connector-arrow { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 10px solid #b8763d; }
       .connector-line { width: 1px; height: 60px; background: linear-gradient(to bottom, #b8763d, transparent); }
       .connector-label { margin-top: 8px; font: 9px Arial, sans-serif; color: #b8763d; letter-spacing: 2px; writing-mode: vertical-rl; text-orientation: mixed; }
+      .center-title { position: absolute; left: 760px; top: 60px; font-size: 36px; padding-bottom: 24px; }
+      .center-title::after { content: ""; position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); width: 80px; height: 3px; background: #b8763d; }
+      .dashed-axis { position: absolute; left: 1020px; top: 160px; width: 48px; height: 190px; }
+      .dashed-axis::before { content: ""; position: absolute; top: 20px; bottom: 40px; width: 1px; background: repeating-linear-gradient(to bottom, #cdc7b8 0, #cdc7b8 4px, transparent 4px, transparent 8px); }
+      .strike-copy { position: absolute; left: 760px; top: 390px; font-size: 18px; text-decoration: line-through; text-decoration-color: #cdc7b8; }
+      .insight-box { position: absolute; left: 760px; top: 450px; width: 330px; height: 100px; padding: 20px; background: #ede8dc; border-left: 4px solid #b8763d; }
+      .insight-box::before { content: "蓝海洞察"; position: absolute; top: -8px; right: 20px; padding: 2px 8px; font-size: 9px; background: #f5f2ec; border: 1px solid #b8763d; color: #b8763d; }
+      .spacing-card { position: absolute; left: 760px; top: 580px; width: 360px; }
+      .spacing-card h4 { margin: 0 0 10px; font-size: 15px; }
+      .spacing-card p { margin: 0 0 8px; font-size: 13px; line-height: 1.7; }
+      .rotated-card { position: absolute; left: 1120px; top: 60px; width: 130px; height: 54px; transform: rotate(-2deg); border: 2px solid #2563eb; }
+      .rotated-card span { display: block; padding: 14px; font-size: 13px; }
+      .rotated-card small { display: block; font-size: 11px; letter-spacing: 2px; }
+      .hard-shadow-card { position: absolute; left: 1120px; top: 140px; width: 120px; height: 46px; border: 2px solid #123abc; border-radius: 10px; background: #ffffff; box-shadow: 6px 6px 0 #123abc; }
+      .gradient-border-card { position: absolute; left: 1120px; top: 220px; width: 120px; height: 60px; padding: 10px; border: 3px solid #0a7c55; border-radius: 10px; background: linear-gradient(135deg, #ffffff, #d1fae5); font-size: 11px; }
+      .block-run-copy { position: absolute; left: 1120px; top: 320px; width: 140px; font-size: 12px; }
+      .block-run-copy .block-num { display: block; font-size: 24px; font-weight: 700; }
+      .multiline-flex-copy { position: absolute; left: 1120px; top: 430px; width: 145px; display: flex; justify-content: center; text-align: left; font-size: 12px; line-height: 1.5; }
+      .office-angle-regression { position: absolute; left: 700px; top: 680px; width: 20px; height: 20px; background: linear-gradient(to top, #123456, #abcdef); }
     </style>
   </head>
   <body>
@@ -45,6 +64,17 @@
         <div class="connector-line"></div>
         <div class="connector-label">EVOLUTION</div>
       </div>
+      <div class="center-title">目录</div>
+      <div class="dashed-axis"></div>
+      <div class="strike-copy">铺设铁轨的工人</div>
+      <div class="insight-box">垂直领域尚未出现标杆产品</div>
+      <div class="spacing-card"><h4>卡片标题</h4><p>卡片正文内容，用于验证文本框不会重复叠加 CSS 外边距。</p></div>
+      <div class="rotated-card"><span>继承父级旋转</span><small>MANAGEMENT</small></div>
+      <div class="hard-shadow-card"></div>
+      <div class="gradient-border-card">渐变边框</div>
+      <div class="block-run-copy"><span class="block-num">8/20+</span>后续正文必须另起一行</div>
+      <div class="multiline-flex-copy">第一行较长文本，自动换行后仍然保持左对齐，而不是错误居中。</div>
+      <div class="office-angle-regression"></div>
     </div>
     <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
     <script>

@@ -7795,6 +7795,27 @@
         case 'solid':
           outText += "<a:solidFill>".concat(createColorElement(colorVal, internalElements), "</a:solidFill>");
           break;
+        case 'gradient': {
+          const stops = Array.isArray(props.stops) ? props.stops : [];
+          if (stops.length >= 2) {
+            const stopXml = stops.map((stop) => {
+              const stopColor = String(stop.color || '000000').replace('#', '').toUpperCase();
+              const alpha = Number.isFinite(stop.transparency)
+                ? Math.max(0, Math.min(100, 100 - stop.transparency)) * 1000
+                : 100000;
+              return `<a:gs pos="${Math.max(0, Math.min(100000, Math.round(Number(stop.pos) || 0)))}"><a:srgbClr val="${stopColor}"><a:alpha val="${Math.round(alpha)}"/></a:srgbClr></a:gs>`;
+            }).join('');
+            const rawAngleValue = Number(props.angle);
+            const rawAngle = Number.isFinite(rawAngleValue) ? rawAngleValue : 0;
+            // Normalize to the canonical 0..360-degree range. This avoids the
+            // negative gradient angles produced by CSS `to top`, which trigger
+            // repair passes in some Office versions.
+            const normalizedAngle = ((rawAngle % 360) + 360) % 360;
+            const angle = Math.round(normalizedAngle * 60000);
+            outText += `<a:gradFill rotWithShape="1"><a:gsLst>${stopXml}</a:gsLst><a:lin ang="${angle}" scaled="1"/></a:gradFill>`;
+          }
+          break;
+        }
         default: // @note need a statement as having only "break" is removed by rollup, then tiggers "no-default" js-linter
           outText += '';
           break;
@@ -62835,6 +62856,27 @@
     }
   }
 
+  // CSS opacity applies to the complete painted element, including its border.
+  // PowerPoint stores border alpha on the line itself, so carry the element
+  // opacity into the line transparency rather than leaving a fully opaque
+  // border behind a translucent shape.
+  function applyOpacityToLineOptions(lineOptions, opacityMultiplier) {
+    if (!lineOptions || lineOptions.type === 'none') return lineOptions;
+    const multiplierValue = Number(opacityMultiplier);
+    const multiplier = Number.isFinite(multiplierValue)
+      ? Math.max(0, Math.min(1, multiplierValue))
+      : 1;
+    const baseTransparencyValue = Number(lineOptions.transparency);
+    const baseTransparency = Number.isFinite(baseTransparencyValue)
+      ? Math.max(0, Math.min(100, baseTransparencyValue))
+      : 0;
+    const baseAlpha = 1 - baseTransparency / 100;
+    return {
+      ...lineOptions,
+      transparency: (1 - baseAlpha * multiplier) * 100,
+    };
+  }
+
   /**
    * Generates an SVG image for composite borders that respects border-radius.
    */
@@ -62998,16 +63040,20 @@
     );
   }
 
-  function generateCompositeBorderSVG(w, h, radius, sides) {
+  function generateCompositeBorderSVG(w, h, radius, sides, opacity = 1) {
     if (!isRenderableSvgSize(w, h))
       return null;
+    const opacityValue = Number(opacity);
+    const opacityMultiplier = Number.isFinite(opacityValue)
+      ? Math.max(0, Math.min(1, opacityValue))
+      : 1;
     radius = radius / 2; // Adjust for SVG rendering
     const clipId = 'clip_' + Math.random().toString(36).substr(2, 9);
     let borderRects = '';
 
     const sideRect = (x, y, width, height, side) =>
       side.width > 0 && side.color && side.style !== 'none' && side.style !== 'hidden'
-        ? `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#${side.color}" fill-opacity="${Math.max(0, Math.min(1, side.opacity))}" />`
+        ? `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#${side.color}" fill-opacity="${Math.max(0, Math.min(1, side.opacity * opacityMultiplier))}" />`
         : '';
     if (sides.top.width > 0 && sides.top.color) {
       borderRects += sideRect(0, 0, w, sides.top.width, sides.top);
@@ -64304,16 +64350,9 @@
       }
     }
 
-    // --- Spacing (Margins) ---
-    // Convert CSS margins (px) to PPTX Paragraph Spacing (pt).
-    let paraSpaceBefore = 0;
-    let paraSpaceAfter = 0;
-
-    const mt = parseFloat(style.marginTop) || 0;
-    const mb = parseFloat(style.marginBottom) || 0;
-
-    if (mt > 0) paraSpaceBefore = mt * 0.75 * scale;
-    if (mb > 0) paraSpaceAfter = mb * 0.75 * scale;
+    // CSS margins already affect the live DOM box position. Re-applying them as
+    // PowerPoint paragraph spacing makes independent card headings/body boxes
+    // grow into their neighbours and is a common source of exported overlap.
     const colorOpacity = Number.isFinite(colorObj.opacity)
       ? Math.max(0, Math.min(1, colorObj.opacity))
       : 1;
@@ -64345,11 +64384,10 @@
       bold: fontWeight === 'bold' || parseInt(fontWeight, 10) >= 600,
       italic: fontStyle === 'italic' || fontStyle.startsWith('oblique'),
       underline: textDecoration.includes('underline'),
+      ...(textDecoration.includes('line-through') ? { strike: 'sngStrike' } : {}),
       ...(Math.abs(charSpacing) > 0.01 ? { charSpacing } : {}),
       // Only add if we have a valid value
       ...(lineSpacing && { lineSpacing }),
-      ...(paraSpaceBefore > 0 && { paraSpaceBefore }),
-      ...(paraSpaceAfter > 0 && { paraSpaceAfter }),
       // Map background color to highlight if present
       ...(parseColor(style.backgroundColor).hex
         ? { highlight: parseColor(style.backgroundColor).hex }
@@ -64436,7 +64474,38 @@
     if (!hasText) return false;
 
     const children = Array.from(node.children);
-    if (children.length === 0) return true;
+    if (children.length === 0) {
+      // Leaf chips/tags inside a flex row must be exported as a visual shape
+      // plus a separate text item. Treating them as a text container makes
+      // PowerPoint synthesize a text-shaped pill and can stack sibling tags.
+      const leafStyle = getNodeWindow(node).getComputedStyle(node);
+      const parent = node.parentElement;
+      const parentDisplay = parent
+        ? String(getNodeWindow(parent).getComputedStyle(parent).display || '').toLowerCase()
+        : '';
+      const leafBg = parseColor(leafStyle.backgroundColor);
+      const leafHasVisibleBg = leafBg.hex && leafBg.opacity > 0;
+      const leafHasBorder =
+        parseFloat(leafStyle.borderWidth) > 0 && parseColor(leafStyle.borderColor).opacity > 0;
+      const leafHasRadius =
+        (parseFloat(leafStyle.borderRadius) || 0) > 0 ||
+        (parseFloat(leafStyle.borderTopLeftRadius) || 0) > 0 ||
+        (parseFloat(leafStyle.borderTopRightRadius) || 0) > 0 ||
+        (parseFloat(leafStyle.borderBottomRightRadius) || 0) > 0 ||
+        (parseFloat(leafStyle.borderBottomLeftRadius) || 0) > 0;
+      const leafHasPadding =
+        (parseFloat(leafStyle.paddingLeft) || 0) > 0 ||
+        (parseFloat(leafStyle.paddingRight) || 0) > 0 ||
+        (parseFloat(leafStyle.paddingTop) || 0) > 0 ||
+        (parseFloat(leafStyle.paddingBottom) || 0) > 0;
+      if (
+        /^(?:inline-)?flex$/.test(parentDisplay) &&
+        (leafHasVisibleBg || leafHasBorder || leafHasRadius || leafHasPadding)
+      ) {
+        return false;
+      }
+      return true;
+    }
 
     // Flex/grid containers are layout boundaries, not rich-text runs. Flattening
     // their children into one PPT text box destroys gap/space-between placement
@@ -64504,8 +64573,27 @@
         !!backgroundImageValue && backgroundImageValue !== 'none' && !backgroundImageValue.startsWith('initial');
       const allowInlineTextHighlight =
         hasContent && hasVisibleBg && !hasBorder && !hasRadius && !hasPadding && !hasBackgroundImage;
+      const parentDisplay = el.parentElement
+        ? String(getNodeWindow(el.parentElement).getComputedStyle(el.parentElement).display || '').toLowerCase()
+        : '';
+      // A padded, rounded flex item is a visual chip/tag. Split its native
+      // background/border from the child text so each flex item keeps its own
+      // measured position instead of becoming a text-shaped pill that can be
+      // duplicated or stacked when siblings wrap.
+      const isFlexChip =
+        /^(?:inline-)?flex$/.test(parentDisplay) &&
+        hasContent &&
+        (hasBorder || hasRadius || hasPadding || hasVisibleBg);
+      const allowStyledInlineRun =
+        hasContent &&
+        isInlineDisplay &&
+        !hasBackgroundImage &&
+        !isFlexChip &&
+        /^(?:P|SPAN|H[1-6]|LABEL|TD|TH)$/i.test(String(node.tagName || ''));
       const hasVisualBox =
-        hasBorder || hasRadius || hasPadding || hasBackgroundImage || (hasVisibleBg && !allowInlineTextHighlight);
+        hasBackgroundImage ||
+        (!allowStyledInlineRun &&
+          (hasBorder || hasRadius || hasPadding || (hasVisibleBg && !allowInlineTextHighlight)));
 
       // 6. Visual tags/chips should be rendered as elements, not merged into one text run.
       if (hasVisualBox) return false;
@@ -64672,6 +64760,42 @@
         if (startsOwnVisualLine && trimState.hasRenderableText) {
           markLineBreakAfterLastTextPart();
         }
+
+        const childParts = collectInlineTextParts(
+          child,
+          scale,
+          effectiveOpacity,
+          rootContainer,
+          trimState,
+          effectiveFormulaBoundaryRoot
+        );
+        parts.push(...childParts);
+
+        // A block child also ends its own visual line. CSS such as
+        // `<span style="display:block">8/20+</span>following copy` must not be
+        // flattened into one PowerPoint paragraph merely because SPAN is an
+        // inline tag by default.
+        if (startsOwnVisualLine && childParts.length > 0) {
+          let next = child.nextSibling;
+          let hasFollowingContent = false;
+          while (next) {
+            if (next.nodeType === 3 && String(next.nodeValue || '').trim()) {
+              hasFollowingContent = true;
+              break;
+            }
+            if (
+              next.nodeType === 1 &&
+              next.tagName !== 'BR' &&
+              getNodeWindow(next).getComputedStyle(next).display !== 'none'
+            ) {
+              hasFollowingContent = true;
+              break;
+            }
+            next = next.nextSibling;
+          }
+          if (hasFollowingContent) markLineBreakAfterLastTextPart();
+        }
+        return;
       }
 
       parts.push(
@@ -64872,7 +64996,15 @@
       'stroke-width',
       'stroke-linecap',
       'stroke-linejoin',
+      'stroke-dasharray',
+      'stroke-dashoffset',
+      'stroke-miterlimit',
+      'stroke-opacity',
+      'fill-opacity',
       'opacity',
+      'transform',
+      'transform-origin',
+      'transform-box',
       'font-family',
       'font-size',
       'font-weight',
@@ -64887,7 +65019,7 @@
     properties.forEach((prop) => {
       if (prop !== 'fill' && prop !== 'stroke') {
         const val = computed[prop];
-        if (val && val !== 'auto') target.style[prop] = val;
+        if (val && val !== 'auto') target.style.setProperty(prop, val);
       }
     });
 
@@ -64925,6 +65057,129 @@
       }
     }
     return null;
+  }
+
+  function parseHardBoxShadow(shadowStr) {
+    if (!shadowStr || shadowStr === 'none') return null;
+    const shadows = String(shadowStr).split(/,(?![^()]*\))/);
+    for (let shadow of shadows) {
+      shadow = shadow.trim();
+      if (!shadow || /\binset\b/i.test(shadow)) continue;
+      const match = shadow.match(
+        /(rgba?\([^)]+\)|#[0-9a-fA-F]{3,8}|[a-zA-Z]+)\s+(-?[\d.]+)px\s+(-?[\d.]+)px(?:\s+([\d.]+)px)?(?:\s+(-?[\d.]+)px)?/i
+      );
+      if (!match) continue;
+      const color = parseColor(match[1]);
+      const blur = parseFloat(match[4]) || 0;
+      if (!color.hex || color.opacity <= 0 || blur > 0.1) continue;
+      return {
+        color: color.hex,
+        opacity: color.opacity,
+        dx: parseFloat(match[2]) || 0,
+        dy: parseFloat(match[3]) || 0,
+        spread: parseFloat(match[5]) || 0,
+      };
+    }
+    return null;
+  }
+
+  function createHardShadowShapeItem(
+    shadow,
+    shapeType,
+    shapeOptions,
+    rotation,
+    scale,
+    effectiveOpacity,
+    zIndex,
+    domOrder
+  ) {
+    if (!shadow || !shapeType || !shapeOptions) return null;
+    const radians = (rotation * Math.PI) / 180;
+    const dx = shadow.dx * PX_TO_INCH * scale;
+    const dy = shadow.dy * PX_TO_INCH * scale;
+    const rotatedDx = dx * Math.cos(radians) - dy * Math.sin(radians);
+    const rotatedDy = dx * Math.sin(radians) + dy * Math.cos(radians);
+    const spread = shadow.spread * PX_TO_INCH * scale;
+    const opacity = Math.max(0, Math.min(1, shadow.opacity * effectiveOpacity));
+    const options = {
+      x: shapeOptions.x + rotatedDx - spread,
+      y: shapeOptions.y + rotatedDy - spread,
+      w: shapeOptions.w + spread * 2,
+      h: shapeOptions.h + spread * 2,
+      rotate: rotation,
+      fill: { color: shadow.color, transparency: (1 - opacity) * 100 },
+      line: { type: 'none' },
+    };
+    if (shapeOptions.rectRadius) options.rectRadius = shapeOptions.rectRadius;
+    return { type: 'shape', zIndex, domOrder: domOrder - 0.0001, shapeType, options };
+  }
+
+  /**
+   * Hard, zero-blur CSS shadows are commonly used as a second offset border.
+   * A risk-subtree bitmap can clip or flatten those shadows, especially when
+   * the risky boundary is an ancestor of the shadowed card. Recreate them as
+   * native shapes behind the bitmap so the stepped edge remains deterministic.
+   */
+  function collectRiskSubtreeHardShadowItems(
+    boundary,
+    config,
+    pptx,
+    zIndex,
+    domOrder,
+    boundaryOpacity = 1
+  ) {
+    if (!boundary || boundary.nodeType !== 1) return [];
+    const elements = [boundary, ...Array.from(boundary.querySelectorAll('*'))];
+    const items = [];
+
+    elements.forEach((element, index) => {
+      const style = getNodeWindow(element).getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      const hardShadow = parseHardBoxShadow(style.boxShadow);
+      if (!hardShadow) return;
+
+      const rect = element.getBoundingClientRect();
+      const widthPx = element.offsetWidth || rect.width;
+      const heightPx = element.offsetHeight || rect.height;
+      if (widthPx < 0.5 || heightPx < 0.5 || rect.width < 0.5 || rect.height < 0.5) return;
+
+      const w = widthPx * PX_TO_INCH * config.scale;
+      const h = heightPx * PX_TO_INCH * config.scale;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const x = config.offX + (centerX - config.rootX) * PX_TO_INCH * config.scale - w / 2;
+      const y = config.offY + (centerY - config.rootY) * PX_TO_INCH * config.scale - h / 2;
+      const rotation = getCumulativeTextRotation(element, config.root);
+      const minDimension = Math.min(widthPx, heightPx);
+      const rawRadius = parseFloat(style.borderRadius) || 0;
+      const percentageRadius = String(style.borderRadius || '').includes('%');
+      const radiusPx = percentageRadius ? (rawRadius / 100) * minDimension : rawRadius;
+      const isSquare = Math.abs(widthPx - heightPx) < 1;
+      let shapeType = pptx.ShapeType.rect;
+      const shapeOptions = { x, y, w, h, rotate: rotation };
+
+      if (radiusPx >= minDimension / 2 && (percentageRadius || isSquare)) {
+        shapeType = pptx.ShapeType.ellipse;
+      } else if (radiusPx > 0) {
+        shapeType = pptx.ShapeType.roundRect;
+        shapeOptions.rectRadius = Math.min(0.5, radiusPx / Math.max(1, minDimension));
+      }
+
+      const effectiveOpacity = getRelativeTextOpacity(element, boundary, boundaryOpacity);
+      const item = createHardShadowShapeItem(
+        hardShadow,
+        shapeType,
+        shapeOptions,
+        rotation,
+        config.scale,
+        effectiveOpacity,
+        zIndex,
+        domOrder - 0.01 + index / 100000
+      );
+      if (item) items.push(item);
+    });
+
+    return items;
   }
 
   /**
@@ -64998,18 +65253,18 @@
         // Formula: Map angle to perimeter coordinates.
         if (!isNaN(val)) {
           const deg = firstPart.includes('rad') ? val * (180 / Math.PI) : val;
-          const cssRad = ((deg - 90) * Math.PI) / 180; // Correct CSS angle offset
-
-          // Calculate standard vector for rectangle center (50, 50)
-          const scale = 50; // Distance from center to edge (approx)
-          const cos = Math.cos(cssRad); // Y component (reversed in SVG)
-          const sin = Math.sin(cssRad); // X component
-
-          // Invert Y for SVG coordinate system
-          x1 = (50 - sin * scale).toFixed(1) + '%';
-          y1 = (50 + cos * scale).toFixed(1) + '%';
-          x2 = (50 + sin * scale).toFixed(1) + '%';
-          y2 = (50 - cos * scale).toFixed(1) + '%';
+          const radians = (deg * Math.PI) / 180;
+          // CSS angles are clockwise from the top; SVG uses the same screen
+          // coordinate system (positive Y points down).  Keep the direction
+          // vector oriented from the first stop to the last stop so 135deg
+          // (to bottom right) remains bottom-right in PowerPoint.
+          const dx = Math.sin(radians);
+          const dy = -Math.cos(radians);
+          const scale = 50;
+          x1 = (50 - dx * scale).toFixed(1) + '%';
+          y1 = (50 - dy * scale).toFixed(1) + '%';
+          x2 = (50 + dx * scale).toFixed(1) + '%';
+          y2 = (50 + dy * scale).toFixed(1) + '%';
         }
       }
 
@@ -65578,6 +65833,33 @@
     }
   }
 
+  // Simple two-stop CSS gradients can remain editable as native PowerPoint fills.
+  function parseNativeLinearGradient(bgString) {
+    const match = String(bgString || '').trim().match(/^linear-gradient\((.*)\)$/i);
+    if (!match) return null;
+    const parts = splitTopLevelCommaParts(match[1]);
+    if (parts.length !== 3) return null;
+    const direction = parts[0].trim().toLowerCase();
+    let angle = null;
+    if (/^-?[\d.]+deg$/.test(direction)) angle = parseFloat(direction);
+    else if (direction === 'to right') angle = 90;
+    else if (direction === 'to left') angle = 270;
+    else if (direction === 'to bottom') angle = 180;
+    else if (direction === 'to top') angle = 0;
+    else return null;
+    const stops = parts.slice(1).map((part, index) => {
+      const matchStop = String(part).trim().match(/^(.*?)(?:\s+(-?[\d.]+)(%|px)?)?$/);
+      if (!matchStop) return null;
+      const color = parseColor(matchStop[1].trim());
+      if (!color.hex) return null;
+      const rawPos = matchStop[2] == null ? (index ? 100 : 0) : parseFloat(matchStop[2]);
+      const pos = matchStop[2] == null ? rawPos * 1000 : matchStop[3] === '%' ? rawPos * 1000 : rawPos;
+      return { color: color.hex, transparency: (1 - color.opacity) * 100, pos };
+    });
+    if (stops.some((stop) => !stop)) return null;
+    return { type: 'gradient', stops, angle: ((angle - 90) % 360 + 360) % 360 };
+  }
+
   function resetRiskFallbackDebug() {
     const win = typeof window !== 'undefined' ? window : null;
     if (!win) return [];
@@ -65635,22 +65917,96 @@
     return !/^(?:inset|circle|ellipse)\s*\(/i.test(clipPath);
   }
 
+  function getOverflowClipAxes(style) {
+    const overflow = String(style && style.overflow || '').toLowerCase();
+    const overflowX = String(style && style.overflowX || overflow).toLowerCase();
+    const overflowY = String(style && style.overflowY || overflow).toLowerCase();
+    const clips = (value) => ['hidden', 'clip', 'scroll', 'auto'].includes(value);
+    return { x: clips(overflowX), y: clips(overflowY) };
+  }
+
+  function isDecorativeTransformedLeaf(node, style = null) {
+    if (!node || node.nodeType !== 1) return false;
+    if (String(node.textContent || '').trim() || (node.children && node.children.length > 0)) {
+      return false;
+    }
+    const computedStyle = style || getNodeWindow(node).getComputedStyle(node);
+    const ariaHidden = String(node.getAttribute && node.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
+    const ignoresPointer = String(computedStyle.pointerEvents || '').toLowerCase() === 'none';
+    const positioned = /^(?:absolute|fixed)$/.test(String(computedStyle.position || '').toLowerCase());
+    const className = String(node.getAttribute && node.getAttribute('class') || '');
+    const namedDecoration = /(?:^|[-_\s])(?:deco|decorative|diamond|ornament|accent|shape)(?:$|[-_\s])/i.test(
+      className
+    );
+    return (positioned || namedDecoration) && (ariaHidden || ignoresPointer || namedDecoration);
+  }
+
+  function clipDescendantRectThroughIntermediateAncestors(descendant, boundary) {
+    let visibleRect = rectToPlainObject(descendant && descendant.getBoundingClientRect());
+    let current = descendant && descendant.parentElement;
+    while (visibleRect && current && current !== boundary) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const axes = getOverflowClipAxes(style);
+      if (axes.x || axes.y) {
+        const clipRect = rectToPlainObject(current.getBoundingClientRect());
+        const left = axes.x ? Math.max(visibleRect.left, clipRect.left) : visibleRect.left;
+        const right = axes.x ? Math.min(visibleRect.right, clipRect.right) : visibleRect.right;
+        const top = axes.y ? Math.max(visibleRect.top, clipRect.top) : visibleRect.top;
+        const bottom = axes.y ? Math.min(visibleRect.bottom, clipRect.bottom) : visibleRect.bottom;
+        if (right <= left || bottom <= top) return null;
+        visibleRect = { left, top, right, bottom, width: right - left, height: bottom - top };
+      }
+      current = current.parentElement;
+    }
+    return visibleRect;
+  }
+
+  function findNearestCrossedOverflowAncestor(node, root = null) {
+    if (!node || !node.parentElement) return null;
+    const nodeRect = rectToPlainObject(node.getBoundingClientRect());
+    let current = node.parentElement;
+    while (current) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const axes = getOverflowClipAxes(style);
+      if (axes.x || axes.y) {
+        const rect = rectToPlainObject(current.getBoundingClientRect());
+        const crosses =
+          (axes.x && (nodeRect.left < rect.left - 0.5 || nodeRect.right > rect.right + 0.5)) ||
+          (axes.y && (nodeRect.top < rect.top - 0.5 || nodeRect.bottom > rect.bottom + 0.5));
+        if (crosses) return current;
+      }
+      if (current === root) break;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function hasTransformedDescendant(node, maxNodes = 240) {
     if (!node || !node.querySelectorAll) return false;
-    const boundaryRect = node.getBoundingClientRect();
+    const boundaryRect = rectToPlainObject(node.getBoundingClientRect());
     const descendants = node.querySelectorAll('*');
     const limit = Math.min(descendants.length, maxNodes);
     for (let i = 0; i < limit; i++) {
       const child = descendants[i];
       const childStyle = getNodeWindow(child).getComputedStyle(child);
       if (isEffectivelyIdentityTransform(childStyle.transform)) continue;
-      const childRect = child.getBoundingClientRect();
+      // getBoundingClientRect() ignores overflow clipping. Clamp the visual
+      // bounds through intermediate clipping ancestors before classifying a
+      // broad layout container as risky. This prevents one clipped decorative
+      // corner from rasterizing an entire card grid.
+      const visibleRect = clipDescendantRectThroughIntermediateAncestors(child, node);
+      if (!visibleRect) continue;
       const crossesClipBoundary =
-        childRect.left < boundaryRect.left - 0.5 ||
-        childRect.top < boundaryRect.top - 0.5 ||
-        childRect.right > boundaryRect.right + 0.5 ||
-        childRect.bottom > boundaryRect.bottom + 0.5;
-      if (crossesClipBoundary) return true;
+        visibleRect.left < boundaryRect.left - 0.5 ||
+        visibleRect.top < boundaryRect.top - 0.5 ||
+        visibleRect.right > boundaryRect.right + 0.5 ||
+        visibleRect.bottom > boundaryRect.bottom + 0.5;
+      if (!crossesClipBoundary) continue;
+      // Empty aria-hidden/pointer-events:none leaves are captured separately
+      // against their nearest clip ancestor. They must not pull semantic card
+      // content into the same bitmap.
+      if (isDecorativeTransformedLeaf(child, childStyle)) continue;
+      return true;
     }
     return false;
   }
@@ -65880,6 +66236,10 @@
         );
         if (textStyle.hidden) continue;
         delete textStyle.hidden;
+        // The bitmap layer already retains backgrounds, borders and pills.
+        // Re-emitting an inline background as a text highlight duplicates the
+        // visual layer and can darken badge text (for example page-number pills).
+        sanitizeTextRunHighlight(textStyle, style, true);
         if (String(parent.namespaceURI || '').includes('svg') && style.fill && style.fill !== 'none') {
           const fill = parseColor(style.fill);
           if (fill.hex) textStyle.color = fill.hex;
@@ -65946,6 +66306,120 @@
     });
   }
 
+  function hideHardShadowsInCaptureClone(clonedRoot) {
+    if (!clonedRoot || !clonedRoot.ownerDocument) return;
+    const win = clonedRoot.ownerDocument.defaultView || window;
+    const elements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll('*'))];
+    elements.forEach((element) => {
+      const style = win.getComputedStyle(element);
+      if (parseHardBoxShadow(style.boxShadow)) {
+        element.style.setProperty('box-shadow', 'none', 'important');
+      }
+    });
+  }
+
+  function cropCanvasToCssRect(canvas, sourceRect, cropRect, scale) {
+    if (!canvas || !sourceRect || !cropRect) return null;
+    const safeScale = Math.max(0.01, Number(scale) || 1);
+    const sx = Math.max(0, Math.round((cropRect.left - sourceRect.left) * safeScale));
+    const sy = Math.max(0, Math.round((cropRect.top - sourceRect.top) * safeScale));
+    const sw = Math.max(1, Math.min(canvas.width - sx, Math.round(cropRect.width * safeScale)));
+    const sh = Math.max(1, Math.min(canvas.height - sy, Math.round(cropRect.height * safeScale)));
+    if (sw <= 0 || sh <= 0) return null;
+    const cropped = document.createElement('canvas');
+    cropped.width = sw;
+    cropped.height = sh;
+    const ctx = cropped.getContext('2d');
+    ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    return cropped;
+  }
+
+  /**
+   * Captures one empty transformed decoration through its nearest overflow clip.
+   * Ancestor backgrounds, siblings, text and pseudo-elements are hidden in the
+   * clone, so the returned bitmap contains only the clipped decorative leaf.
+   */
+  async function captureClippedDecorativeLeafVisual(node, clipAncestor, options = {}) {
+    if (!node || !clipAncestor || !clipAncestor.contains(node)) return null;
+    const nodeRect = rectToPlainObject(node.getBoundingClientRect());
+    const ancestorRect = rectToPlainObject(clipAncestor.getBoundingClientRect());
+    const clippedRect = intersectPlainRects(nodeRect, ancestorRect);
+    if (!clippedRect) return null;
+
+    const requestedScale = Number.isFinite(Number(options.riskRasterScale))
+      ? Number(options.riskRasterScale)
+      : 2;
+    const scale = Math.max(1, Math.min(3, requestedScale));
+    const ancestorAttribute = 'data-landppt-clipped-decoration-root';
+    const targetAttribute = 'data-landppt-clipped-decoration-target';
+    const ancestorPrevious = clipAncestor.getAttribute(ancestorAttribute);
+    const targetPrevious = node.getAttribute(targetAttribute);
+    const captureId = `clip-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    clipAncestor.setAttribute(ancestorAttribute, captureId);
+    node.setAttribute(targetAttribute, captureId);
+
+    const renderPass = (backgroundColor) =>
+      html2canvas(clipAncestor, {
+        backgroundColor,
+        logging: false,
+        scale,
+        useCORS: true,
+        width: Math.max(1, Math.ceil(ancestorRect.width)),
+        height: Math.max(1, Math.ceil(ancestorRect.height)),
+        x: 0,
+        y: 0,
+        removeContainer: true,
+        imageTimeout: 4000,
+        onclone: (clonedDoc) => {
+          const clonedAncestor = clonedDoc.querySelector(`[${ancestorAttribute}="${captureId}"]`);
+          const clonedTarget = clonedDoc.querySelector(`[${targetAttribute}="${captureId}"]`);
+          if (!clonedAncestor || !clonedTarget) return;
+
+          const pseudoReset = clonedDoc.createElement('style');
+          pseudoReset.textContent =
+            '[data-landppt-clipped-decoration-path="true"]::before,' +
+            '[data-landppt-clipped-decoration-path="true"]::after{' +
+            'content:none!important;display:none!important;}';
+          (clonedDoc.head || clonedDoc.documentElement).appendChild(pseudoReset);
+
+          const elements = [clonedAncestor, ...Array.from(clonedAncestor.querySelectorAll('*'))];
+          elements.forEach((element) => {
+            if (element === clonedTarget || clonedTarget.contains(element)) return;
+            if (element.contains(clonedTarget)) {
+              element.setAttribute('data-landppt-clipped-decoration-path', 'true');
+              element.style.setProperty('background', 'none', 'important');
+              element.style.setProperty('background-image', 'none', 'important');
+              element.style.setProperty('border-color', 'transparent', 'important');
+              element.style.setProperty('outline', 'none', 'important');
+              element.style.setProperty('box-shadow', 'none', 'important');
+              element.style.setProperty('text-shadow', 'none', 'important');
+              element.style.setProperty('color', 'transparent', 'important');
+              return;
+            }
+            element.style.setProperty('visibility', 'hidden', 'important');
+          });
+        },
+      });
+
+    try {
+      const blackFull = await renderPass('#000000');
+      const whiteFull = await renderPass('#ffffff');
+      const black = cropCanvasToCssRect(blackFull, ancestorRect, clippedRect, scale);
+      const white = cropCanvasToCssRect(whiteFull, ancestorRect, clippedRect, scale);
+      const alphaCanvas = reconstructAlphaMatte(black, white);
+      if (!alphaCanvas) return null;
+      return { data: alphaCanvas.toDataURL('image/png'), rect: clippedRect };
+    } catch (error) {
+      console.warn('Clipped decorative capture failed:', error);
+      return null;
+    } finally {
+      if (ancestorPrevious === null) clipAncestor.removeAttribute(ancestorAttribute);
+      else clipAncestor.setAttribute(ancestorAttribute, ancestorPrevious);
+      if (targetPrevious === null) node.removeAttribute(targetAttribute);
+      else node.setAttribute(targetAttribute, targetPrevious);
+    }
+  }
+
   function estimateRiskCapturePadding(style, options = {}) {
     const configured = Number(options.riskRasterPadding);
     if (Number.isFinite(configured)) return Math.max(0, Math.min(96, Math.round(configured)));
@@ -66007,6 +66481,10 @@
       /(?:deco|decorative|watermark|year-mark|chapter[-_]?num(?:ber)?|section[-_]?num(?:ber)?)/i.test(
         className
       );
+    // Small labels (navigation captions, English eyebrows, page numbers) are
+    // semantic content even when they use tracking. Keep them editable; the
+    // raster fallback is reserved for genuinely display-sized decoration.
+    if (fontSize <= 16 && !hasTextShadow && !explicitlyDecorative) return false;
     const primaryFont = parseFontFamilyList(style.fontFamily)[0] || '';
     const primaryFontKey = normalizeFontFamilyKey(primaryFont);
     const editableBodyFonts = new Set([
@@ -66181,7 +66659,10 @@
         imageTimeout: 4000,
         onclone: (clonedDoc) => {
           const clonedNode = clonedDoc.querySelector(`[${attributeName}="${captureId}"]`);
-          if (clonedNode) hideEditableTextInCaptureClone(clonedNode);
+          if (clonedNode) {
+            hideEditableTextInCaptureClone(clonedNode);
+            hideHardShadowsInCaptureClone(clonedNode);
+          }
         },
       });
 
@@ -67573,6 +68054,45 @@
     );
   }
 
+  function resolvePseudoLength(value, axisSize) {
+    const token = String(value || '').trim().toLowerCase();
+    if (!token || token === 'auto' || token === 'none') return null;
+    const number = parseFloat(token);
+    if (!Number.isFinite(number)) return null;
+    return token.endsWith('%') ? (number / 100) * axisSize : number;
+  }
+
+  function getTransformTranslation(transformValue) {
+    const value = String(transformValue || '').trim();
+    const matrix3d = value.match(/^matrix3d\(([^)]+)\)$/i);
+    if (matrix3d) {
+      const parts = matrix3d[1].split(',').map(Number);
+      return { x: Number(parts[12]) || 0, y: Number(parts[13]) || 0 };
+    }
+    const matrix = value.match(/^matrix\(([^)]+)\)$/i);
+    if (matrix) {
+      const parts = matrix[1].split(',').map(Number);
+      return { x: Number(parts[4]) || 0, y: Number(parts[5]) || 0 };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  function measurePseudoTextBox(win, style, text) {
+    try {
+      const canvas = win.document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      const fontSize = parseFloat(style.fontSize) || 16;
+      context.font = `${style.fontStyle || 'normal'} ${style.fontWeight || '400'} ${fontSize}px ${style.fontFamily || 'sans-serif'}`;
+      const tracking = parseFloat(style.letterSpacing) || 0;
+      const width = context.measureText(text).width + Math.max(0, Array.from(text).length - 1) * tracking;
+      const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.2;
+      return { width, height: lineHeight };
+    } catch (_) {
+      const fontSize = parseFloat(style.fontSize) || 16;
+      return { width: Array.from(text).length * fontSize, height: fontSize * 1.2 };
+    }
+  }
+
   function dedupeOverlappingTextItems(items) {
     const deduped = [];
 
@@ -67641,32 +68161,56 @@
       if (pseudoStyle.display === 'none' || pseudoStyle.visibility === 'hidden') continue;
 
       const pseudoContent = decodePseudoContentValue(pseudoStyle.content);
-      if (pseudoContent) continue;
-
       const pseudoOpacityRaw = parseFloat(pseudoStyle.opacity);
       const pseudoOpacity = Number.isFinite(pseudoOpacityRaw)
         ? Math.max(0, Math.min(1, pseudoOpacityRaw))
         : 1;
       if (pseudoOpacity <= 0) continue;
 
-      const pseudoWidth = parseFloat(pseudoStyle.width);
-      const pseudoHeight = parseFloat(pseudoStyle.height);
-      if (!Number.isFinite(pseudoWidth) || !Number.isFinite(pseudoHeight)) continue;
-      if (pseudoWidth < 0.5 || pseudoHeight < 0.5) continue;
-
       const borderLeftPx = parseFloat(pseudoStyle.borderLeftWidth) || 0;
       const borderRightPx = parseFloat(pseudoStyle.borderRightWidth) || 0;
       const borderTopPx = parseFloat(pseudoStyle.borderTopWidth) || 0;
       const borderBottomPx = parseFloat(pseudoStyle.borderBottomWidth) || 0;
+      const paddingLeftPx = parseFloat(pseudoStyle.paddingLeft) || 0;
+      const paddingRightPx = parseFloat(pseudoStyle.paddingRight) || 0;
+      const paddingTopPx = parseFloat(pseudoStyle.paddingTop) || 0;
+      const paddingBottomPx = parseFloat(pseudoStyle.paddingBottom) || 0;
       const isBorderBox = String(pseudoStyle.boxSizing || '').toLowerCase() === 'border-box';
-      const renderedWidth = pseudoWidth + (isBorderBox ? 0 : borderLeftPx + borderRightPx);
-      const renderedHeight = pseudoHeight + (isBorderBox ? 0 : borderTopPx + borderBottomPx);
+      const horizontalExtras = borderLeftPx + borderRightPx + paddingLeftPx + paddingRightPx;
+      const verticalExtras = borderTopPx + borderBottomPx + paddingTopPx + paddingBottomPx;
+      const leftValue = resolvePseudoLength(pseudoStyle.left, geometry.widthPx);
+      const rightValue = resolvePseudoLength(pseudoStyle.right, geometry.widthPx);
+      const topValue = resolvePseudoLength(pseudoStyle.top, geometry.heightPx);
+      const bottomValue = resolvePseudoLength(pseudoStyle.bottom, geometry.heightPx);
+      const measuredText = pseudoContent ? measurePseudoTextBox(win, pseudoStyle, pseudoContent) : null;
+      let pseudoWidth = resolvePseudoLength(pseudoStyle.width, geometry.widthPx);
+      let pseudoHeight = resolvePseudoLength(pseudoStyle.height, geometry.heightPx);
+      if (!Number.isFinite(pseudoWidth) && measuredText) pseudoWidth = measuredText.width;
+      if (!Number.isFinite(pseudoHeight) && measuredText) pseudoHeight = measuredText.height;
+      if (!Number.isFinite(pseudoWidth) && Number.isFinite(leftValue) && Number.isFinite(rightValue)) {
+        pseudoWidth = Math.max(0, geometry.widthPx - leftValue - rightValue - (isBorderBox ? 0 : horizontalExtras));
+      }
+      if (!Number.isFinite(pseudoHeight) && Number.isFinite(topValue) && Number.isFinite(bottomValue)) {
+        pseudoHeight = Math.max(0, geometry.heightPx - topValue - bottomValue - (isBorderBox ? 0 : verticalExtras));
+      }
+      if (!Number.isFinite(pseudoWidth) || !Number.isFinite(pseudoHeight)) continue;
+      const renderedWidth = pseudoWidth + (isBorderBox ? 0 : horizontalExtras);
+      const renderedHeight = pseudoHeight + (isBorderBox ? 0 : verticalExtras);
+      if (renderedWidth < 0.5 || renderedHeight < 0.5) continue;
 
-      let leftPx = parseFloat(pseudoStyle.left);
+      let leftPx = leftValue;
       if (!Number.isFinite(leftPx)) {
-        const rightPx = parseFloat(pseudoStyle.right);
-        if (Number.isFinite(rightPx)) {
-          leftPx = geometry.widthPx - renderedWidth - rightPx;
+        if (Number.isFinite(rightValue)) {
+          leftPx = geometry.widthPx - renderedWidth - rightValue;
+        } else if (
+          pseudoSelector === '::after' &&
+          /^(?:flex|inline-flex)$/i.test(String(baseStyle.display || '')) &&
+          !/^(?:column|column-reverse)$/i.test(String(baseStyle.flexDirection || 'row'))
+        ) {
+          // Flex ::after participates as the final item. Position it after the
+          // text content instead of the old zero-offset fallback, which placed
+          // decorative rules on top of the title (e.g. the 目录 trailing dash).
+          leftPx = geometry.widthPx - renderedWidth;
         } else if (
           String(baseStyle.display || '').includes('flex') &&
           String(baseStyle.justifyContent || '').toLowerCase() === 'center'
@@ -67678,11 +68222,10 @@
       }
       if (!Number.isFinite(leftPx)) leftPx = 0;
 
-      let topPx = parseFloat(pseudoStyle.top);
+      let topPx = topValue;
       if (!Number.isFinite(topPx)) {
-        const bottomPx = parseFloat(pseudoStyle.bottom);
-        if (Number.isFinite(bottomPx)) {
-          topPx = geometry.heightPx - renderedHeight - bottomPx;
+        if (Number.isFinite(bottomValue)) {
+          topPx = geometry.heightPx - renderedHeight - bottomValue;
         } else if (
           String(baseStyle.display || '').includes('flex') &&
           String(baseStyle.alignItems || '').toLowerCase() === 'center'
@@ -67693,6 +68236,9 @@
         }
       }
       if (!Number.isFinite(topPx)) topPx = 0;
+      const transformTranslation = getTransformTranslation(pseudoStyle.transform);
+      leftPx += transformTranslation.x;
+      topPx += transformTranslation.y;
 
       const itemBase = {
         zIndex: zIndex,
@@ -67702,7 +68248,7 @@
           y: geometry.y + topPx * pxToInchScale,
           w: renderedWidth * pxToInchScale,
           h: renderedHeight * pxToInchScale,
-          rotate: geometry.rotation,
+          rotate: geometry.rotation + getRotation(pseudoStyle.transform),
         },
       };
 
@@ -67713,8 +68259,78 @@
         (pseudoRadiusRaw.includes('%') && pseudoRadiusPx >= 50) ||
         pseudoRadiusPx >= pseudoMinDimension / 2;
       const pseudoShapeType = pseudoIsEllipse ? 'ellipse' : pseudoRadiusPx > 0 ? 'roundRect' : 'rect';
+      const pseudoBg = parseColor(pseudoStyle.backgroundColor);
+      const borderInfo = getBorderInfo(pseudoStyle, scale);
+      const hasPseudoFill = pseudoBg.hex && pseudoBg.opacity > 0;
+      const hasPseudoBorder = borderInfo.type === 'uniform' && borderInfo.options;
+      const finalAlpha = hasPseudoFill
+        ? Math.max(0, Math.min(1, safeOpacity * pseudoOpacity * pseudoBg.opacity))
+        : 0;
+      const lineOptions = hasPseudoBorder ? { ...borderInfo.options } : { type: 'none' };
+      if (hasPseudoBorder) {
+        const borderAlpha = 1 - (Number(lineOptions.transparency) || 0) / 100;
+        lineOptions.transparency =
+          (1 - Math.max(0, Math.min(1, borderAlpha * safeOpacity * pseudoOpacity))) * 100;
+      }
+
+      if (pseudoContent) {
+        const pseudoTextStyle = applyOpacityToTextStyle(
+          getTextStyle(pseudoStyle, scale, node, pseudoContent),
+          safeOpacity * pseudoOpacity
+        );
+        if (!pseudoTextStyle.hidden) {
+          items.push({
+            type: 'text',
+            zIndex: itemBase.zIndex,
+            domOrder: itemBase.domOrder,
+            textParts: [{ text: pseudoContent, options: pseudoTextStyle }],
+            options: {
+              shape: pseudoShapeType,
+              ...itemBase.options,
+              fill: hasPseudoFill
+                ? { color: pseudoBg.hex, transparency: (1 - finalAlpha) * 100 }
+                : { type: 'none' },
+              line: lineOptions,
+              margin: [paddingTopPx, paddingRightPx, paddingBottomPx, paddingLeftPx].map(
+                (value) => value * 0.75 * scale
+              ),
+              valign: 'middle',
+              align: String(pseudoStyle.textAlign || 'left'),
+              wrap: false,
+              autoFit: false,
+            },
+          });
+        }
+        continue;
+      }
 
       const pseudoBgImage = String(pseudoStyle.backgroundImage || '').trim();
+      if (/repeating-linear-gradient\s*\(/i.test(pseudoBgImage) && (renderedWidth <= 2.5 || renderedHeight <= 2.5)) {
+        const dashColor = parseColor(getGradientFallbackColor(pseudoBgImage));
+        if (dashColor.hex && dashColor.opacity > 0) {
+          const isVertical = renderedHeight >= renderedWidth;
+          items.push({
+            type: 'shape',
+            zIndex: itemBase.zIndex,
+            domOrder: itemBase.domOrder,
+            shapeType: 'line',
+            options: {
+              x: itemBase.options.x + (isVertical ? itemBase.options.w / 2 : 0),
+              y: itemBase.options.y + (isVertical ? 0 : itemBase.options.h / 2),
+              w: isVertical ? 0 : itemBase.options.w,
+              h: isVertical ? itemBase.options.h : 0,
+              rotate: itemBase.options.rotate,
+              line: {
+                color: dashColor.hex,
+                transparency: (1 - dashColor.opacity * safeOpacity * pseudoOpacity) * 100,
+                width: 0.75 * scale,
+                dashType: 'dash',
+              },
+            },
+          });
+          continue;
+        }
+      }
       if (pseudoBgImage && pseudoBgImage !== 'none' && pseudoBgImage.includes('gradient(')) {
         const pseudoRadius = parseFloat(pseudoStyle.borderRadius) || 0;
         const gradientData = generateGradientSVG(
@@ -67734,21 +68350,7 @@
         }
       }
 
-      const pseudoBg = parseColor(pseudoStyle.backgroundColor);
-      const borderInfo = getBorderInfo(pseudoStyle, scale);
-      const hasPseudoFill = pseudoBg.hex && pseudoBg.opacity > 0;
-      const hasPseudoBorder = borderInfo.type === 'uniform' && borderInfo.options;
       if (!hasPseudoFill && !hasPseudoBorder) continue;
-
-      const finalAlpha = hasPseudoFill
-        ? Math.max(0, Math.min(1, safeOpacity * pseudoOpacity * pseudoBg.opacity))
-        : 0;
-      const lineOptions = hasPseudoBorder ? { ...borderInfo.options } : { type: 'none' };
-      if (hasPseudoBorder) {
-        const borderAlpha = 1 - (Number(lineOptions.transparency) || 0) / 100;
-        lineOptions.transparency =
-          (1 - Math.max(0, Math.min(1, borderAlpha * safeOpacity * pseudoOpacity))) * 100;
-      }
 
       items.push({
         type: 'shape',
@@ -67813,6 +68415,11 @@
         getTextStyle(style, config.scale, parent, textContent),
         effectiveOpacity
       );
+      // This text node is reached only when its parent is a visual container
+      // (for example a rounded flex tag). The parent is exported as a native
+      // shape, so carrying its CSS background into a text highlight creates a
+      // second, misaligned colored rectangle behind the glyphs.
+      sanitizeTextRunHighlight(textOptions, style, true);
       if (textOptions.hidden) return null;
       delete textOptions.hidden;
 
@@ -67850,7 +68457,10 @@
     if (effectiveRectWidth < 0.5 || effectiveRectHeight < 0.5) return null;
 
     const zIndex = normalizeRenderableZIndex(effectiveZIndex);
-    const rotation = getRotation(style.transform);
+    // getComputedStyle(node).transform only contains the node's own transform.
+    // Browser geometry already includes ancestor transforms, so every exported
+    // visual/text descendant must also inherit the ancestor rotation.
+    const rotation = getCumulativeTextRotation(node, config.root);
     const safeOpacity = Number.isFinite(effectiveOpacity)
       ? Math.max(0, Math.min(1, effectiveOpacity))
       : 1;
@@ -67973,6 +68583,57 @@
     if (node.nodeName.toUpperCase() !== 'SVG' && globalOptions.hybridRiskFallback !== false) {
       const risk = analyzeRiskSubtree(node, style);
       if (risk.risky) {
+        const isolatedClipAncestor =
+          risk.reasons.length === 1 &&
+          risk.reasons[0] === 'transformed-clipping' &&
+          isDecorativeTransformedLeaf(node, style)
+            ? findNearestCrossedOverflowAncestor(node, config.root)
+            : null;
+        if (isolatedClipAncestor) {
+          const nodeRect = rectToPlainObject(node.getBoundingClientRect());
+          const ancestorRect = rectToPlainObject(isolatedClipAncestor.getBoundingClientRect());
+          const clippedRect = intersectPlainRects(nodeRect, ancestorRect);
+          if (clippedRect) {
+            const imageItem = {
+              type: 'image',
+              zIndex,
+              domOrder,
+              options: {
+                x: config.offX + (clippedRect.left - config.rootX) * PX_TO_INCH * config.scale,
+                y: config.offY + (clippedRect.top - config.rootY) * PX_TO_INCH * config.scale,
+                w: clippedRect.width * PX_TO_INCH * config.scale,
+                h: clippedRect.height * PX_TO_INCH * config.scale,
+                rotate: 0,
+                data: null,
+              },
+            };
+            const debugEntry = {
+              tagName: node.tagName,
+              reasons: ['isolated-transformed-clipping'],
+              textLineCount: 0,
+              hardShadowOverlayCount: 0,
+              isolatedDecoration: true,
+              captured: false,
+            };
+            getRiskFallbackDebug().push(debugEntry);
+            const job = async () => {
+              const captured = await captureClippedDecorativeLeafVisual(
+                node,
+                isolatedClipAncestor,
+                globalOptions
+              );
+              if (!captured || !captured.data) {
+                imageItem.skip = true;
+                debugEntry.error = 'capture-failed';
+                return;
+              }
+              imageItem.options.data = captured.data;
+              debugEntry.captured = true;
+            };
+            return { items: [imageItem], job, stopRecursion: true };
+          }
+        }
+
         const visualX = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
         const visualY = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
         const visualW = effectiveRectWidth * PX_TO_INCH * config.scale;
@@ -67992,10 +68653,19 @@
           domOrder,
           safeOpacity
         );
+        const hardShadowItems = collectRiskSubtreeHardShadowItems(
+          node,
+          config,
+          pptx,
+          zIndex,
+          domOrder,
+          safeOpacity
+        );
         const debugEntry = {
           tagName: node.tagName,
           reasons: risk.reasons.slice(),
           textLineCount: textItems.length,
+          hardShadowOverlayCount: hardShadowItems.length,
           captured: false,
         };
         getRiskFallbackDebug().push(debugEntry);
@@ -68016,7 +68686,7 @@
           debugEntry.captured = true;
         };
 
-        return { items: [imageItem, ...textItems], job, stopRecursion: true };
+        return { items: [...hardShadowItems, imageItem, ...textItems], job, stopRecursion: true };
       }
     }
 
@@ -68265,6 +68935,12 @@
 
     // --- ASYNC JOB: SVG visual layer + editable SVG text layer ---
     if (node.nodeName.toUpperCase() === 'SVG') {
+      // The cloned SVG already contains its own computed CSS transform. Only
+      // apply ancestor rotation to the PPT image, otherwise a root transform
+      // (for example `rotate(-90deg)` on a progress ring) is doubled.
+      const svgImageRotation = node.parentElement
+        ? getCumulativeTextRotation(node.parentElement, config.root)
+        : 0;
       const svgTextItems = collectEditableTextLineItems(
         node,
         config,
@@ -68276,7 +68952,7 @@
         type: 'image',
         zIndex,
         domOrder,
-        options: { data: null, x, y, w, h, rotate: rotation },
+        options: { data: null, x, y, w, h, rotate: svgImageRotation },
       };
 
       const job = async () => {
@@ -68415,11 +69091,14 @@
         shouldRasterizeDecorativeText(node, style) &&
         !hasEmbeddableExportFont(node, style, globalOptions)));
     if (shouldUseDisplayTextFallback && shouldRasterizeDecorativeText(node, style)) {
+      const inheritedRotation = rotation - getRotation(style.transform);
       const item = {
         type: 'image',
         zIndex,
         domOrder,
-        options: { data: null, x, y, w, h, rotate: 0 },
+        // html2canvas captures the node's own transform, but not the visual
+        // rotation inherited from transformed ancestors.
+        options: { data: null, x, y, w, h, rotate: inheritedRotation || 0 },
       };
       const debugEntry = {
         tagName: node.tagName,
@@ -68623,9 +69302,13 @@
     const borderInfo = getBorderInfo(style, config.scale);
     const hasUniformBorder = borderInfo.type === 'uniform';
     const hasCompositeBorder = borderInfo.type === 'composite';
+    const borderLineOptions = hasUniformBorder
+      ? applyOpacityToLineOptions(borderInfo.options, safeOpacity)
+      : null;
 
     const shadowStr = style.boxShadow;
     const hasShadow = shadowStr && shadowStr !== 'none';
+    const hardShadow = hasShadow ? parseHardBoxShadow(shadowStr) : null;
     const softEdge = getSoftEdges(style.filter, config.scale);
 
     let isImageWrapper = false;
@@ -68645,13 +69328,22 @@
       );
 
       if (textParts.length > 0) {
+        const browserLineCount = getBrowserTextVisualLineCount(node);
         let align = style.textAlign || 'left';
         if (align === 'start') align = 'left';
         if (align === 'end') align = 'right';
         let valign = 'top';
         if (style.alignItems === 'center') valign = 'middle';
-        if (style.justifyContent === 'center' && style.display.includes('flex')) align = 'center';
+        // justify-content positions flex items; it is not paragraph alignment.
+        // Mapping it to text alignment is only equivalent for a single visual
+        // line. Multi-line anonymous flex text must retain CSS text-align.
         if (
+          browserLineCount === 1 &&
+          style.justifyContent === 'center' &&
+          style.display.includes('flex')
+        ) align = 'center';
+        if (
+          browserLineCount === 1 &&
           /^(?:flex-end|end|right)$/.test(String(style.justifyContent || '').toLowerCase()) &&
           style.display.includes('flex')
         ) {
@@ -68666,7 +69358,6 @@
         margin[0] += getLeadingFlexPseudoInset(node, style, config.scale);
         if (align === 'center' && valign === 'middle') margin = [0, 0, 0, 0];
 
-        const browserLineCount = getBrowserTextVisualLineCount(node);
         const canSafelyPadSingleLineTextBox =
           browserLineCount === 1 &&
           !bgColorObj.hex &&
@@ -68691,7 +69382,70 @@
       }
     }
 
-    if (hasGradient || (softEdge && bgColorObj.hex && !isImageWrapper)) {
+    const nativeGradientFill = !textPayload ? parseNativeLinearGradient(backgroundImageValue) : null;
+    if (nativeGradientFill) {
+      const nativeShapeOptions = {
+        x,
+        y,
+        w,
+        h,
+        rotate: rotation,
+        fill: nativeGradientFill,
+        line: { type: 'none' },
+      };
+      if (hasShadow && !hardShadow) nativeShapeOptions.shadow = getVisibleShadow(shadowStr, config.scale);
+      const nativeShapeType = borderRadiusValue > 0 ? pptx.ShapeType.roundRect : pptx.ShapeType.rect;
+      if (nativeShapeType === pptx.ShapeType.roundRect) {
+        nativeShapeOptions.rectRadius = Math.min(0.5, borderRadiusValue / Math.max(1, Math.min(widthPx, heightPx)));
+      }
+      const nativeHardShadowItem = createHardShadowShapeItem(
+        hardShadow,
+        nativeShapeType,
+        nativeShapeOptions,
+        rotation,
+        config.scale,
+        safeOpacity,
+        zIndex,
+        domOrder
+      );
+      if (nativeHardShadowItem) items.push(nativeHardShadowItem);
+      items.push({ type: 'shape', zIndex, domOrder, shapeType: nativeShapeType, options: nativeShapeOptions });
+      // Gradient fills and borders are separate DrawingML layers. Keeping the
+      // border on its own shape avoids Office dropping it while serializing the
+      // native gradient fill.
+      if (hasUniformBorder) {
+        const borderOverlayOptions = {
+          x,
+          y,
+          w,
+          h,
+          rotate: rotation,
+          fill: { type: 'none' },
+          line: borderLineOptions,
+        };
+        if (nativeShapeOptions.rectRadius) {
+          borderOverlayOptions.rectRadius = nativeShapeOptions.rectRadius;
+        }
+        items.push({
+          type: 'shape',
+          zIndex: nextRenderableZIndex(zIndex),
+          domOrder,
+          shapeType: nativeShapeType,
+          options: borderOverlayOptions,
+        });
+      }
+      if (hasCompositeBorder) {
+        const borderSvgData = generateCompositeBorderSVG(widthPx, heightPx, borderRadiusValue, borderInfo.sides, safeOpacity);
+        if (borderSvgData) {
+          items.push({
+            type: 'image',
+            zIndex: nextRenderableZIndex(zIndex),
+            domOrder,
+            options: { data: borderSvgData, x, y, w, h, rotate: rotation },
+          });
+        }
+      }
+    } else if (hasGradient || (softEdge && bgColorObj.hex && !isImageWrapper)) {
       let bgData = null;
       let padIn = 0;
       if (softEdge) {
@@ -68710,7 +69464,7 @@
           heightPx,
           style.backgroundImage,
           borderRadiusValue,
-          hasUniformBorder ? { color: borderColorObj.hex, width: borderWidth } : null
+          null
         );
       }
 
@@ -68729,6 +69483,25 @@
           ? clipPptOptionsToOverflow(gradientOptions, node, config)
           : gradientOptions;
         if (clippedGradientOptions) {
+          const gradientShadowShapeType = borderRadiusValue > 0 ? pptx.ShapeType.roundRect : pptx.ShapeType.rect;
+          const gradientShadowOptions = { x, y, w, h, rotate: rotation };
+          if (gradientShadowShapeType === pptx.ShapeType.roundRect) {
+            gradientShadowOptions.rectRadius = Math.min(
+              0.5,
+              borderRadiusValue / Math.max(1, Math.min(widthPx, heightPx))
+            );
+          }
+          const gradientHardShadowItem = createHardShadowShapeItem(
+            hardShadow,
+            gradientShadowShapeType,
+            gradientShadowOptions,
+            rotation,
+            config.scale,
+            safeOpacity,
+            zIndex,
+            domOrder
+          );
+          if (gradientHardShadowItem) items.push(gradientHardShadowItem);
           items.push({
             type: 'image',
             zIndex,
@@ -68757,12 +69530,38 @@
           },
         });
       }
+      if (hasUniformBorder) {
+        const gradientBorderShapeType = borderRadiusValue > 0 ? pptx.ShapeType.roundRect : pptx.ShapeType.rect;
+        const gradientBorderOptions = {
+          x,
+          y,
+          w,
+          h,
+          rotate: rotation,
+          fill: { type: 'none' },
+          line: borderLineOptions,
+        };
+        if (gradientBorderShapeType === pptx.ShapeType.roundRect) {
+          gradientBorderOptions.rectRadius = Math.min(
+            0.5,
+            borderRadiusValue / Math.max(1, Math.min(widthPx, heightPx))
+          );
+        }
+        items.push({
+          type: 'shape',
+          zIndex: nextRenderableZIndex(zIndex, 2),
+          domOrder,
+          shapeType: gradientBorderShapeType,
+          options: gradientBorderOptions,
+        });
+      }
       if (hasCompositeBorder) {
         const borderSvgData = generateCompositeBorderSVG(
           widthPx,
           heightPx,
           borderRadiusValue,
-          borderInfo.sides
+          borderInfo.sides,
+          safeOpacity
         );
         if (borderSvgData) {
           items.push({
@@ -68790,7 +69589,7 @@
           widthPx,
           heightPx,
           bgColorObj.hex,
-          bgColorObj.opacity,
+          bgColorObj.opacity * safeOpacity,
           {
             tl: parseFloat(style.borderTopLeftRadius) || 0,
             tr: parseFloat(style.borderTopRightRadius) || 0,
@@ -68817,11 +69616,11 @@
             : { type: 'none' },
           line:
             hasUniformBorder && !splitUniformBorderOverlay
-              ? borderInfo.options
+              ? borderLineOptions
               : { type: 'none' },
         };
 
-        if (hasShadow) shapeOpts.shadow = getVisibleShadow(shadowStr, config.scale);
+        if (hasShadow && !hardShadow) shapeOpts.shadow = getVisibleShadow(shadowStr, config.scale);
 
         // 1. Calculate dimensions first
         const minDimension = Math.min(widthPx, heightPx);
@@ -68856,6 +69655,18 @@
 
           shapeOpts.rectRadius = r;
         }
+
+        const hardShadowItem = createHardShadowShapeItem(
+          hardShadow,
+          shapeType,
+          shapeOpts,
+          rotation,
+          config.scale,
+          safeOpacity,
+          zIndex,
+          domOrder
+        );
+        if (hardShadowItem) items.push(hardShadowItem);
 
         if (textPayload) {
           textPayload.text[0].options.fontSize =
@@ -68896,7 +69707,7 @@
             h,
             rotate: rotation,
             fill: { type: 'none' },
-            line: borderInfo.options,
+            line: borderLineOptions,
           };
           if (shapeOpts.rectRadius) borderOverlayOpts.rectRadius = shapeOpts.rectRadius;
           items.push({
@@ -68914,7 +69725,8 @@
           widthPx,
           heightPx,
           borderRadiusValue,
-          borderInfo.sides
+          borderInfo.sides,
+          safeOpacity
         );
         if (borderSvgData) {
           items.push({
@@ -69043,7 +69855,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-08-31-font-fidelity-v34';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-01-clipped-decoration-layer-v45';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

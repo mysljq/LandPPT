@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_inline_complex_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-08-31-font-fidelity-v34"
+EXPECTED_PATCH_VERSION = "2026-09-01-clipped-decoration-layer-v45"
 
 
 def test_dom_to_pptx_inline_complex_smoke():

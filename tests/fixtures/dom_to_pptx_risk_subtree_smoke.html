@@ -14,18 +14,39 @@
       .filter { left: 635px; top: 35px; background: #ef476f; filter: drop-shadow(12px 10px 8px rgba(0,0,0,.38)); }
       .backdrop { left: 935px; top: 35px; background: rgba(255,255,255,.35); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,.7); }
       .blend { left: 35px; top: 205px; background: #118ab2; mix-blend-mode: multiply; }
-      .gradient { left: 335px; top: 205px; background-image: radial-gradient(circle at 20% 20%, #fff, transparent 40%), linear-gradient(135deg, #8338ec, #3a86ff); color: white; }
+      .gradient { left: 335px; top: 205px; background-image: radial-gradient(circle at 20% 20%, #fff, transparent 40%), linear-gradient(135deg, #8338ec, #3a86ff); color: white; box-shadow: 5px 5px 0 #0a7c55; }
       .clipper { left: 635px; top: 205px; overflow: hidden; background: #073b4c; color: white; }
       .clipper > span { display: block; width: 290px; transform: rotate(-7deg) translateX(12px); }
       .svg-wrap { position: absolute; left: 935px; top: 205px; width: 260px; height: 150px; }
       .two-lines { width: 170px; line-height: 24px; }
+      .risk-badge { background: #14213d; color: white; border-radius: 999px; padding: 2px 8px; }
+      .editable-grid {
+        position: absolute; left: 35px; top: 390px; width: 1160px; height: 280px;
+        display: flex; gap: 20px; overflow: hidden;
+      }
+      .editable-grid-card {
+        position: relative; flex: 1; overflow: hidden; padding: 22px; box-sizing: border-box;
+        background: linear-gradient(145deg, #fff 0%, #eef5ff 100%);
+        border: 1px solid #b9c8df; border-radius: 12px;
+      }
+      .editable-grid-card h3 { margin: 0 0 12px; font-size: 22px; }
+      .editable-grid-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+      .editable-grid-tags span {
+        display: inline-block; padding: 4px 14px; border-radius: 999px;
+        color: #21416b; background: rgba(33, 65, 107, .08); border: 1px solid rgba(33, 65, 107, .12);
+      }
+      .editable-grid-decoration {
+        position: absolute; width: 120px; height: 120px; right: -28px; bottom: -28px;
+        transform: rotate(45deg); pointer-events: none; opacity: .12;
+        border: 2px solid #3a86ff; background: rgba(58, 134, 255, .08);
+      }
     </style>
   </head>
   <body>
     <div id="slide">
       <div id="mask" class="card mask">遮罩文字仍可编辑</div>
       <div id="clip" class="card clip">复杂裁剪文字</div>
-      <div id="filter" class="card filter"><div class="two-lines">滤镜中的文字会按浏览器换行提取</div></div>
+      <div id="filter" class="card filter"><div class="two-lines"><span class="risk-badge">8</span> 滤镜中的文字会按浏览器换行提取</div></div>
       <div id="backdrop" class="card backdrop">毛玻璃文字</div>
       <div id="blend" class="card blend">混合模式文字</div>
       <div id="gradient" class="card gradient">多层渐变文字</div>
@@ -40,6 +61,19 @@
         <text x="82" y="58" font-size="24" font-weight="700" fill="#fff">SVG 标题</text>
         <text x="82" y="94" font-size="16" fill="#fff"><tspan>SVG 副标题</tspan></text>
       </svg>
+      <div id="editable-grid" class="editable-grid">
+        <div class="editable-grid-card">
+          <h3>原生卡片一</h3>
+          <p>卡片组不能因内部装饰裁剪而整体栅格化。</p>
+        </div>
+        <div id="editable-grid-card" class="editable-grid-card">
+          <div id="editable-grid-decoration" class="editable-grid-decoration" aria-hidden="true"></div>
+          <h3>原生卡片二</h3>
+          <div class="editable-grid-tags">
+            <span>高可用</span><span>可扩展</span><span>易维护</span><span>故障自愈</span>
+          </div>
+        </div>
+      </div>
     </div>
     <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
     <script>
@@ -59,6 +93,14 @@
         const svgTextLines = window.domToPptx.__landpptCollectEditableTextLineItems(
           document.getElementById('complex-svg'), layoutConfig, 0, 0, 1
         );
+        const editableGridRisk = window.domToPptx.__landpptAnalyzeRiskSubtree(
+          document.getElementById('editable-grid'),
+          getComputedStyle(document.getElementById('editable-grid'))
+        );
+        const editableCardRisk = window.domToPptx.__landpptAnalyzeRiskSubtree(
+          document.getElementById('editable-grid-card'),
+          getComputedStyle(document.getElementById('editable-grid-card'))
+        );
 
         const black = document.createElement('canvas');
         const white = document.createElement('canvas');
@@ -75,18 +117,31 @@
           riskRasterScale: 1,
           maxRiskRasterPixels: 1500000,
         });
+        const pptxBytes = new Uint8Array(await blob.arrayBuffer());
+        let pptxBinary = '';
+        for (let i = 0; i < pptxBytes.length; i += 0x8000) {
+          pptxBinary += String.fromCharCode(...pptxBytes.subarray(i, i + 0x8000));
+        }
         const debug = window.__LANDPPT_PPTX_RISK_FALLBACK_DEBUG__ || [];
         return {
           patchVersion: window.domToPptx.__landpptPatchVersion,
           blobSize: blob.size,
           editableLineCount: editableLines.length,
+          editableHasHighlight: editableLines.some((item) =>
+            item.textParts.some((part) => part.options && part.options.highlight)
+          ),
           svgTextLineCount: svgTextLines.length,
           detectedReasons,
           allCapturesSucceeded: debug.filter((entry) => entry.tagName !== 'SVG').every((entry) => entry.captured),
           riskCaptureCount: debug.length,
+          hardShadowOverlayCount: debug.reduce((sum, entry) => sum + (entry.hardShadowOverlayCount || 0), 0),
           rootWasRasterized: debug.some((entry) =>
             entry.tagName === 'DIV' && entry.reasons.includes('transformed-descendant-clipping') && entry.textLineCount > 7
           ),
+          editableGridRisky: editableGridRisk.risky,
+          editableCardRisky: editableCardRisk.risky,
+          isolatedDecorationCount: debug.filter((entry) => entry.isolatedDecoration).length,
+          pptxBase64: btoa(pptxBinary),
           mattePixel,
         };
       };

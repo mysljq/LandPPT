@@ -1,7 +1,7 @@
 let domToPptxLoadPromise = null;
 const DOM_TO_PPTX_BUNDLE_PATH = '/static/js/dom-to-pptx.bundle.js';
-const DOM_TO_PPTX_BUNDLE_VERSION = '20260831-font-fidelity-v34';
-const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-08-31-font-fidelity-v34';
+const DOM_TO_PPTX_BUNDLE_VERSION = '20260901-clipped-decoration-layer-v45';
+const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-01-clipped-decoration-layer-v45';
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
