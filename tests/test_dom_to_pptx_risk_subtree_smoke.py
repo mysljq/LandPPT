@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_risk_subtree_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-clipped-decoration-layer-v45"
-EXPECTED_ASSET_VERSION = "20260901-clipped-decoration-layer-v45"
+EXPECTED_PATCH_VERSION = "2026-09-01-svg-pattern-alpha-v48"
+EXPECTED_ASSET_VERSION = "20260901-svg-pattern-alpha-v48"
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
@@ -108,6 +108,8 @@ def test_dom_to_pptx_risk_subtree_smoke():
     tag_text_shapes = [shape for shape in shapes if _shape_text(shape) in tag_labels]
     assert len(tag_text_shapes) == 4
     assert {_shape_text(shape) for shape in tag_text_shapes} == tag_labels
+    tag_point_shapes = [shape for shape in shapes if _shape_text(shape) == "◆"]
+    assert len(tag_point_shapes) == 4
 
     tag_background_shapes = []
     for shape in shapes:
@@ -128,6 +130,21 @@ def test_dom_to_pptx_risk_subtree_smoke():
             (bx, by, bw, bh)
             for bx, by, bw, bh in background_rects
             if bx <= tx and by <= ty and bx + bw >= tx + tw and by + bh >= ty + th
+        ]
+        assert len(matches) == 1
+
+    for point_shape, text_shape in zip(
+        sorted(tag_point_shapes, key=lambda shape: _shape_geometry(shape)[0]),
+        sorted(tag_text_shapes, key=lambda shape: _shape_geometry(shape)[0]),
+    ):
+        px, py, pw, ph = _shape_geometry(point_shape)
+        tx, ty, tw, th = _shape_geometry(text_shape)
+        assert px + pw <= tx
+        assert abs((py + ph / 2) - (ty + th / 2)) <= 80_000
+        matches = [
+            (bx, by, bw, bh)
+            for bx, by, bw, bh in background_rects
+            if bx <= px and by <= py and bx + bw >= tx + tw and by + bh >= max(py + ph, ty + th)
         ]
         assert len(matches) == 1
     assert set(result["detectedReasons"]) >= {

@@ -62629,14 +62629,38 @@
     return {
       pt: width * 0.75 * scale, // Convert px to pt
       color: color.hex,
-      style: dash,
+      type: dash,
     };
+  }
+
+  function getEffectiveTableCellBackground(cell, table) {
+    let current = cell;
+    while (current && current.nodeType === 1) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const background = parseColor(style.backgroundColor);
+      if (background.hex && background.opacity > 0.001) return background;
+      if (current === table) break;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function getTableCellRelativeOpacity(cell, table) {
+    let opacity = 1;
+    let current = cell;
+    while (current && current !== table) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const ownOpacity = parseFloat(style.opacity);
+      if (Number.isFinite(ownOpacity)) opacity *= Math.max(0, Math.min(1, ownOpacity));
+      current = current.parentElement;
+    }
+    return Math.max(0, Math.min(1, opacity));
   }
 
   /**
    * Extracts native table data for PptxGenJS.
    */
-  function extractTableData(node, scale) {
+  function extractTableData(node, scale, tableOpacity = 1) {
     const rows = [];
     const colWidths = [];
 
@@ -62663,13 +62687,25 @@
       cellList.forEach((cell) => {
         const style = getNodeWindow(cell).getComputedStyle(cell);
         const cellText = cell.innerText.replace(/[\n\r\t]+/g, ' ').trim();
+        const cellOpacity = Math.max(
+          0,
+          Math.min(1, tableOpacity * getTableCellRelativeOpacity(cell, node))
+        );
 
         // A. Text Style
-        const textStyle = getTextStyle(style, scale, cell);
+        const textStyle = applyOpacityToTextStyle(getTextStyle(style, scale, cell), cellOpacity);
 
-        // B. Cell Background
-        const bg = parseColor(style.backgroundColor);
-        const fill = bg.hex && bg.opacity > 0 ? { color: bg.hex } : null;
+        // B. Cell Background. CSS paints row/section/table backgrounds through
+        // transparent cells, but PowerPoint cells do not inherit those fills.
+        // Resolve the first visible background up the table hierarchy and copy
+        // it onto every cell explicitly.
+        const bg = getEffectiveTableCellBackground(cell, node);
+        const fill = bg && bg.hex
+          ? {
+              color: bg.hex,
+              transparency: (1 - Math.max(0, Math.min(1, bg.opacity * cellOpacity))) * 100,
+            }
+          : null;
 
         // C. Alignment
         let align = 'left';
@@ -62718,13 +62754,15 @@
             rowspan: parseInt(cell.getAttribute('rowspan')) || null,
             colspan: parseInt(cell.getAttribute('colspan')) || null,
 
-            border: {
-              pt: null, // trigger explicit object structure
-              top: borderTop,
-              right: borderRight,
-              bottom: borderBottom,
-              left: borderLeft,
-            },
+            // PptxGenJS requires [top, right, bottom, left]. Passing a keyed
+            // object makes it treat the object as one uniform border and fall
+            // back to its default dark line on every side.
+            border: [
+              borderTop || { type: 'none' },
+              borderRight || { type: 'none' },
+              borderBottom || { type: 'none' },
+              borderLeft || { type: 'none' },
+            ],
           },
         });
       });
@@ -62875,6 +62913,44 @@
       ...lineOptions,
       transparency: (1 - baseAlpha * multiplier) * 100,
     };
+  }
+
+  function getAncestorOpacityMultiplier(nodeStyle, effectiveOpacity) {
+    const effectiveValue = Number(effectiveOpacity);
+    const effective = Number.isFinite(effectiveValue)
+      ? Math.max(0, Math.min(1, effectiveValue))
+      : 1;
+    const ownValue = parseFloat(nodeStyle && nodeStyle.opacity);
+    const own = Number.isFinite(ownValue) ? Math.max(0, Math.min(1, ownValue)) : 1;
+    if (own <= 0.001) return 1;
+    return Math.max(0, Math.min(1, effective / own));
+  }
+
+  function applyOpacityToImageOptions(imageOptions, opacityMultiplier) {
+    if (!imageOptions) return imageOptions;
+    const multiplierValue = Number(opacityMultiplier);
+    const multiplier = Number.isFinite(multiplierValue)
+      ? Math.max(0, Math.min(1, multiplierValue))
+      : 1;
+    const existingTransparencyValue = Number(imageOptions.transparency);
+    const existingTransparency = Number.isFinite(existingTransparencyValue)
+      ? Math.max(0, Math.min(100, existingTransparencyValue))
+      : 0;
+    const combinedAlpha = (1 - existingTransparency / 100) * multiplier;
+    const result = { ...imageOptions };
+    const transparency = (1 - combinedAlpha) * 100;
+    if (transparency > 0.01) result.transparency = transparency;
+    else delete result.transparency;
+    return result;
+  }
+
+  function shouldBakeComplexSvgAncestorOpacity(node, options, opacityMultiplier) {
+    if (!node || !node.querySelector || (options && options.svgAsVector)) return false;
+    const multiplier = Number(opacityMultiplier);
+    if (!Number.isFinite(multiplier) || multiplier >= 0.999) return false;
+    // Paint servers and browser-composited SVG effects are less reliable in
+    // Office when combined with a second picture-level transparency layer.
+    return !!node.querySelector('pattern, filter, mask, clipPath, foreignObject');
   }
 
   /**
@@ -64943,6 +65019,13 @@
         canvas.height = height * scale;
         const ctx = canvas.getContext('2d');
         ctx.scale(scale, scale);
+        const opacityMultiplierValue = Number(options.opacityMultiplier);
+        const opacityMultiplier = Number.isFinite(opacityMultiplierValue)
+          ? Math.max(0, Math.min(1, opacityMultiplierValue))
+          : 1;
+        // Bake the ancestor alpha into complex SVG PNGs so Office only needs
+        // to composite one alpha channel instead of PNG alpha + alphaModFix.
+        ctx.globalAlpha = opacityMultiplier;
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL('image/png'));
       };
@@ -68093,6 +68176,21 @@
     }
   }
 
+  function getNodeContentRangeRects(node) {
+    if (!node || !node.ownerDocument) return [];
+    const range = node.ownerDocument.createRange();
+    try {
+      range.selectNodeContents(node);
+      return Array.from(range.getClientRects()).filter(
+        (rect) => rect && rect.width > 0.1 && rect.height > 0.1
+      );
+    } catch (_) {
+      return [];
+    } finally {
+      if (typeof range.detach === 'function') range.detach();
+    }
+  }
+
   function dedupeOverlappingTextItems(items) {
     const deduped = [];
 
@@ -68183,6 +68281,20 @@
       const topValue = resolvePseudoLength(pseudoStyle.top, geometry.heightPx);
       const bottomValue = resolvePseudoLength(pseudoStyle.bottom, geometry.heightPx);
       const measuredText = pseudoContent ? measurePseudoTextBox(win, pseudoStyle, pseudoContent) : null;
+      const pseudoPosition = String(pseudoStyle.position || 'static').toLowerCase();
+      const pseudoDisplay = String(pseudoStyle.display || '').toLowerCase();
+      const isInlineFlowPseudo =
+        !!pseudoContent &&
+        !/^(?:absolute|fixed)$/.test(pseudoPosition) &&
+        /^(?:inline|inline-block|inline-flex)$/.test(pseudoDisplay);
+      const contentRects = isInlineFlowPseudo ? getNodeContentRangeRects(node) : [];
+      const anchorContentRect =
+        pseudoSelector === '::before'
+          ? contentRects[0] || null
+          : contentRects[contentRects.length - 1] || null;
+      const nodeRect = anchorContentRect ? node.getBoundingClientRect() : null;
+      const pseudoMarginLeft = parseFloat(pseudoStyle.marginLeft) || 0;
+      const pseudoMarginRight = parseFloat(pseudoStyle.marginRight) || 0;
       let pseudoWidth = resolvePseudoLength(pseudoStyle.width, geometry.widthPx);
       let pseudoHeight = resolvePseudoLength(pseudoStyle.height, geometry.heightPx);
       if (!Number.isFinite(pseudoWidth) && measuredText) pseudoWidth = measuredText.width;
@@ -68199,7 +68311,17 @@
       if (renderedWidth < 0.5 || renderedHeight < 0.5) continue;
 
       let leftPx = leftValue;
-      if (!Number.isFinite(leftPx)) {
+      if (isInlineFlowPseudo && anchorContentRect && nodeRect) {
+        if (pseudoSelector === '::before') {
+          // Range rects expose the browser-laid-out start of the real text.
+          // Walk backwards by the pseudo glyph and its margin so the exported
+          // marker keeps the exact CSS padding/gap used in the live DOM.
+          leftPx =
+            anchorContentRect.left - nodeRect.left - pseudoMarginRight - renderedWidth;
+        } else {
+          leftPx = anchorContentRect.right - nodeRect.left + pseudoMarginLeft;
+        }
+      } else if (!Number.isFinite(leftPx)) {
         if (Number.isFinite(rightValue)) {
           leftPx = geometry.widthPx - renderedWidth - rightValue;
         } else if (
@@ -68223,7 +68345,20 @@
       if (!Number.isFinite(leftPx)) leftPx = 0;
 
       let topPx = topValue;
-      if (!Number.isFinite(topPx)) {
+      if (isInlineFlowPseudo && anchorContentRect && nodeRect) {
+        const anchorTop = anchorContentRect.top - nodeRect.top;
+        const verticalAlign = String(pseudoStyle.verticalAlign || '').toLowerCase();
+        if (verticalAlign === 'middle') {
+          topPx = anchorTop + (anchorContentRect.height - renderedHeight) / 2;
+        } else if (verticalAlign === 'top' || verticalAlign === 'text-top') {
+          topPx = anchorTop;
+        } else {
+          // Baseline/bottom alignment is best approximated from the measured
+          // content rect's lower edge; this is still more faithful than the
+          // previous zero-offset fallback.
+          topPx = anchorTop + anchorContentRect.height - renderedHeight;
+        }
+      } else if (!Number.isFinite(topPx)) {
         if (Number.isFinite(bottomValue)) {
           topPx = geometry.heightPx - renderedHeight - bottomValue;
         } else if (
@@ -68691,7 +68826,7 @@
     }
 
     if (node.tagName === 'TABLE') {
-      const tableData = extractTableData(node, config.scale);
+      const tableData = extractTableData(node, config.scale, safeOpacity);
 
       // Calculate total table width to ensure X position is correct
       // (Though x calculation above usually handles it, tables can be finicky)
@@ -68948,18 +69083,30 @@
         domOrder,
         safeOpacity
       );
+      const svgAncestorOpacity = getAncestorOpacityMultiplier(style, safeOpacity);
+      const bakeSvgAncestorOpacity = shouldBakeComplexSvgAncestorOpacity(
+        node,
+        globalOptions,
+        svgAncestorOpacity
+      );
       const item = {
         type: 'image',
         zIndex,
         domOrder,
-        options: { data: null, x, y, w, h, rotate: svgImageRotation },
+        options: applyOpacityToImageOptions(
+          { data: null, x, y, w, h, rotate: svgImageRotation },
+          bakeSvgAncestorOpacity ? 1 : svgAncestorOpacity
+        ),
       };
 
       const job = async () => {
         // Use svgToSvg for vector output (Convert to Shape in PowerPoint)
         // Use svgToPng for rasterized output (pixel perfect)
         const converter = globalOptions.svgAsVector ? svgToSvg : svgToPng;
-        const processed = await converter(node, { stripText: svgTextItems.length > 0 });
+        const processed = await converter(node, {
+          stripText: svgTextItems.length > 0,
+          opacityMultiplier: bakeSvgAncestorOpacity ? svgAncestorOpacity : 1,
+        });
         if (processed) item.options.data = processed;
         else item.skip = true;
       };
@@ -69855,7 +70002,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-01-clipped-decoration-layer-v45';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-01-svg-pattern-alpha-v48';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

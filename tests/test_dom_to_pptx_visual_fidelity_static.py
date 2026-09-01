@@ -34,3 +34,24 @@ def test_visual_fidelity_guards_are_present():
     assert "function isDecorativeTransformedLeaf" in source
     assert "function captureClippedDecorativeLeafVisual" in source
     assert "isolated-transformed-clipping" in source
+
+    # Inline ::before/::after glyphs (for example tag bullets) are anchored to
+    # the live text Range instead of the element's outer top-left corner.
+    assert "function getNodeContentRangeRects" in source
+    assert "anchorContentRect.left - nodeRect.left - pseudoMarginRight" in source
+    assert "anchorTop + (anchorContentRect.height - renderedHeight) / 2" in source
+
+    # Native tables must materialize CSS row/section backgrounds on each PPT
+    # cell and pass borders using PptxGenJS's [top, right, bottom, left] form.
+    assert "function getEffectiveTableCellBackground" in source
+    assert "getTableCellRelativeOpacity" in source
+    assert "borderTop || { type: 'none' }" in source
+    assert "type: dash" in source
+
+    # SVG pictures inherit opacity from their HTML ancestors. The SVG's own
+    # opacity is already represented in the raster and must not be doubled.
+    assert "function getAncestorOpacityMultiplier" in source
+    assert "function applyOpacityToImageOptions" in source
+    assert "svgAncestorOpacity" in source
+    assert "function shouldBakeComplexSvgAncestorOpacity" in source
+    assert "ctx.globalAlpha = opacityMultiplier" in source

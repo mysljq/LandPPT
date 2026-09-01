@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_font_family_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-clipped-decoration-layer-v45"
+EXPECTED_PATCH_VERSION = "2026-09-01-svg-pattern-alpha-v48"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 WINDOWS_FONT_DIR = Path(r"C:\Windows\Fonts")
 

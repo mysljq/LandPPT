@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      #slide {
+        position: relative;
+        width: 1280px;
+        height: 720px;
+        overflow: hidden;
+        background: #f5f2ec;
+        font-family: Arial, sans-serif;
+      }
+      table {
+        position: absolute;
+        left: 80px;
+        top: 80px;
+        width: 720px;
+        border-collapse: collapse;
+        background: #ffffff;
+        font-size: 14px;
+      }
+      th, td { padding: 10px; text-align: left; }
+      thead tr { background: #c00000; color: #ffffff; }
+      tbody tr:nth-child(odd) { background: #f0f7ff; }
+      tbody td { border-bottom: 1px solid #eeeeee; color: #333333; }
+      tbody tr:last-child td { border-bottom: none; }
+      .icon-card {
+        position: absolute;
+        right: 90px;
+        top: 90px;
+        width: 260px;
+        height: 150px;
+        overflow: hidden;
+        border: 1px solid #dddddd;
+        background: #ffffff;
+      }
+      .faded-icon {
+        position: absolute;
+        top: -10px;
+        right: -10px;
+        opacity: 0.1;
+      }
+      .faded-pattern {
+        position: absolute;
+        left: 80px;
+        bottom: 70px;
+        width: 720px;
+        height: 180px;
+        opacity: 0.08;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="slide">
+      <table>
+        <thead><tr><th>云原生时代</th><th>Agent时代</th></tr></thead>
+        <tbody>
+          <tr><td>代码即基础设施</td><td>意图即基础设施</td></tr>
+          <tr><td>人工编排</td><td>智能编排</td></tr>
+          <tr><td>静态系统</td><td>自适应系统</td></tr>
+        </tbody>
+      </table>
+      <div class="icon-card">
+        <div class="faded-icon">
+          <svg width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="40" cy="40" r="30" fill="#c00000" />
+            <path d="M40 17 L47 32 L64 34 L51 46 L55 63 L40 54 L25 63 L29 46 L16 34 L33 32 Z" fill="#ffffff" />
+          </svg>
+        </div>
+      </div>
+      <div class="faded-pattern">
+        <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="smoke-grid" width="60" height="60" patternUnits="userSpaceOnUse">
+              <path d="M 60 0 L 0 0 0 60" fill="none" stroke="#ffffff" stroke-width="1" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#smoke-grid)" />
+        </svg>
+      </div>
+    </div>
+    <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
+    <script>
+      window.runTableSvgOpacitySmokeTest = async function () {
+        const blob = await window.domToPptx.exportToPptx(document.getElementById('slide'), {
+          skipDownload: true,
+        });
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        return {
+          patchVersion: window.domToPptx.__landpptPatchVersion,
+          pptxBase64: btoa(binary),
+        };
+      };
+    </script>
+  </body>
+</html>
