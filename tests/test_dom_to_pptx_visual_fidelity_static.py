@@ -41,6 +41,44 @@ def test_visual_fidelity_guards_are_present():
     assert "anchorContentRect.left - nodeRect.left - pseudoMarginRight" in source
     assert "anchorTop + (anchorContentRect.height - renderedHeight) / 2" in source
 
+    # Zero-content pseudo-elements can paint single-side borders without fills.
+    assert "Math.max(horizontalExtras, pseudoWidth" in source
+    assert "Math.max(verticalExtras, pseudoHeight" in source
+    assert "{ ...itemBase.options, widthPx: renderedWidth, heightPx: renderedHeight }" in source
+    assert "width >= left + right && height >= top + bottom" in source
+
+    # Polygon background layers keep editable closed paths, including their
+    # gradient overlay, without translated text rasterizing the entire slide.
+    assert "function getNativeClipPolygonPoints" in source
+    assert "points: nativeClipPoints" in source
+    assert "clipGradient.stops.map" in source
+    assert "isTranslationOnlyTransform(childStyle.transform)" in source
+
+    # CSS text-shadow is a run effect, never a shadow around the text box.
+    assert "function getNativeTextShadow" in source
+    assert "textShadow: getNativeTextShadow(style, scale)" in source
+    assert "createShadowElement(opts.textShadow, DEF_TEXT_SHADOW)" in source
+    assert "opacity: textOptions.textShadow.opacity * safeOpacity" in source
+
+    # Transparent text with a visible stroke remains editable. Its display
+    # line uses live glyph bounds rather than a compressed CSS line-height box.
+    assert "function getNativeTextOutline" in source
+    assert "outline: textOutline" in source
+    assert "textPayload.rangeGeometry" in source
+    assert "return positioned || namedDecoration;" in source
+
+    # Repeating hard-stop stripes remain editable, and heavy Latin weights
+    # choose a measured matching face instead of collapsing 900 to plain bold.
+    assert "function parseNativeRepeatingStripes" in source
+    assert "objectName: `CSS stripe ${domOrder} ${index}`" in source
+    assert "function resolveWeightedExportFont" in source
+    assert "candidate.every((value, index) => value === target[index])" in source
+
+    # Zero-offset/zero-angle CSS shadows are valid and must not be replaced by
+    # PptxGenJS's nonzero defaults.
+    assert "slideItemObj.options.shadow.offset ?? 4" in source
+    assert "slideItemObj.options.shadow.angle ?? 270" in source
+
     # Native tables must materialize CSS row/section backgrounds on each PPT
     # cell and pass borders using PptxGenJS's [top, right, bottom, left] form.
     assert "function getEffectiveTableCellBackground" in source
@@ -87,6 +125,9 @@ def test_visual_fidelity_guards_are_present():
     # Pseudo-element corner radii must preserve fixed lengths and each corner;
     # a long strip with large px radii must not be classified as an ellipse.
     assert "function getNativeCssCornerGeometry" in source
+    assert "function getPseudoPositioningBox" in source
+    assert "positioningBox.borderLeft + leftPx" in source
+    assert "positioningBox.borderTop + topPx" in source
     assert "rectRadius: tl.rx * pxToInchScale" in source
     assert "function getNativeUniformBorderGeometry" in source
     assert "const safeRadius = Math.min(Math.max(0, Number(radius) || 0), w / 2, h / 2)" in source
@@ -107,3 +148,13 @@ def test_visual_fidelity_guards_are_present():
     assert "items.push(...nativeCompositeBorders)" in source
     assert "objectName: `CSS border ${name} ${domOrder}`" in source
     assert "domOrder: domOrder + (nativeCompositeBorders ? 0.2 : 0)" in source
+
+    # Cards are editing units. Merge simple fill/stroke/text, keep positioned
+    # badges above the parent decoration, and use identity-coordinate groups.
+    assert "function isPptxSemanticContainer" in source
+    assert "function compareSemanticRenderItems" in source
+    assert "async function groupSemanticPptxObjects" in source
+    assert "const mergeUniformBorderFill" in source
+    assert "!mergeUniformBorderFill" in source
+    assert "last - first + 1 !== members.length" in source
+    assert "make(a, 'a:chOff', { x, y })" in source

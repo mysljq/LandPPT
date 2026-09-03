@@ -94,19 +94,21 @@ async function main() {
     const near=(a,b)=>Math.abs(a-b)<.05;
     for(const card of result.cards){
       const border=shapes.find(s=>s.line&&near(s.x,card.x+card.border/2)&&near(s.y,card.y+card.border/2)&&near(s.w,card.w-card.border));
-      const background=shapes.find(s=>near(s.x,card.x)&&near(s.y,card.y)&&near(s.w,card.w)&&!s.line&&!s.text);
+      const merged=border?.fill==='FFFFFF';
+      const background=merged?border:shapes.find(s=>near(s.x,card.x)&&near(s.y,card.y)&&near(s.w,card.w)&&!s.line&&!s.text);
       const radians=card.angle*Math.PI/180;
       const shadow=shapes.find(s=>near(s.x,card.x-6*Math.sin(radians))&&near(s.y,card.y+6*Math.cos(radians))&&near(s.w,card.w)&&['E85A87','3AA8D8','9570CC'].includes(s.fill));
       console.log(JSON.stringify({card,border,background,shadow}));
       assert.ok(shadow,'Missing native hard shadow');
-      const checks = [[border,card.radius-card.border/2],[background,card.radius],[shadow,card.radius]];
+      const checks = [[border,card.radius-card.border/2],[background,merged?card.radius-card.border/2:card.radius],[shadow,card.radius]];
       assert.ok(border,'Missing inset CSS border');assert.ok(background,'Missing native background');
       for(const [shape,radius] of checks){
         assert.ok(near(((shape.angle-card.angle+540)%360)-180,0),'Rotation changed');
         if(card.partial){assert.equal(shape.geometry,'custGeom');assert.equal(shape.arcs.length,2);shape.arcs.forEach(a=>assert.ok(near(a.rx,radius)&&near(a.ry,radius)));}
         else{assert.equal(shape.geometry,'roundRect');assert.ok(near(shape.adj/100000*Math.min(shape.w,shape.h),radius),'CSS radius differs from PPT radius');}
       }
-      assert.ok(near(border.lineWidth,card.border));assert.ok(shadow.index<background.index&&background.index<border.index);
+      assert.ok(near(border.lineWidth,card.border));assert.ok(shadow.index<background.index&&background.index<=border.index);
+      if(project)assert.ok(merged,'Card fill and border should be one shape');
     }
     if(project){
       assert.ok(!result.risk.some(r=>r.reasons.some(reason=>reason==='transformed-descendant-clipping'||reason==='transformed-clipping')),'Rounded cards were merged by overflow fallback');

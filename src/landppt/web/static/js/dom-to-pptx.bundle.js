@@ -12487,11 +12487,11 @@
           // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
           if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
             slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
-            slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur || 8);
-            slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset || 4);
-            slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle || 270) * 60000);
-            slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity || 0.75) * 100000);
-            slideItemObj.options.shadow.color = slideItemObj.options.shadow.color || DEF_TEXT_SHADOW.color;
+            slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
+            slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
+            slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle ?? 270) * 60000);
+            slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity ?? 0.75) * 100000);
+            slideItemObj.options.shadow.color = slideItemObj.options.shadow.color ?? DEF_TEXT_SHADOW.color;
             strSlideXml += '<a:effectLst>';
             strSlideXml += " <a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
             strSlideXml += " <a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
@@ -12570,11 +12570,11 @@
           // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
           if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
             slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
-            slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur || 8);
-            slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset || 4);
-            slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle || 270) * 60000);
-            slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity || 0.75) * 100000);
-            slideItemObj.options.shadow.color = slideItemObj.options.shadow.color || DEF_TEXT_SHADOW.color;
+            slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
+            slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
+            slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle ?? 270) * 60000);
+            slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity ?? 0.75) * 100000);
+            slideItemObj.options.shadow.color = slideItemObj.options.shadow.color ?? DEF_TEXT_SHADOW.color;
             strSlideXml += '<a:effectLst>';
             strSlideXml += "<a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
             strSlideXml += "<a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
@@ -12943,20 +12943,27 @@
       opts.eaFontFace ||
       opts.latinFontFace ||
       opts.csFontFace ||
+      opts.textShadow ||
+      opts.glow ||
       opts.outline ||
       (typeof opts.underline === 'object' && opts.underline.color)
     ) {
       if (opts.outline && typeof opts.outline === 'object') {
-        runProps += "<a:ln w=\"".concat(valToPts(opts.outline.size || 0.75), "\">").concat(genXmlColorSelection(opts.outline.color || 'FFFFFF'), "</a:ln>");
+        runProps += "<a:ln w=\"".concat(valToPts(opts.outline.size || 0.75), "\">").concat(genXmlColorSelection({ color: opts.outline.color || 'FFFFFF', transparency: opts.outline.transparency }), "</a:ln>");
       }
       if (opts.color)
         runProps += genXmlColorSelection({ color: opts.color, transparency: opts.transparency });
+      // Text effects belong to the glyph run, not the textbox's background.
+      // CT_TextCharacterProperties orders effects before highlight/font nodes.
+      var textEffects = opts.glow ? createGlowElement(opts.glow, DEF_TEXT_GLOW) : '';
+      if (opts.textShadow && opts.textShadow.type === 'outer')
+        textEffects += createShadowElement(opts.textShadow, DEF_TEXT_SHADOW)
+          .replace(/^<a:effectLst>|<\/a:effectLst>$/g, '');
+      if (textEffects) runProps += '<a:effectLst>' + textEffects + '</a:effectLst>';
       if (opts.highlight)
         runProps += "<a:highlight>".concat(createColorElement(opts.highlight), "</a:highlight>");
       if (typeof opts.underline === 'object' && opts.underline.color)
         runProps += "<a:uFill>".concat(genXmlColorSelection(opts.underline.color), "</a:uFill>");
-      if (opts.glow)
-        runProps += "<a:effectLst>".concat(createGlowElement(opts.glow, DEF_TEXT_GLOW), "</a:effectLst>");
       const latinFontFace = opts.latinFontFace || opts.fontFace || opts.eaFontFace || opts.csFontFace;
       const eastAsiaFontFace = normalizePowerPointEastAsianFontFace(opts.eaFontFace || opts.fontFace || latinFontFace);
       const complexScriptFontFace = normalizePowerPointEastAsianFontFace(opts.csFontFace || eastAsiaFontFace || latinFontFace);
@@ -13040,7 +13047,10 @@
     if (slideObject && slideObject._type === SLIDE_OBJECT_TYPES.text && slideObject.options._bodyProp) {
       // PPT-2019 EX: <a:bodyPr wrap="square" lIns="1270" tIns="1270" rIns="1270" bIns="1270" rtlCol="0" anchor="ctr"/>
       // A: Enable or disable textwrapping none or square
-      bodyProperties += slideObject.options._bodyProp.wrap ? ' wrap="square"' : ' wrap="none"';
+      // Always retain DrawingML's normal wrapping mode for editable text.
+      // A no-wrap body property makes a line captured from a risk subtree
+      // expand/contract unpredictably when opened in Office.
+      bodyProperties += slideObject.options.noWrap ? ' wrap="none"' : ' wrap="square"';
       // B: Textbox margins [padding]
       if (slideObject.options._bodyProp.lIns || slideObject.options._bodyProp.lIns === 0)
         bodyProperties += " lIns=\"".concat(slideObject.options._bodyProp.lIns, "\"");
@@ -63054,7 +63064,34 @@
     return Number.isFinite(numeric) ? numeric : null;
   }
 
-  /** Converts a solid CSS polygon leaf into SVG instead of a rectangular canvas fallback. */
+  /** Native closed paths for CSS polygons whose coordinates are fully representable. */
+  function getNativeClipPolygonPoints(clipPath, width, height, pxScale) {
+    const match = String(clipPath || '').trim().match(/^polygon\s*\((.*)\)$/i);
+    if (!match || !(width > 0 && height > 0)) return null;
+    const parts = splitTopLevelCommaParts(match[1]);
+    if (parts.length < 3) return null;
+    if (/^nonzero$/i.test(parts[0].trim())) parts.shift();
+    // Unsupported units, fill rules and out-of-box vertices keep the visual
+    // fallback. Never partially parse calc()/path() into a different polygon.
+    const coordinate = (value, size) => {
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|%)?$/i.test(value)) return null;
+      const number = parseFloat(value);
+      if (!/(?:px|%)$/i.test(value) && number !== 0) return null;
+      const result = value.endsWith('%') ? number * size / 100 : number;
+      return result >= 0 && result <= size ? result * pxScale : null;
+    };
+    if (parts.length < 3) return null;
+    const points = [];
+    for (const part of parts) {
+      const pair = part.trim().split(/\s+/);
+      if (pair.length !== 2) return null;
+      const x = coordinate(pair[0], width), y = coordinate(pair[1], height);
+      if (x === null || y === null) return null;
+      points.push({ x, y });
+    }
+    return [...points, { close: true }];
+  }
+
   function generatePolygonClipSVG(width, height, clipPath, color, opacity = 1, dropShadow = null) {
     const match = String(clipPath || '').trim().match(/^polygon\s*\((.*)\)$/i);
     if (!match || width <= 0 || height <= 0 || !color) return null;
@@ -64413,6 +64450,52 @@
     return (ownerDocument && ownerDocument.defaultView) || window;
   }
 
+  const WEIGHTED_EXPORT_FONT_CACHE = new WeakMap();
+
+  function resolveWeightedExportFont(style, fontContext, fallbackFace, hasCjkText) {
+    const weight = parseInt(style.fontWeight, 10);
+    if (!(weight > 700) || hasCjkText) return null;
+    const doc = getFontContextDocument(fontContext);
+    if (!doc) return null;
+    let cache = WEIGHTED_EXPORT_FONT_CACHE.get(doc);
+    if (!cache) { cache = new Map(); WEIGHTED_EXPORT_FONT_CACHE.set(doc, cache); }
+    const key = `${style.fontFamily}|${weight}|${style.fontStyle}|${fallbackFace}`;
+    if (cache.has(key)) return cache.get(key);
+    let decision = null;
+    try {
+      const canvas = doc.createElement('canvas'); canvas.width = 384; canvas.height = 112;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const italic = /italic|oblique/.test(style.fontStyle || '') ? 'italic' : 'normal';
+      // Compare complete glyph masks, not widths alone: distinct weights often
+      // have identical advance widths. A fixed mixed sample avoids digit-only
+      // coincidences. No font downloads or local-font permission are needed.
+      const fingerprint = (family, candidateWeight) => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.font = `${italic} ${candidateWeight} 48px ${family}`;
+        ctx.fillStyle = '#000'; ctx.fillText('1.08AgMW', 4, 76);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const target = fingerprint(style.fontFamily, weight);
+      const families = [...new Set([fallbackFace, ...collectExportFontFamilies(style.fontFamily)])]
+        .filter((family) => family && !isGenericCssFontFamily(family));
+      const variants = [...families];
+      for (const family of families) for (const suffix of ['Black', 'Heavy', 'ExtraBold', 'Extra Bold', 'Bold']) variants.push(`${family} ${suffix}`);
+      for (const family of [...new Set(variants)]) {
+        if (!isLatinFontFamilyLikelyAvailable(family, fontContext)) continue;
+        for (const candidateWeight of [400, 700]) {
+          const candidate = fingerprint(`"${family.replace(/["\\]/g, '')}"`, candidateWeight);
+          if (candidate.every((value, index) => value === target[index])) {
+            decision = { fontFace: family, bold: candidateWeight === 700 };
+            break;
+          }
+        }
+        if (decision) break;
+      }
+    } catch (_) { /* Preserve the existing font fallback if measurement fails. */ }
+    cache.set(key, decision);
+    return decision;
+  }
+
   function getTextStyle(style, scale, fontContext = null, textSampleOverride = null) {
     let colorObj = parseColor(style.color);
 
@@ -64422,7 +64505,8 @@
       if (fallback) colorObj = parseColor(fallback);
     }
 
-    const isEffectivelyHiddenText = !colorObj.hex && colorObj.opacity <= 0.001;
+    const textOutline = getNativeTextOutline(style, scale);
+    const isEffectivelyHiddenText = !colorObj.hex && colorObj.opacity <= 0.001 && !textOutline;
 
     let lineSpacing = null;
     const fontSizePx = parseFloat(style.fontSize);
@@ -64458,7 +64542,8 @@
     const exportLatinFontFace = exportEastAsiaFontFace
       ? resolveLatinExportFontFace(style.fontFamily, fontContext)
       : null;
-    const primaryFontFace = exportLatinFontFace || exportFontFace;
+    const weightedFont = resolveWeightedExportFont(style, fontContext, exportLatinFontFace || exportFontFace, hasCjkText);
+    const primaryFontFace = weightedFont ? weightedFont.fontFace : exportLatinFontFace || exportFontFace;
     const fontWeight = String(style.fontWeight || '').trim().toLowerCase();
     const fontStyle = String(style.fontStyle || '').trim().toLowerCase();
     const textDecoration = String(style.textDecoration || style.textDecorationLine || '').toLowerCase();
@@ -64476,11 +64561,13 @@
         : {}),
       ...(hasCjkText ? { lang: 'zh-CN' } : {}),
       fontSize: Math.floor(fontSizePx * 0.75 * scale),
-      bold: fontWeight === 'bold' || parseInt(fontWeight, 10) >= 600,
+      bold: weightedFont ? weightedFont.bold : fontWeight === 'bold' || parseInt(fontWeight, 10) >= 600,
       italic: fontStyle === 'italic' || fontStyle.startsWith('oblique'),
       underline: textDecoration.includes('underline'),
       ...(textDecoration.includes('line-through') ? { strike: 'sngStrike' } : {}),
       ...(Math.abs(charSpacing) > 0.01 ? { charSpacing } : {}),
+      textShadow: getNativeTextShadow(style, scale),
+      outline: textOutline,
       // Only add if we have a valid value
       ...(lineSpacing && { lineSpacing }),
       // Map background color to highlight if present
@@ -64496,6 +64583,16 @@
       ? Math.max(0, Math.min(1, opacityMultiplier))
       : 1;
     if (safeOpacity >= 0.999) return textOptions;
+
+    if (textOptions.textShadow) {
+      textOptions.textShadow = { ...textOptions.textShadow,
+        opacity: textOptions.textShadow.opacity * safeOpacity };
+    }
+    if (textOptions.outline) {
+      const outlineAlpha = 1 - (Number(textOptions.outline.transparency) || 0) / 100;
+      textOptions.outline = { ...textOptions.outline,
+        transparency: (1 - outlineAlpha * safeOpacity) * 100 };
+    }
 
     const baseTransparency = Number.isFinite(textOptions.transparency)
       ? Math.max(0, Math.min(100, textOptions.transparency))
@@ -64593,10 +64690,20 @@
         (parseFloat(leafStyle.paddingRight) || 0) > 0 ||
         (parseFloat(leafStyle.paddingTop) || 0) > 0 ||
         (parseFloat(leafStyle.paddingBottom) || 0) > 0;
+      const leafClass = String(node.getAttribute('class') || '');
+      // Compact visual tags are best represented by one native rounded text
+      // shape. This keeps the fill, radius, padding and centered glyphs in a
+      // single editable PPT object; other flex chips still use the split path
+      // when they contain effects that cannot be represented natively.
+      const isCompactTag = /(?:^|\s)(?:tag|chip|badge)(?:\s|$)/i.test(leafClass);
       if (
         /^(?:inline-)?flex$/.test(parentDisplay) &&
+        !/^(?:absolute|fixed)$/.test(leafStyle.position) &&
         (leafHasVisibleBg || leafHasBorder || leafHasRadius || leafHasPadding)
       ) {
+        if (isCompactTag && !isNonTrivialCssValue(leafStyle.filter) && leafStyle.mixBlendMode === 'normal') {
+          return true;
+        }
         return false;
       }
       return true;
@@ -64979,6 +65086,7 @@
   }
 
   function getTextPayloadGeometry(textPayload, x, y, w, h, baseRotation) {
+    if (textPayload.rangeGeometry) return textPayload.rangeGeometry;
     const widthBuffer = textPayload.widthBuffer || 0;
     let textW = w + widthBuffer;
     let textH = h;
@@ -65130,6 +65238,35 @@
     for (let i = 0; i < source.children.length; i++) {
       if (target.children[i]) inlineSvgStyles(source.children[i], target.children[i]);
     }
+  }
+
+  function getNativeTextOutline(style, scale = 1) {
+    const width = parseFloat(getStyleProperty(style, 'webkitTextStrokeWidth', '-webkit-text-stroke-width'));
+    const color = parseColor(getStyleProperty(style, 'webkitTextStrokeColor', '-webkit-text-stroke-color') || style.color);
+    if (!(width > 0) || !color.hex || !(color.opacity > 0)) return null;
+    return { size: width * 0.75 * scale, color: color.hex, transparency: (1 - color.opacity) * 100 };
+  }
+
+  function getNativeTextShadow(style, scale = 1) {
+    const value = String(style && style.textShadow || '').trim();
+    if (!value || value === 'none') return null;
+    const layers = splitTopLevelCommaParts(value);
+    // DrawingML run effects support one outer shadow. Do not flatten a CSS
+    // stack to its first shadow; keep the existing complex-visual fallback.
+    if (layers.length !== 1) return null;
+    let shadow = layers[0];
+    const colorToken = shadow.match(/rgba?\([^)]*\)|#[\da-f]{3,8}\b|\b[a-z]+\b(?!\s*\()/i);
+    const color = parseColor(colorToken ? colorToken[0] : style.color);
+    if (colorToken) shadow = shadow.replace(colorToken[0], '').trim();
+    const lengths = shadow.split(/\s+/).filter(Boolean);
+    if (lengths.length < 2 || lengths.length > 3 ||
+        lengths.some((length) => !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/i.test(length))) return null;
+    const [dx, dy, blur = 0] = lengths.map(parseFloat);
+    if (blur < 0 || !color.hex || color.opacity <= 0) return null;
+    return { type: 'outer', color: color.hex, opacity: color.opacity,
+      offset: Math.hypot(dx, dy) * 0.75 * scale,
+      angle: (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360,
+      blur: blur * 0.75 * scale, rotateWithShape: true };
   }
 
   function getVisibleShadow(shadowStr, scale) {
@@ -66014,6 +66151,48 @@
   }
 
   // Single-layer CSS linear gradients can remain editable native PPT fills.
+  function parseNativeRepeatingStripes(value, width, height) {
+    const match = String(value || '').trim().match(/^repeating-linear-gradient\((.*)\)$/i);
+    if (!match) return null;
+    const parts = splitTopLevelCommaParts(match[1]);
+    if (parts.length < 3) return null;
+    const directions = { 'to right': 90, 'to left': 270, 'to bottom': 180, 'to top': 0 };
+    const direction = parts.shift().trim().toLowerCase();
+    const angle = directions[direction] ?? (/^-?[\d.]+deg$/.test(direction) ? (parseFloat(direction) % 360 + 360) % 360 : null);
+    if (![0, 90, 180, 270].includes(angle)) return null;
+    const vertical = angle === 0 || angle === 180, length = vertical ? height : width;
+    const stops = [];
+    for (const part of parts) {
+      const stop = part.trim().match(/^(.*?)\s+(-?[\d.]+)(px|%)(?:\s+(-?[\d.]+)(px|%))?$/i);
+      if (!stop) return null;
+      const color = parseColor(stop[1]);
+      if (!color.hex && color.opacity !== 0) return null;
+      const position = (number, unit) => Number(number) * (unit === '%' ? length / 100 : 1);
+      stops.push({ ...color, pos: position(stop[2], stop[3]) });
+      if (stop[4] !== undefined) stops.push({ ...color, pos: position(stop[4], stop[5]) });
+    }
+    if (stops.length < 2) return null;
+    const first = stops[0].pos, period = stops[stops.length - 1].pos - first;
+    if (!(period > 0) || length / period * stops.length > 1024) return null;
+    const bands = [];
+    for (let i = 1; i < stops.length; i++) {
+      const a = stops[i - 1], b = stops[i];
+      if (b.pos < a.pos) return null;
+      if (b.pos === a.pos) continue;
+      // Hard stripes only. Smooth repeating transitions retain their existing
+      // fallback rather than being approximated with solid rectangles.
+      if (a.hex !== b.hex || a.opacity !== b.opacity) return null;
+      if (!a.hex || a.opacity <= 0) continue;
+      for (let repeat = Math.floor(-b.pos / period); repeat <= Math.ceil((length - a.pos) / period); repeat++) {
+        let start = Math.max(0, a.pos + repeat * period), end = Math.min(length, b.pos + repeat * period);
+        if (end <= start) continue;
+        if (angle === 0 || angle === 270) [start, end] = [length - end, length - start];
+        bands.push({ start, end, vertical, color: a.hex, opacity: a.opacity });
+      }
+    }
+    return bands;
+  }
+
   function parseNativeLinearGradient(bgString) {
     const match = String(bgString || '').trim().match(/^linear-gradient\((.*)\)$/i);
     if (!match) return null;
@@ -66113,6 +66292,15 @@
     return false;
   }
 
+  function isTranslationOnlyTransform(value) {
+    const match = String(value || '').trim().match(/^matrix\(([^)]+)\)$/i);
+    if (!match) return false;
+    const values = match[1].split(',').map(Number);
+    return values.length === 6 && values.every(Number.isFinite) &&
+      Math.abs(values[0] - 1) < 1e-7 && Math.abs(values[1]) < 1e-7 &&
+      Math.abs(values[2]) < 1e-7 && Math.abs(values[3] - 1) < 1e-7;
+  }
+
   function getStyleProperty(style, camelName, cssName = null) {
     if (!style) return '';
     return style[camelName] || (style.getPropertyValue && style.getPropertyValue(cssName || camelName)) || '';
@@ -66140,14 +66328,15 @@
       return false;
     }
     const computedStyle = style || getNodeWindow(node).getComputedStyle(node);
-    const ariaHidden = String(node.getAttribute && node.getAttribute('aria-hidden') || '').toLowerCase() === 'true';
-    const ignoresPointer = String(computedStyle.pointerEvents || '').toLowerCase() === 'none';
     const positioned = /^(?:absolute|fixed)$/.test(String(computedStyle.position || '').toLowerCase());
     const className = String(node.getAttribute && node.getAttribute('class') || '');
     const namedDecoration = /(?:^|[-_\s])(?:deco|decorative|diamond|ornament|accent|shape)(?:$|[-_\s])/i.test(
       className
     );
-    return (positioned || namedDecoration) && (ariaHidden || ignoresPointer || namedDecoration);
+    // Empty positioned visuals are decorations regardless of CSS class naming.
+    // Requiring an aria-hidden/name hint lets an ordinary border triangle pull
+    // the entire slide (and unrelated SVGs/text) into one clipped bitmap.
+    return positioned || namedDecoration;
   }
 
   function clipDescendantRectThroughIntermediateAncestors(descendant, boundary) {
@@ -66225,6 +66414,16 @@
       const child = descendants[i];
       const childStyle = getNodeWindow(child).getComputedStyle(child);
       if (isEffectivelyIdentityTransform(childStyle.transform)) continue;
+      // A translated plain text leaf can handle its own overflow. Its empty
+      // visual layer must not rasterize unrelated siblings/ancestors (including
+      // polygon backgrounds that html2canvas cannot faithfully capture).
+      if (isTranslationOnlyTransform(childStyle.transform) && child.children.length === 0 &&
+          String(child.textContent || '').trim() && parseColor(childStyle.backgroundColor).opacity === 0 &&
+          !isNonTrivialCssValue(childStyle.backgroundImage) && !isNonTrivialCssValue(childStyle.boxShadow) &&
+          !isNonTrivialCssValue(childStyle.filter) &&
+          ['Top', 'Right', 'Bottom', 'Left'].every((side) => !(parseFloat(childStyle[`border${side}Width`]) > 0)) &&
+          ['::before', '::after'].every((selector) =>
+            ['none', 'normal'].includes(getNodeWindow(child).getComputedStyle(child, selector).content))) continue;
       // getBoundingClientRect() ignores overflow clipping. Clamp the visual
       // bounds through intermediate clipping ancestors before classifying a
       // broad layout container as risky. This prevents one clipped decorative
@@ -66238,7 +66437,7 @@
         visibleRect.bottom > boundaryRect.bottom + 0.5;
       if (!crossesClipBoundary) continue;
       if (canIgnoreRoundedCardOverflow(child, childStyle, boundaryStyle)) continue;
-      // Empty aria-hidden/pointer-events:none leaves are captured separately
+      // Empty positioned/decorative leaves are captured separately
       // against their nearest clip ancestor. They must not pull semantic card
       // content into the same bitmap.
       if (isDecorativeTransformedLeaf(child, childStyle)) continue;
@@ -66410,6 +66609,8 @@
     const filter = win.NodeFilter || NodeFilter;
     const walker = doc.createTreeWalker(boundary, filter.SHOW_TEXT);
     const items = [];
+    const boundaryRect = boundary.getBoundingClientRect();
+    const boundaryWidth = Math.max(0, boundaryRect.width * PX_TO_INCH * config.scale);
     let textNode;
     let lineOrder = 0;
 
@@ -66508,7 +66709,11 @@
         const rect = line.rect;
         const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
         const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
-        const w = Math.max(0.01, (rect.width + 1.5) * PX_TO_INCH * config.scale);
+        // Risk-subtree text is emitted above the captured visual layer. Keep
+        // the live container width so a line that Range reports as an
+        // over-wide CJK run still wraps in PowerPoint instead of becoming a
+        // narrow no-wrap text box.
+        const w = Math.max(0.01, boundaryWidth, (rect.width + 1.5) * PX_TO_INCH * config.scale);
         const h = Math.max(0.01, rect.height * 1.08 * PX_TO_INCH * config.scale);
         items.push({
           type: 'text',
@@ -66522,9 +66727,9 @@
             h,
             margin: 0,
             autoFit: false,
-            fit: 'shrink',
+            fit: 'none',
             valign: 'mid',
-            wrap: false,
+            wrap: true,
             rotate: rotation || 0,
           },
         });
@@ -66556,6 +66761,7 @@
       wrapper.style.setProperty('color', 'transparent', 'important');
       wrapper.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
       wrapper.style.setProperty('text-shadow', 'none', 'important');
+      wrapper.style.setProperty('-webkit-text-stroke-width', '0px', 'important');
       wrapper.style.setProperty('text-decoration-color', 'transparent', 'important');
       wrapper.style.setProperty('font', 'inherit', 'important');
       wrapper.style.setProperty('letter-spacing', 'inherit', 'important');
@@ -66736,7 +66942,7 @@
     const fontSize = parseFloat(style.fontSize) || 0;
     const letterSpacing = parseFloat(style.letterSpacing);
     const hasSignificantTracking = Number.isFinite(letterSpacing) && Math.abs(letterSpacing) >= 0.75;
-    const hasTextShadow = !!style.textShadow && style.textShadow !== 'none';
+    const hasTextShadow = !!style.textShadow && style.textShadow !== 'none' && !getNativeTextShadow(style);
     const className = String((node.getAttribute && node.getAttribute('class')) || '');
     const explicitlyDecorative =
       /(?:deco|decorative|watermark|year-mark|chapter[-_]?num(?:ber)?|section[-_]?num(?:ber)?)/i.test(
@@ -66938,6 +67144,99 @@
     }
   }
 
+  // A visual container is a useful editing unit; page/layout wrappers are not.
+  // No project IDs or class-name conventions are required for this decision.
+  function isPptxSemanticContainer(node, style, root) {
+    if (node === root || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' ||
+        node.children.length < 2 || !String(node.textContent || '').trim()) return false;
+    const bg = parseColor(style.backgroundColor);
+    const visibleBorder = ['Top', 'Right', 'Bottom', 'Left'].some((side) =>
+      parseFloat(style[`border${side}Width`]) > 0 && parseColor(style[`border${side}Color`]).opacity > 0);
+    const visualBox = (bg.hex && bg.opacity > 0) || visibleBorder ||
+      String(style.backgroundImage || '').includes('gradient(');
+    if (!visualBox) return false;
+    const r = node.getBoundingClientRect(), rr = root.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && (r.width < rr.width * 0.95 || r.height < rr.height * 0.85);
+  }
+
+  function compareSemanticRenderItems(a, b) {
+    // CSS stacking contexts (e.g. rotated cards) paint atomically. Plain DOM
+    // containers do not: those are grouped only if already contiguous below.
+    const chain = (item) => [...(item.semanticGroups || []).filter((g) => g.stackingContext), item];
+    const aa = chain(a), bb = chain(b);
+    let i = 0;
+    while (i < aa.length - 1 && i < bb.length - 1 && aa[i] === bb[i]) i++;
+    return aa[i].zIndex - bb[i].zIndex || aa[i].domOrder - bb[i].domOrder;
+  }
+
+  async function groupSemanticPptxObjects(blob, slidePlans, options) {
+    if (!slidePlans.some((plan) => plan && plan.length)) return blob;
+    const zip = await JSZip.loadAsync(blob);
+    const p = PRESENTATIONML_NS;
+    const a = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+    const all = (node, ns, name) => Array.from(node.getElementsByTagNameNS(ns, name));
+    for (let index = 0; index < slidePlans.length; index++) {
+      throwIfExportAborted(options);
+      const plan = slidePlans[index];
+      if (!plan || !plan.length) continue;
+      const fileName = `ppt/slides/slide${index + 1}.xml`;
+      const file = zip.file(fileName);
+      if (!file) continue;
+      const doc = new DOMParser().parseFromString(await file.async('string'), 'application/xml');
+      if (doc.querySelector('parsererror')) throw new Error('Invalid slide XML before semantic grouping');
+      const tree = all(doc, p, 'spTree')[0];
+      let nextId = Math.max(1, ...all(doc, p, 'cNvPr').map((n) => Number(n.getAttribute('id')) || 0)) + 1;
+      const make = (ns, name, attrs = {}) => {
+        const element = doc.createElementNS(ns, name);
+        Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
+        return element;
+      };
+      // Inner groups first. off==chOff and ext==chExt preserve absolute child
+      // coordinates and rotations while providing tight group selection bounds.
+      for (const group of [...plan].sort((x, y) => y.depth - x.depth)) {
+        const names = new Set(group.names);
+        const direct = Array.from(tree.children);
+        const members = direct.filter((node) => all(node, p, 'cNvPr').some((pr) => names.has(pr.getAttribute('name'))));
+        if (members.length < 2) continue;
+        const first = direct.indexOf(members[0]), last = direct.indexOf(members[members.length - 1]);
+        // Never reorder unrelated/interleaving objects simply to form a group.
+        if (last - first + 1 !== members.length) continue;
+        const bounds = members.map((node) => {
+          const props = Array.from(node.children).find((el) => ['spPr', 'grpSpPr'].includes(el.localName));
+          const xf = props && all(props, a, 'xfrm')[0];
+          if (!xf) return null;
+          const off = all(xf, a, 'off')[0], ext = all(xf, a, 'ext')[0];
+          if (!off || !ext) return null;
+          const x = Number(off.getAttribute('x')), y = Number(off.getAttribute('y'));
+          const w = Number(ext.getAttribute('cx')), h = Number(ext.getAttribute('cy'));
+          const angle = Number(xf.getAttribute('rot') || 0) / 60000 * Math.PI / 180;
+          const rw = Math.abs(w * Math.cos(angle)) + Math.abs(h * Math.sin(angle));
+          const rh = Math.abs(w * Math.sin(angle)) + Math.abs(h * Math.cos(angle));
+          if (![x, y, w, h, rw, rh].every(Number.isFinite) || w < 0 || h < 0) return null;
+          return { left: x + (w - rw) / 2, top: y + (h - rh) / 2,
+            right: x + (w + rw) / 2, bottom: y + (h + rh) / 2 };
+        });
+        if (bounds.some((b) => !b)) continue; // Unsupported object types stay editable, ungrouped.
+        const x = Math.floor(Math.min(...bounds.map((b) => b.left)));
+        const y = Math.floor(Math.min(...bounds.map((b) => b.top)));
+        const w = Math.max(1, Math.ceil(Math.max(...bounds.map((b) => b.right))) - x);
+        const h = Math.max(1, Math.ceil(Math.max(...bounds.map((b) => b.bottom))) - y);
+        const wrapper = make(p, 'p:grpSp');
+        const nv = make(p, 'p:nvGrpSpPr');
+        nv.append(make(p, 'p:cNvPr', { id: nextId++, name: group.name }), make(p, 'p:cNvGrpSpPr'), make(p, 'p:nvPr'));
+        const props = make(p, 'p:grpSpPr'), xf = make(a, 'a:xfrm');
+        xf.append(make(a, 'a:off', { x, y }), make(a, 'a:ext', { cx: w, cy: h }),
+          make(a, 'a:chOff', { x, y }), make(a, 'a:chExt', { cx: w, cy: h }));
+        props.append(xf); wrapper.append(nv, props);
+        tree.insertBefore(wrapper, members[0]);
+        members.forEach((member) => wrapper.appendChild(member));
+      }
+      zip.file(fileName, new XMLSerializer().serializeToString(doc));
+    }
+    throwIfExportAborted(options);
+    return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+  }
+
   async function exportToPptx(target, options = {}) {
     const resolvePptxConstructor = (pkg) => {
       if (!pkg) return null;
@@ -66988,6 +67287,7 @@
     const renderMode = String(options.renderMode || 'dom').toLowerCase();
     const renderAsImage = renderMode === 'image';
     let slideIndex = 0;
+    const semanticSlidePlans = [];
     const resolveSlideNotes = async (root, index) => {
       try {
         if (typeof options.getSlideNotes === 'function') {
@@ -67059,7 +67359,7 @@
       }
 
       if (!renderedAsImage) {
-        await processSlide(root, slide, pptx, options);
+        semanticSlidePlans[slideIndex] = await processSlide(root, slide, pptx, options);
         throwIfExportAborted(options);
       }
       if (processedRoots) processedRoots.push(root);
@@ -67215,6 +67515,8 @@
       finalBlob = await pptx.write({ outputType: 'blob' });
     }
 
+    finalBlob = await groupSemanticPptxObjects(finalBlob, semanticSlidePlans, options);
+
     // 4. Output Handling
     // If skipDownload is NOT true, proceed with browser download
     if (!options.skipDownload) {
@@ -67263,9 +67565,10 @@
     const renderQueue = [];
     const asyncTasks = []; // Queue for heavy operations (Images, Canvas)
     let domOrderCounter = 0;
+    const semanticGroups = [];
 
     // Sync Traversal Function
-    function collect(node, parentZIndex, parentOpacity, zIndexScale = 1) {
+    function collect(node, parentZIndex, parentOpacity, zIndexScale = 1, parentGroups = []) {
       const order = domOrderCounter++;
 
       let currentZ = parentZIndex;
@@ -67273,6 +67576,7 @@
       let currentOpacity = Number.isFinite(parentOpacity) ? Math.max(0, Math.min(1, parentOpacity)) : 1;
       let nodeStyle = null;
       const nodeType = node.nodeType;
+      let currentGroups = parentGroups;
 
       if (nodeType === 1) {
         const nodeWin = (node.ownerDocument && node.ownerDocument.defaultView) || window;
@@ -67297,6 +67601,16 @@
           currentOpacity = currentOpacity * Math.max(0, Math.min(1, nodeOpacity));
           if (currentOpacity <= 0.001) return;
         }
+        if (globalOptions.semanticGrouping !== false && isPptxSemanticContainer(node, nodeStyle, root)) {
+          const title = node.querySelector('h1,h2,h3,h4,h5,h6,[class*="title"]');
+          const label = String(title ? title.textContent : node.textContent).replace(/\s+/g, ' ').trim().slice(0, 60);
+          const group = { name: `Card: ${label}`, depth: parentGroups.length,
+            zIndex: normalizeRenderableZIndex(currentZ), domOrder: order, names: [],
+            stackingContext: !isEffectivelyIdentityTransform(nodeStyle.transform) ||
+              nodeStyle.zIndex !== 'auto' || currentOpacity < parentOpacity };
+          semanticGroups.push(group);
+          currentGroups = [...parentGroups, group];
+        }
       }
 
       // Prepare the item. If it needs async work, it returns a 'job'
@@ -67313,6 +67627,7 @@
 
       if (result) {
         if (result.items) {
+          result.items.forEach((item) => { item.semanticGroups = currentGroups; });
           // Push items immediately to queue (data might be missing but filled later)
           renderQueue.push(...result.items);
         }
@@ -67326,7 +67641,7 @@
       // Recurse children synchronously
       const childNodes = node.childNodes;
       for (let i = 0; i < childNodes.length; i++) {
-        collect(childNodes[i], currentZ, currentOpacity, childZIndexScale);
+        collect(childNodes[i], currentZ, currentOpacity, childZIndexScale, currentGroups);
       }
     }
 
@@ -67348,16 +67663,19 @@
       (item) => !item.skip && (item.type !== 'image' || item.options.data)
     );
 
-    finalQueue.sort((a, b) => {
-      if (a.zIndex !== b.zIndex) return a.zIndex - b.zIndex;
-      return a.domOrder - b.domOrder;
-    });
+    finalQueue.sort(compareSemanticRenderItems);
 
     finalQueue = dedupeOverlappingTextItems(finalQueue);
 
     // 4. Add to Slide
+    let objectIndex = 0;
     for (const item of finalQueue) {
       throwIfExportAborted(globalOptions);
+      if (item.semanticGroups && item.semanticGroups.length) {
+        const name = `${item.options.objectName || item.type} [lp:${objectIndex++}]`;
+        item.options.objectName = name;
+        item.semanticGroups.forEach((group) => group.names.push(name));
+      }
       if (item.type === 'shape') slide.addShape(item.shapeType, item.options);
       if (item.type === 'image') slide.addImage(item.options);
       if (item.type === 'text') slide.addText(item.textParts, item.options);
@@ -67374,6 +67692,7 @@
         });
       }
     }
+    return semanticGroups.filter((group) => group.names.length > 1);
     } finally {
       restoreAnimations();
     }
@@ -68391,7 +68710,8 @@
     if (names.some((name, i) => visible[i] && sides[name].style !== 'solid')) return null;
     const { widthPx: width, heightPx: height } = geometry;
     const [top, right, bottom, left] = widths;
-    if (!(width > left + right && height > top + bottom)) return null;
+    // A zero-content CSS box can still paint borders (rules and triangles).
+    if (!(width > 0 && height > 0 && width >= left + right && height >= top + bottom)) return null;
     const radii = resolveCssCornerRadii(style, width, height);
     const origins = [[0, 0], [width, 0], [width, height], [0, height]];
     const signs = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
@@ -68405,6 +68725,7 @@
       const ax = inner ? dx : 0, ay = inner ? dy : 0;
       let rx = Math.max(0, radii[index].rx - ax);
       let ry = Math.max(0, radii[index].ry - ay);
+      if (inner && (width === left + right || height === top + bottom)) { rx = 0; ry = 0; }
       if (!rx || !ry) { rx = 0; ry = 0; }
       const cx = ax + rx, cy = ay + ry;
       const corner = { rx, ry, x: ox + sx * cx, y: oy + sy * cy, split: starts[index] };
@@ -68586,6 +68907,50 @@
     return deduped;
   }
 
+  function getPseudoPositioningBox(node, baseStyle, geometry, scale, position) {
+    if (position !== 'absolute') return null;
+    const win = node.ownerDocument.defaultView;
+    let block = node, style = baseStyle, relativeRotation = 0;
+    const establishesBlock = (s) => s.position !== 'static' ||
+      !isEffectivelyIdentityTransform(s.transform) || isNonTrivialCssValue(s.perspective) ||
+      isNonTrivialCssValue(s.filter) || /(?:layout|paint|strict|content)/.test(s.contain || '');
+    while (block && !establishesBlock(style)) {
+      relativeRotation += getRotation(style.transform);
+      block = block.parentElement;
+      if (block) style = win.getComputedStyle(block);
+    }
+    const px = PX_TO_INCH * scale;
+    const ownerRect = node.getBoundingClientRect();
+    const originX = geometry.x + geometry.widthPx * px / 2 - (ownerRect.left + ownerRect.width / 2) * px;
+    const originY = geometry.y + geometry.heightPx * px / 2 - (ownerRect.top + ownerRect.height / 2) * px;
+    if (!block) {
+      return { x: originX - win.scrollX * px, y: originY - win.scrollY * px,
+        width: win.document.documentElement.clientWidth, height: win.document.documentElement.clientHeight,
+        borderLeft: 0, borderTop: 0, rotation: 0 };
+    }
+    const r = block.getBoundingClientRect();
+    // offsetWidth/Height round fractional flex/grid sizes to integer pixels.
+    // Use untransformed computed dimensions so border insets stay on the DOM edge.
+    const borderBoxSize = (dimension, sides, fallback) => {
+      const value = parseFloat(style[dimension]);
+      const extras = sides.reduce((sum, side) => sum + (parseFloat(style[`border${side}Width`]) || 0) +
+        (parseFloat(style[`padding${side}`]) || 0), 0);
+      return Number.isFinite(value) ? Math.max(extras, value + (style.boxSizing === 'border-box' ? 0 : extras)) : fallback;
+    };
+    const width = borderBoxSize('width', ['Left', 'Right'], block.offsetWidth || r.width);
+    const height = borderBoxSize('height', ['Top', 'Bottom'], block.offsetHeight || r.height);
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+    const borderTop = parseFloat(style.borderTopWidth) || 0;
+    // Absolutely positioned pseudo-elements use the containing block's padding
+    // box, not its outer border box and not its content box (padding stays in).
+    return { x: originX + (r.left + r.width / 2 - width / 2) * px,
+      y: originY + (r.top + r.height / 2 - height / 2) * px,
+      outerWidth: width, outerHeight: height,
+      width: Math.max(0, width - borderLeft - (parseFloat(style.borderRightWidth) || 0)),
+      height: Math.max(0, height - borderTop - (parseFloat(style.borderBottomWidth) || 0)),
+      borderLeft, borderTop, rotation: geometry.rotation - relativeRotation };
+  }
+
   function collectPseudoDecorationItems(
     node,
     baseStyle,
@@ -68630,12 +68995,15 @@
       const isBorderBox = String(pseudoStyle.boxSizing || '').toLowerCase() === 'border-box';
       const horizontalExtras = borderLeftPx + borderRightPx + paddingLeftPx + paddingRightPx;
       const verticalExtras = borderTopPx + borderBottomPx + paddingTopPx + paddingBottomPx;
-      const leftValue = resolvePseudoLength(pseudoStyle.left, geometry.widthPx);
-      const rightValue = resolvePseudoLength(pseudoStyle.right, geometry.widthPx);
-      const topValue = resolvePseudoLength(pseudoStyle.top, geometry.heightPx);
-      const bottomValue = resolvePseudoLength(pseudoStyle.bottom, geometry.heightPx);
-      const measuredText = pseudoContent ? measurePseudoTextBox(win, pseudoStyle, pseudoContent) : null;
       const pseudoPosition = String(pseudoStyle.position || 'static').toLowerCase();
+      const positioningBox = getPseudoPositioningBox(node, baseStyle, geometry, scale, pseudoPosition);
+      const positioningWidth = positioningBox ? positioningBox.width : geometry.widthPx;
+      const positioningHeight = positioningBox ? positioningBox.height : geometry.heightPx;
+      const leftValue = resolvePseudoLength(pseudoStyle.left, positioningWidth);
+      const rightValue = resolvePseudoLength(pseudoStyle.right, positioningWidth);
+      const topValue = resolvePseudoLength(pseudoStyle.top, positioningHeight);
+      const bottomValue = resolvePseudoLength(pseudoStyle.bottom, positioningHeight);
+      const measuredText = pseudoContent ? measurePseudoTextBox(win, pseudoStyle, pseudoContent) : null;
       const pseudoDisplay = String(pseudoStyle.display || '').toLowerCase();
       const isInlineFlowPseudo =
         !!pseudoContent &&
@@ -68649,19 +69017,21 @@
       const nodeRect = anchorContentRect ? node.getBoundingClientRect() : null;
       const pseudoMarginLeft = parseFloat(pseudoStyle.marginLeft) || 0;
       const pseudoMarginRight = parseFloat(pseudoStyle.marginRight) || 0;
-      let pseudoWidth = resolvePseudoLength(pseudoStyle.width, geometry.widthPx);
-      let pseudoHeight = resolvePseudoLength(pseudoStyle.height, geometry.heightPx);
+      let pseudoWidth = resolvePseudoLength(pseudoStyle.width, positioningWidth);
+      let pseudoHeight = resolvePseudoLength(pseudoStyle.height, positioningHeight);
       if (!Number.isFinite(pseudoWidth) && measuredText) pseudoWidth = measuredText.width;
       if (!Number.isFinite(pseudoHeight) && measuredText) pseudoHeight = measuredText.height;
       if (!Number.isFinite(pseudoWidth) && Number.isFinite(leftValue) && Number.isFinite(rightValue)) {
-        pseudoWidth = Math.max(0, geometry.widthPx - leftValue - rightValue - (isBorderBox ? 0 : horizontalExtras));
+        pseudoWidth = Math.max(0, positioningWidth - leftValue - rightValue - (isBorderBox ? 0 : horizontalExtras));
       }
       if (!Number.isFinite(pseudoHeight) && Number.isFinite(topValue) && Number.isFinite(bottomValue)) {
-        pseudoHeight = Math.max(0, geometry.heightPx - topValue - bottomValue - (isBorderBox ? 0 : verticalExtras));
+        pseudoHeight = Math.max(0, positioningHeight - topValue - bottomValue - (isBorderBox ? 0 : verticalExtras));
       }
       if (!Number.isFinite(pseudoWidth) || !Number.isFinite(pseudoHeight)) continue;
-      const renderedWidth = pseudoWidth + (isBorderBox ? 0 : horizontalExtras);
-      const renderedHeight = pseudoHeight + (isBorderBox ? 0 : verticalExtras);
+      // CSS floors the content box at zero: border-box width:0 does not
+      // discard its padding/borders. Such boxes often draw decorative rules.
+      const renderedWidth = Math.max(horizontalExtras, pseudoWidth + (isBorderBox ? 0 : horizontalExtras));
+      const renderedHeight = Math.max(verticalExtras, pseudoHeight + (isBorderBox ? 0 : verticalExtras));
       if (renderedWidth < 0.5 || renderedHeight < 0.5) continue;
 
       let leftPx = leftValue;
@@ -68677,7 +69047,7 @@
         }
       } else if (!Number.isFinite(leftPx)) {
         if (Number.isFinite(rightValue)) {
-          leftPx = geometry.widthPx - renderedWidth - rightValue;
+          leftPx = positioningWidth - renderedWidth - rightValue;
         } else if (
           pseudoSelector === '::after' &&
           /^(?:flex|inline-flex)$/i.test(String(baseStyle.display || '')) &&
@@ -68714,7 +69084,7 @@
         }
       } else if (!Number.isFinite(topPx)) {
         if (Number.isFinite(bottomValue)) {
-          topPx = geometry.heightPx - renderedHeight - bottomValue;
+          topPx = positioningHeight - renderedHeight - bottomValue;
         } else if (
           String(baseStyle.display || '').includes('flex') &&
           String(baseStyle.alignItems || '').toLowerCase() === 'center'
@@ -68729,15 +69099,31 @@
       leftPx += transformTranslation.x;
       topPx += transformTranslation.y;
 
+      let positionedX = geometry.x + leftPx * pxToInchScale;
+      let positionedY = geometry.y + topPx * pxToInchScale;
+      let positionedRotation = geometry.rotation;
+      if (positioningBox) {
+        // The local inset must rotate around the containing block, not around
+        // the narrow strip's own center. Otherwise rotated cards shift markers.
+        const boxWidth = positioningBox.outerWidth || positioningBox.width;
+        const boxHeight = positioningBox.outerHeight || positioningBox.height;
+        const dx = positioningBox.borderLeft + leftPx + renderedWidth / 2 - boxWidth / 2;
+        const dy = positioningBox.borderTop + topPx + renderedHeight / 2 - boxHeight / 2;
+        const angle = positioningBox.rotation * Math.PI / 180;
+        positionedX = positioningBox.x + (boxWidth / 2 + dx * Math.cos(angle) - dy * Math.sin(angle) - renderedWidth / 2) * pxToInchScale;
+        positionedY = positioningBox.y + (boxHeight / 2 + dx * Math.sin(angle) + dy * Math.cos(angle) - renderedHeight / 2) * pxToInchScale;
+        positionedRotation = positioningBox.rotation;
+      }
+
       const itemBase = {
         zIndex: zIndex,
         domOrder: domOrder + (pseudoSelector === '::before' ? 0.01 : 0.02),
         options: {
-          x: geometry.x + leftPx * pxToInchScale,
-          y: geometry.y + topPx * pxToInchScale,
+          x: positionedX,
+          y: positionedY,
           w: renderedWidth * pxToInchScale,
           h: renderedHeight * pxToInchScale,
-          rotate: geometry.rotation + getRotation(pseudoStyle.transform),
+          rotate: positionedRotation + getRotation(pseudoStyle.transform),
         },
       };
 
@@ -68758,6 +69144,26 @@
         const borderAlpha = 1 - (Number(lineOptions.transparency) || 0) / 100;
         lineOptions.transparency =
           (1 - Math.max(0, Math.min(1, borderAlpha * safeOpacity * pseudoOpacity))) * 100;
+      }
+
+      // Composite borders belong to the pseudo-element, not its owner. Keep
+      // them independent from fill/text so every branch retains painted edges.
+      if (borderInfo.type === 'composite') {
+        const borderItems = createNativeCompositeBorderItems(
+          pseudoStyle, borderInfo.sides,
+          { ...itemBase.options, widthPx: renderedWidth, heightPx: renderedHeight },
+          scale, itemBase.zIndex, itemBase.domOrder, safeOpacity * pseudoOpacity
+        );
+        if (borderItems !== null) {
+          items.push(...borderItems);
+        } else {
+          const borderData = generateCompositeBorderSVG(
+            renderedWidth, renderedHeight, parseFloat(pseudoStyle.borderRadius) || 0,
+            borderInfo.sides, safeOpacity * pseudoOpacity
+          );
+          if (borderData) items.push({ type: 'image', ...itemBase,
+            domOrder: itemBase.domOrder + 0.1, options: { ...itemBase.options, data: borderData } });
+        }
       }
 
       if (pseudoContent) {
@@ -68994,6 +69400,38 @@
       getStyleProperty(style, 'clipPath', 'clip-path');
     const directClipBackground = parseColor(style.backgroundColor);
     const directClipDropShadow = parseSimpleDropShadow(style.filter);
+    const nativeClipPoints = getNativeClipPolygonPoints(directClipPath, widthPx, heightPx, PX_TO_INCH * config.scale);
+    const clipGradient = parseNativeLinearGradient(style.backgroundImage);
+    const clipRisk = nativeClipPoints ? analyzeRiskSubtree(node, style) : null;
+    const hasGeneratedContent = nativeClipPoints && ['::before', '::after'].some((selector) => {
+      const pseudo = getNodeWindow(node).getComputedStyle(node, selector);
+      return pseudo.display !== 'none' && !['none', 'normal'].includes(pseudo.content);
+    });
+    if (nativeClipPoints && !node.children.length && !String(node.textContent || '').trim() &&
+        !hasGeneratedContent && clipRisk.reasons.every((reason) => reason === 'complex-clip-path') &&
+        !isNonTrivialCssValue(style.boxShadow) &&
+        ['TopLeft', 'TopRight', 'BottomLeft', 'BottomRight'].every((corner) =>
+          String(style[`border${corner}Radius`] || '0').split(/\s+/).every((value) => parseFloat(value) === 0)) &&
+        (!style.backgroundClip || style.backgroundClip === 'border-box') &&
+        ['Top', 'Right', 'Bottom', 'Left'].every((side) => !(parseFloat(style[`border${side}Width`]) > 0)) &&
+        (clipGradient || !isNonTrivialCssValue(style.backgroundImage)) &&
+        (!clipGradient || ((!style.backgroundSize || style.backgroundSize === 'auto') &&
+          (!style.backgroundPosition || style.backgroundPosition === '0% 0%')))) {
+      const polygonOptions = { x, y, w, h, rotate: rotation, points: nativeClipPoints, line: { type: 'none' } };
+      const polygonItems = [];
+      if (directClipBackground.hex && directClipBackground.opacity > 0) {
+        polygonItems.push({ type: 'shape', shapeType: 'custGeom', zIndex, domOrder,
+          options: { ...polygonOptions, fill: { color: directClipBackground.hex,
+            transparency: (1 - directClipBackground.opacity * safeOpacity) * 100 } } });
+      }
+      if (clipGradient) {
+        polygonItems.push({ type: 'shape', shapeType: 'custGeom', zIndex, domOrder: domOrder + 0.01,
+          options: { ...polygonOptions, fill: { ...clipGradient, stops: clipGradient.stops.map((stop) => ({
+            ...stop, transparency: (1 - (1 - stop.transparency / 100) * safeOpacity) * 100,
+          })) } } });
+      }
+      return { items: polygonItems, stopRecursion: true };
+    }
     const isSolidPolygonLeaf =
       /^polygon\s*\(/i.test(String(directClipPath || '').trim()) &&
       !String(node.textContent || '').trim() &&
@@ -69755,6 +70193,33 @@
     const isVisualLeafWithUrlBackground =
       hasUrlBackgroundImage && !hasLeafTextContent && !hasLeafChildren;
 
+    const stripeBands = !hasLeafTextContent && !hasLeafChildren && !hasMaskImage &&
+      !isNonTrivialCssValue(style.boxShadow) && getBorderInfo(style, config.scale).type === 'none' &&
+      (!style.backgroundSize || style.backgroundSize === 'auto') &&
+      (!style.backgroundPosition || style.backgroundPosition === '0% 0%') &&
+      ['TopLeft', 'TopRight', 'BottomLeft', 'BottomRight'].every((corner) => parseFloat(style[`border${corner}Radius`]) === 0)
+        ? parseNativeRepeatingStripes(backgroundImageValue, widthPx, heightPx) : null;
+    if (stripeBands) {
+      const stripeItems = [];
+      if (bgColorObj.hex && bgColorObj.opacity > 0) stripeItems.push({ type: 'shape', shapeType: 'rect', zIndex, domOrder,
+        options: { x, y, w, h, rotate: rotation, line: { type: 'none' },
+          fill: { color: bgColorObj.hex, transparency: (1 - bgColorObj.opacity * safeOpacity) * 100 } } });
+      const pxScale = PX_TO_INCH * config.scale, radians = rotation * Math.PI / 180;
+      stripeBands.forEach((band, index) => {
+        const bandW = (band.vertical ? widthPx : band.end - band.start) * pxScale;
+        const bandH = (band.vertical ? band.end - band.start : heightPx) * pxScale;
+        const dx = band.vertical ? 0 : ((band.start + band.end) / 2 - widthPx / 2) * pxScale;
+        const dy = band.vertical ? ((band.start + band.end) / 2 - heightPx / 2) * pxScale : 0;
+        stripeItems.push({ type: 'shape', shapeType: 'rect', zIndex, domOrder: domOrder + 0.01,
+          options: { objectName: `CSS stripe ${domOrder} ${index}`,
+            x: x + w / 2 + dx * Math.cos(radians) - dy * Math.sin(radians) - bandW / 2,
+            y: y + h / 2 + dx * Math.sin(radians) + dy * Math.cos(radians) - bandH / 2,
+            w: bandW, h: bandH, rotate: rotation, line: { type: 'none' },
+            fill: { color: band.color, transparency: (1 - band.opacity * safeOpacity) * 100 } } });
+      });
+      return { items: stripeItems, stopRecursion: true };
+    }
+
     if (isComplexLeafGradientBackground) {
       const item = {
         type: 'image',
@@ -69853,6 +70318,9 @@
 
     let textPayload = null;
     const isText = isTextContainer(node);
+    const isCompactTag = /(?:^|\s)(?:tag|chip|badge)(?:\s|$)/i.test(
+      String(node.getAttribute && node.getAttribute('class') || '')
+    );
 
     if (isText) {
       const textParts = finalizeInlineTextParts(
@@ -69866,6 +70334,10 @@
         if (align === 'end') align = 'right';
         let valign = 'top';
         if (style.alignItems === 'center') valign = 'middle';
+        if (isCompactTag) {
+          align = 'center';
+          valign = 'middle';
+        }
         // justify-content positions flex items; it is not paragraph alignment.
         // Mapping it to text alignment is only equivalent for a single visual
         // line. Multi-line anonymous flex text must retain CSS text-align.
@@ -69907,10 +70379,41 @@
           align,
           valign,
           margin,
-          wrap: getWritingModeRotation(style) ? false : browserLineCount !== 1,
+          // Keep normal text boxes in DrawingML's wrapping mode even when the
+          // browser reports a single visual line.  Office otherwise treats a
+          // shape as no-wrap after a width/height round-trip, and a later edit
+          // can reflow a paragraph into one long line.  Writing-mode text is
+          // intentionally kept unwrapped because its 90° geometry is handled
+          // separately.
+          wrap: getWritingModeRotation(style) ? false : true,
+          noWrap: Boolean(isCompactTag),
           widthBuffer: singleLineWidthBuffer,
           writingModeRotation: getWritingModeRotation(style),
         };
+        if (canSafelyPadSingleLineTextBox && !getWritingModeRotation(style) &&
+            textParts.some((part) => part.options && part.options.outline)) {
+          // Display outlines often use line-height < font-size. The CSS box
+          // then excludes part of the glyphs. Anchor the complete rich-text
+          // line to its live Range instead of shifting glyphs to the box top.
+          const range = node.ownerDocument.createRange();
+          range.selectNodeContents(node);
+          const textRect = range.getBoundingClientRect();
+          range.detach();
+          if (textRect.width > 0 && textRect.height > 0) {
+            const size = recoverUnrotatedSizeFromBoundingBox(textRect.width, textRect.height, rotation);
+            const pxScale = PX_TO_INCH * config.scale;
+            const angle = rotation * Math.PI / 180;
+            textPayload.rangeGeometry = {
+              x: config.offX + (textRect.left + textRect.width / 2 - config.rootX - size.width / 2) * pxScale + singleLineWidthBuffer * (Math.cos(angle) - 1) / 2,
+              y: config.offY + (textRect.top + textRect.height / 2 - config.rootY - size.height / 2) * pxScale + singleLineWidthBuffer * Math.sin(angle) / 2,
+              w: size.width * pxScale + singleLineWidthBuffer, h: size.height * pxScale, rotate: rotation,
+            };
+            textPayload.align = 'left';
+            textPayload.valign = 'middle';
+            textPayload.margin = [0, 0, 0, 0];
+            for (const part of textParts) if (part.options) delete part.options.lineSpacing;
+          }
+        }
       }
     }
 
@@ -69951,8 +70454,8 @@
         };
         items.push({
           type: 'shape',
-          zIndex: nextRenderableZIndex(zIndex),
-          domOrder,
+          zIndex,
+          domOrder: domOrder + 0.1,
           shapeType: uniformBorderGeometry.shapeType,
           options: borderOverlayOptions,
         });
@@ -70032,7 +70535,9 @@
             valign: textPayload.valign,
             margin: textPayload.margin,
             wrap: textPayload.wrap,
+            noWrap: textPayload.noWrap,
             autoFit: false,
+            fit: textPayload.wrap ? 'none' : undefined,
           },
         });
       }
@@ -70045,8 +70550,8 @@
         };
         items.push({
           type: 'shape',
-          zIndex: nextRenderableZIndex(zIndex, 2),
-          domOrder,
+          zIndex,
+          domOrder: domOrder + 0.1,
           shapeType: gradientBorderShapeType,
           options: gradientBorderOptions,
         });
@@ -70061,7 +70566,8 @@
       const finalAlpha = safeOpacity * bgColorObj.opacity;
       const transparency = (1 - finalAlpha) * 100;
       const useSolidFill = bgColorObj.hex && !isImageWrapper;
-      const splitUniformBorderOverlay = hasUniformBorder && hasLeafChildren && !textPayload;
+      const mergeUniformBorderFill = hasUniformBorder && style.borderTopStyle === 'solid' && useSolidFill;
+      const splitUniformBorderOverlay = hasUniformBorder && hasLeafChildren && !textPayload && !mergeUniformBorderFill;
 
       {
         const shapeOpts = {
@@ -70096,24 +70602,42 @@
         );
         if (hardShadowItem) items.push(hardShadowItem);
 
+        if (mergeUniformBorderFill) {
+          // One native filled/stroked shape instead of a separate border layer.
+          // Its stroke centerline is inset by half the CSS border width. Keep
+          // the shadow on the original outer silhouette calculated above.
+          delete shapeOpts.rectRadius;
+          delete shapeOpts.points;
+          Object.assign(shapeOpts, uniformBorderGeometry.options);
+          shapeOpts.line = borderLineOptions;
+        }
+        const bodyShapeType = mergeUniformBorderFill ? uniformBorderGeometry.shapeType : shapeType;
+
         if (textPayload) {
           textPayload.text[0].options.fontSize =
             Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
-          const textGeometry = getTextPayloadGeometry(textPayload, x, y, w, h, rotation);
+          const textGeometry = getTextPayloadGeometry(textPayload, shapeOpts.x, shapeOpts.y, shapeOpts.w, shapeOpts.h, rotation);
+          const textMargin = textPayload.margin.slice();
+          if (mergeUniformBorderFill) {
+            const insetPoints = (parseFloat(style.borderTopWidth) || 0) * 0.75 * config.scale / 2;
+            for (let i = 0; i < textMargin.length; i++) textMargin[i] += insetPoints;
+          }
           const textOptions = {
-            shape: shapeType,
+            shape: bodyShapeType,
             ...shapeOpts,
             ...textGeometry,
             align: textPayload.align,
             valign: textPayload.valign,
-            margin: textPayload.margin,
+            margin: textMargin,
             wrap: textPayload.wrap,
+            noWrap: textPayload.noWrap,
             autoFit: false,
+            fit: textPayload.wrap ? 'none' : undefined,
           };
           if (nativeCompositeBorders) {
             // Background -> narrow edge shapes -> editable text. A combined
             // filled text shape would otherwise paint over the native edges.
-            items.push({ type: 'shape', zIndex, domOrder, shapeType, options: { ...shapeOpts } });
+            items.push({ type: 'shape', zIndex, domOrder, shapeType: bodyShapeType, options: { ...shapeOpts } });
             textOptions.fill = { type: 'none' };
             textOptions.line = { type: 'none' };
             delete textOptions.shadow;
@@ -70130,7 +70654,7 @@
             type: 'shape',
             zIndex,
             domOrder,
-            shapeType,
+            shapeType: bodyShapeType,
             options: shapeOpts,
           });
         }
@@ -70143,8 +70667,8 @@
           };
           items.push({
             type: 'shape',
-            zIndex: nextRenderableZIndex(zIndex),
-            domOrder,
+            zIndex,
+            domOrder: domOrder + 0.1,
             shapeType: uniformBorderGeometry.shapeType,
             options: borderOverlayOpts,
           });
@@ -70167,8 +70691,8 @@
         if (borderSvgData) {
           items.push({
             type: 'image',
-            zIndex: nextRenderableZIndex(zIndex),
-            domOrder,
+            zIndex,
+            domOrder: domOrder + 0.1,
             options: { data: borderSvgData, x, y, w, h, rotate: rotation },
           });
         }
@@ -70295,7 +70819,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-03-native-gradient-strips-v59';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-03-compact-tag-nowrap-v71';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

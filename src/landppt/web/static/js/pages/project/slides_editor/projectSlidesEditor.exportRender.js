@@ -242,9 +242,12 @@
             'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
             'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
             'box-sizing', 'overflow', 'overflow-x', 'overflow-y',
+            'clip-path', '-webkit-clip-path',
             'transform', 'transform-origin', 'opacity',
             'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
             'text-align', 'text-transform', 'text-decoration', 'white-space', 'word-break',
+            'text-shadow',
+            '-webkit-text-stroke-width', '-webkit-text-stroke-color',
             'color', 'background', 'background-color', 'background-image', 'background-size', 'background-position', 'background-repeat',
             'border', 'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius',
             'box-shadow', 'filter', 'backdrop-filter',
@@ -415,8 +418,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260903-native-gradient-strips-v59';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-03-native-gradient-strips-v59';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260903-compact-tag-v70';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-03-compact-tag-v70';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

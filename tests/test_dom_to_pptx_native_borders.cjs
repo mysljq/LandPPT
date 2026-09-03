@@ -44,7 +44,7 @@ async function main() {
       const parse=x=>new DOMParser().parseFromString(x,'application/xml'),all=(n,ns,t)=>Array.from(n.getElementsByTagNameNS(ns,t));
       const doc=parse(xml),factor=Number(all(parse(pres),p,'sldSz')[0].getAttribute('cx'))/1280;
       const tree=all(doc,p,'spTree')[0];
-      return Array.from(tree.children).filter(n=>['sp','pic'].includes(n.localName)).map((n,i)=>{
+      return Array.from(tree.getElementsByTagNameNS(p,'*')).filter(n=>['sp','pic'].includes(n.localName)).map((n,i)=>{
         const pr=all(n,p,'spPr')[0],off=all(pr,a,'off')[0],ext=all(pr,a,'ext')[0],xf=all(pr,a,'xfrm')[0];
         const fill=Array.from(pr.children).find(c=>c.localName==='solidFill');
         const alpha=fill&&all(fill,a,'alpha')[0];

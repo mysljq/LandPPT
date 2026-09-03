@@ -30,7 +30,7 @@ async function main() {
         const rect = node.getBoundingClientRect();
         const pseudo = getComputedStyle(node, '::before');
         return {
-          name:node.className, x:rect.x-rootRect.x, width:parseFloat(pseudo.width),
+          name:node.className, x:rect.x-rootRect.x+(parseFloat(getComputedStyle(node).borderLeftWidth)||0), width:parseFloat(pseudo.width),
           geometry:realPage ? 'custGeom' : node.dataset.geometry,
           radius:realPage ? 6 : Number(node.dataset.radius),
           radiusY:realPage ? 6 : Number(node.dataset.radiusY || node.dataset.radius),
