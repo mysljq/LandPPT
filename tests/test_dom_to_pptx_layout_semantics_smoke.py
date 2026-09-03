@@ -8,7 +8,7 @@ import pytest
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_layout_semantics_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-premultiplied-gradient-v49"
+EXPECTED_PATCH_VERSION = "2026-09-03-native-gradient-strips-v59"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -96,6 +96,11 @@ def test_block_lines_flex_layout_empty_dots_and_animation_snapshot_are_preserved
         and alpha.get("val") == "50000"
     ]
     assert corrected_midpoints
+
+    rotated_flex_chip = _shape_for_text(root, "FLEX ROTATION")
+    rotated_flex_transform = rotated_flex_chip.find(f".//{{{DRAWING_NS}}}xfrm")
+    assert rotated_flex_transform is not None
+    assert rotated_flex_transform.get("rot") in {"-120000", "2146800000"}
 
     catalog = _shape_for_text(root, "室组人员管理TEAM MANAGEMENT")
     catalog_paragraphs = catalog.findall(f".//{{{DRAWING_NS}}}p")

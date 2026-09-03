@@ -25,6 +25,7 @@
       .direction-title { font-size:16px; font-weight:bold; color:#fff; letter-spacing:1px; }
       .suite-header-star { position:absolute; left:1120px; top:180px; width:26px; height:26px; background:#ffeb3b; clip-path:polygon(50% 0%,61% 35%,98% 35%,68% 57%,79% 91%,50% 70%,21% 91%,32% 57%,2% 35%,39% 35%); filter:drop-shadow(0 2px 3px rgba(0,0,0,.3)); }
       .progress-bar { position:absolute; left:1050px; top:250px; width:160px; height:30px; display:flex; align-items:center; justify-content:flex-end; padding-right:8px; box-sizing:border-box; background:#c00000; color:white; font:11px Arial,sans-serif; }
+      .numeric-font-fallback { position:absolute; left:1040px; top:330px; font-family:'PingFang SC','Microsoft YaHei',sans-serif; font-size:90px; font-weight:900; letter-spacing:-2px; color:#ff6b9d; line-height:1; }
     </style>
   </head>
   <body>
@@ -54,6 +55,7 @@
       <div class="direction-header-test" style="left:940px;top:650px"><span class="direction-title">低代码方向</span></div>
       <div class="suite-header-star"></div>
       <div class="progress-bar">8/20</div>
+      <span class="numeric-font-fallback">486</span>
     </div>
     <script src="../../src/landppt/web/static/js/dom-to-pptx.bundle.js"></script>
     <script>
@@ -72,7 +74,7 @@
         const computedFamily = getComputedStyle(georgiaNode).fontFamily;
         const blob = await window.domToPptx.exportToPptx(document.getElementById('slide'), {
           skipDownload: true,
-          autoEmbedFonts: true,
+          autoEmbedFonts: false,
           fonts: fonts || [],
         });
         return {

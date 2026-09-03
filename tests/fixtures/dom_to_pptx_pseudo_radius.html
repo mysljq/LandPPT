@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+.suite-page { width:1280px; height:720px; position:relative; background:white; }
+.sample { position:absolute; top:40px; width:160px; height:260px; }
+.sample::before { content:''; position:absolute; left:0; top:0; width:6px; height:240px; background:#4fc3f7; }
+.left::before { border-radius:20px 0 0 20px; }
+.right::before { border-radius:0 20px 20px 0; background:#b388ff; }
+.fixed::before { border-radius:2px; }
+.pill::before { border-radius:999px; }
+.ellipse::before { border-radius:50%; }
+.dot::before { width:8px; height:8px; border-radius:50%; }
+.horizontal::before { width:140px; height:8px; border-radius:2px; }
+.elliptical::before { border-radius:2px / 12px; }
+.square::before { border-radius:0; }
+</style></head><body><div class="suite-page">
+<div class="sample left" style="left:40px" data-geometry="custGeom" data-radius="6" data-arcs="2" data-angles="90,180"></div>
+<div class="sample right" style="left:180px" data-geometry="custGeom" data-radius="6" data-arcs="2" data-angles="270,0"></div>
+<div class="sample fixed" style="left:320px" data-geometry="roundRect" data-radius="2"></div>
+<div class="sample pill" style="left:460px" data-geometry="roundRect" data-radius="3"></div>
+<div class="sample ellipse" style="left:600px" data-geometry="ellipse"></div>
+<div class="sample dot" style="left:740px" data-geometry="ellipse"></div>
+<div class="sample horizontal" style="left:880px" data-geometry="roundRect" data-radius="2"></div>
+<div class="sample elliptical" style="left:1040px" data-geometry="custGeom" data-radius="2" data-radius-y="12" data-arcs="4" data-angles="270,0,90,180"></div>
+<div class="sample square" style="left:1180px" data-geometry="rect"></div>
+</div></body></html>

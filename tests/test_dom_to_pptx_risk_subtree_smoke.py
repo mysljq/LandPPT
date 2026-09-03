@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_risk_subtree_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-premultiplied-gradient-v49"
-EXPECTED_ASSET_VERSION = "20260901-premultiplied-gradient-v49"
+EXPECTED_PATCH_VERSION = "2026-09-03-native-gradient-strips-v59"
+EXPECTED_ASSET_VERSION = "20260903-native-gradient-strips-v59"
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 

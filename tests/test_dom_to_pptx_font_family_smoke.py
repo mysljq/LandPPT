@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_font_family_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-01-premultiplied-gradient-v49"
+EXPECTED_PATCH_VERSION = "2026-09-03-native-gradient-strips-v59"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-WINDOWS_FONT_DIR = Path(r"C:\Windows\Fonts")
 
 
 def _launch_browser(playwright):
@@ -24,35 +23,11 @@ def _launch_browser(playwright):
             pytest.skip(f"Neither Playwright Chromium nor system Edge is available: {edge_exc}")
 
 
-def _font_data_url(path: Path) -> str:
-    return "data:font/ttf;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
-
-
-def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
+def test_local_georgia_font_reference_and_variants_are_preserved_in_pptx():
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # pragma: no cover - depends on local dependency install
         pytest.skip(f"Playwright is not installed: {exc}")
-
-    variant_files = {
-        "regular": (WINDOWS_FONT_DIR / "georgia.ttf", 400, "normal"),
-        "bold": (WINDOWS_FONT_DIR / "georgiab.ttf", 700, "normal"),
-        "italic": (WINDOWS_FONT_DIR / "georgiai.ttf", 400, "italic"),
-        "boldItalic": (WINDOWS_FONT_DIR / "georgiaz.ttf", 700, "italic"),
-    }
-    if not all(font_path.exists() for font_path, _, _ in variant_files.values()):
-        pytest.skip("Windows Georgia font variants are not available")
-
-    font_manifest = [
-        {
-            "name": "Georgia",
-            "url": _font_data_url(font_path),
-            "type": "ttf",
-            "weight": weight,
-            "style": style,
-        }
-        for font_path, weight, style in variant_files.values()
-    ]
 
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
@@ -62,20 +37,18 @@ def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
         try:
             page.goto(FIXTURE_PATH.resolve().as_uri(), wait_until="load")
             page.wait_for_function("window.domToPptx && window.runGeorgiaFontPptxSmokeTest")
-            unembedded_result = page.evaluate("() => window.runGeorgiaFontPptxSmokeTest([])")
-            result = page.evaluate("fonts => window.runGeorgiaFontPptxSmokeTest(fonts)", font_manifest)
+            local_georgia_available = page.evaluate(
+                "() => document.fonts.check('16px Georgia')"
+            )
+            if not local_georgia_available:
+                pytest.skip("Georgia is not available to the local browser")
+            result = page.evaluate("() => window.runGeorgiaFontPptxSmokeTest([])")
         finally:
             browser.close()
 
     assert not page_errors
     assert result["patchVersion"] == EXPECTED_PATCH_VERSION
     assert result["computedFamily"].replace("\u00a0", " ").startswith("Georgia")
-
-    unembedded_bytes = base64.b64decode(unembedded_result["pptxBase64"])
-    with zipfile.ZipFile(io.BytesIO(unembedded_bytes)) as pptx:
-        unembedded_slide_xml = pptx.read("ppt/slides/slide1.xml").decode("utf-8")
-    assert 'typeface="Georgia"' in unembedded_slide_xml
-    assert "Georgia Inline Segment" in unembedded_slide_xml
 
     pptx_bytes = base64.b64decode(result["pptxBase64"])
     with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as pptx:
@@ -100,13 +73,8 @@ def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
     assert "Georgia Bold Italic" in slide_xml
     assert "Georgia Inline Segment" in slide_xml
     assert "2026" in slide_xml
-    assert 'typeface="Georgia"' in presentation_xml
-    for slot in variant_files:
-        assert f"p:{slot}" in presentation_xml
-    assert len(embedded_font_files) == 4
-
-    embedded = result["fontDebug"]["embeddedFonts"]
-    assert {entry["slot"] for entry in embedded if entry["status"] == "ok"} >= set(variant_files)
+    assert len(embedded_font_files) == 0
+    assert result["fontDebug"]["embeddedFonts"] == []
 
     drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
     slide_root = ET.fromstring(slide_xml)
@@ -155,9 +123,22 @@ def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
     assert "第 1 章" in exact_text_values
     assert "第 2 章" in exact_text_values
     assert "486个" in exact_text_values
+    assert "486" in exact_text_values
     assert "8/20" in exact_text_values
     assert "大模型方向" in exact_text_values
     assert "低代码方向" in exact_text_values
+
+    numeric_fallback_run = next(
+        run
+        for run in slide_root.iter(f"{{{drawing_ns}}}r")
+        if (
+            run.find(f"{{{drawing_ns}}}t") is not None
+            and run.find(f"{{{drawing_ns}}}t").text == "486"
+        )
+    )
+    numeric_latin = numeric_fallback_run.find(f"{{{drawing_ns}}}rPr/{{{drawing_ns}}}latin")
+    assert numeric_latin is not None
+    assert numeric_latin.get("typeface") == "Microsoft YaHei"
 
     presentation_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
     ellipse_count = sum(
@@ -191,12 +172,19 @@ def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
 
     assert any("<polygon" in svg and "45.000,0.000" in svg for svg in svg_media)
     assert not any("<feDropShadow" in svg for svg in svg_media)
-    assert any(
-        'fill="#C00000"' in svg
-        and 'width="4"' in svg
-        and 'fill="#E8E8E8"' in svg
-        for svg in svg_media
-    )
+    native_border_shapes = [
+        shape for shape in slide_root.iter(f"{{{presentation_ns}}}sp")
+        if any(
+            (props.get("name") or "").startswith("CSS border ")
+            for props in shape.iter(f"{{{presentation_ns}}}cNvPr")
+        )
+    ]
+    native_border_colors = {
+        color.get("val") for shape in native_border_shapes
+        for color in shape.iter(f"{{{drawing_ns}}}srgbClr")
+    }
+    assert {"C00000", "E8E8E8"}.issubset(native_border_colors)
+    assert all(shape.find(f".//{{{drawing_ns}}}custGeom") is not None for shape in native_border_shapes)
     assert not any(
         "<linearGradient" in svg and 'stroke="#E8E8E8"' in svg
         for svg in svg_media
@@ -210,8 +198,8 @@ def test_inline_georgia_font_and_variants_are_preserved_in_pptx():
 
     assert 'xmlns=""' not in presentation_rels_xml
     assert 'xmlns=""' not in content_types_xml
-    assert 'embedTrueTypeFonts="1"' in presentation_xml
-    assert 'saveSubsetFonts="1"' in presentation_xml
+    assert 'embedTrueTypeFonts="1"' not in presentation_xml
+    assert 'saveSubsetFonts="1"' not in presentation_xml
 
     transition_shapes = [
         shape
