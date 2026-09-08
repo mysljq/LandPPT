@@ -1,7 +1,7 @@
 let domToPptxLoadPromise = null;
 const DOM_TO_PPTX_BUNDLE_PATH = '/static/js/dom-to-pptx.bundle.js';
-const DOM_TO_PPTX_BUNDLE_VERSION = '20260903-compact-tag-v70';
-const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-03-compact-tag-v70';
+const DOM_TO_PPTX_BUNDLE_VERSION = '20260908-shadow-direction-fix-v104';
+const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-08-shadow-direction-fix-v104';
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));

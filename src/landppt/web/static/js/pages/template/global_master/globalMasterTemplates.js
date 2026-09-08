@@ -1,7 +1,7 @@
 import { apiClient } from '../../../modules/apiClient.js';
 import { debounce, formatBytes } from '../../../modules/domUtils.js';
 import { emit } from '../../../modules/eventBus.js';
-import { ensureDomToPptxReady, sanitizeFileName, setButtonLoadingState, renderTemplateSampleHtml, loadHtmlIntoIframe, waitForIframeVisualReady } from './globalMasterTemplates.exportHelpers.js?v=20260903-compact-tag-v70';
+import { ensureDomToPptxReady, sanitizeFileName, setButtonLoadingState, renderTemplateSampleHtml, loadHtmlIntoIframe, waitForIframeVisualReady } from './globalMasterTemplates.exportHelpers.js?v=20260908-shadow-direction-fix-v104';
 import { createGlobalMasterTemplatesUpload } from './globalMasterTemplates.upload.js';
 
 const currentUser = window.__LANDPPT_USER__ || {};

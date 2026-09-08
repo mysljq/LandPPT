@@ -1,4 +1,4 @@
-﻿"""
+"""
 Requirement confirmation routes for outline workflows.
 """
 

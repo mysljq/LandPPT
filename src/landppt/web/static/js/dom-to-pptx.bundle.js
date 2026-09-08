@@ -11799,7 +11799,8 @@
     var color = opts.color;
     var opacity = Math.round(opts.opacity * 100000);
     var rotShape = opts.rotateWithShape ? 1 : 0;
-    strXml += "<a:".concat(type, "Shdw sx=\"100000\" sy=\"100000\" kx=\"0\" ky=\"0\"  algn=\"bl\" blurRad=\"").concat(blur, "\" rotWithShape=\"").concat(rotShape, "\" dist=\"").concat(offset, "\" dir=\"").concat(angle, "\">");
+    var outerAttributes = type === 'outer' ? ' sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="' + rotShape + '"' : '';
+    strXml += '<a:' + type + 'Shdw' + outerAttributes + ' blurRad="' + blur + '" dist="' + offset + '" dir="' + angle + '">';
     strXml += "<a:srgbClr val=\"".concat(color, "\">");
     strXml += "<a:alpha val=\"".concat(opacity, "\"/></a:srgbClr>");
     strXml += "</a:".concat(type, "Shdw>");
@@ -12485,7 +12486,25 @@
             strSlideXml += '</a:ln>';
           }
           // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
-          if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
+          if (slideItemObj.options.nativeInnerShadows?.length) {
+            // Each CSS inset layer must be evaluated from the source surface.
+            // Consecutive innerShdw children form a serial pipeline in Office,
+            // so only one direction survives visually. Explicit blend nodes
+            // preserve every dark/light layer in the final native effect.
+            strSlideXml += '<a:effectDag type="tree">';
+            const nativeInnerEffects = slideItemObj.options.nativeInnerShadows.map((inner) =>
+              createShadowElement(inner, DEF_SHAPE_SHADOW)
+                .replace(/^<a:effectLst>|<\/a:effectLst>$/g, '')
+            );
+            strSlideXml += nativeInnerEffects[0];
+            for (let nativeInnerIndex = 1; nativeInnerIndex < nativeInnerEffects.length; nativeInnerIndex++) {
+              const blendMode = slideItemObj.options.nativeInnerShadows[nativeInnerIndex].blendMode || 'over';
+              strSlideXml += `<a:blend blend="${blendMode}"><a:cont type="tree">`;
+              strSlideXml += nativeInnerEffects[nativeInnerIndex];
+              strSlideXml += '</a:cont></a:blend>';
+            }
+            strSlideXml += '</a:effectDag>';
+          } else if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
             slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
             slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
             slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
@@ -12496,7 +12515,7 @@
             strSlideXml += " <a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
             strSlideXml += " <a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
             strSlideXml += " <a:alpha val=\"".concat(slideItemObj.options.shadow.opacity, "\"/></a:srgbClr>");
-            strSlideXml += ' </a:outerShdw>';
+             strSlideXml += " </a:".concat(slideItemObj.options.shadow.type, "Shdw>" );
             strSlideXml += '</a:effectLst>';
           }
           /* TODO: FUTURE: Text wrapping (copied from MS-PPTX export)
@@ -12579,7 +12598,7 @@
             strSlideXml += "<a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
             strSlideXml += "<a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
             strSlideXml += "<a:alpha val=\"".concat(slideItemObj.options.shadow.opacity, "\"/></a:srgbClr>");
-            strSlideXml += "</a:".concat(slideItemObj.options.shadow.type, "Shdw>");
+             strSlideXml += "</a:".concat(slideItemObj.options.shadow.type, "Shdw>");
             strSlideXml += '</a:effectLst>';
           }
           strSlideXml += '</p:spPr>';
@@ -62905,7 +62924,10 @@
       top.opacity === bottom.opacity &&
       top.opacity === left.opacity;
 
-    if (isUniform) {
+    // PowerPoint has direct single-stroke equivalents for solid/dashed/dotted.
+    // Multi-stroke/3D CSS styles need the per-side vector path below even when
+    // all four sides share the same declaration.
+    if (isUniform && /^(?:solid|dashed|dotted)$/.test(top.style)) {
       return {
         type: 'uniform',
         options: {
@@ -63182,23 +63204,48 @@
     radius = radius / 2; // Adjust for SVG rendering
     const clipId = 'clip_' + Math.random().toString(36).substr(2, 9);
     let borderRects = '';
-
-    const sideRect = (x, y, width, height, side) =>
-      side.width > 0 && side.color && side.style !== 'none' && side.style !== 'hidden'
-        ? `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#${side.color}" fill-opacity="${Math.max(0, Math.min(1, side.opacity * opacityMultiplier))}" />`
-        : '';
-    if (sides.top.width > 0 && sides.top.color) {
-      borderRects += sideRect(0, 0, w, sides.top.width, sides.top);
-    }
-    if (sides.right.width > 0 && sides.right.color) {
-      borderRects += sideRect(w - sides.right.width, 0, sides.right.width, h, sides.right);
-    }
-    if (sides.bottom.width > 0 && sides.bottom.color) {
-      borderRects += sideRect(0, h - sides.bottom.width, w, sides.bottom.width, sides.bottom);
-    }
-    if (sides.left.width > 0 && sides.left.color) {
-      borderRects += sideRect(0, 0, sides.left.width, h, sides.left);
-    }
+    const adjustColor = (hex, amount) => {
+      const normalized = String(hex || '000000').padStart(6, '0').slice(0, 6);
+      const channels = [0, 2, 4].map((offset) => parseInt(normalized.slice(offset, offset + 2), 16) || 0);
+      return channels.map((value) => Math.max(0, Math.min(255, Math.round(value + amount)))
+        .toString(16).padStart(2, '0')).join('').toUpperCase();
+    };
+    const line = (name, side, offset, strokeWidth, color, dash = '', cap = 'butt') => {
+      const horizontal = name === 'top' || name === 'bottom';
+      const reverse = name === 'right' || name === 'bottom';
+      const position = reverse ? (horizontal ? h : w) - offset : offset;
+      const x1 = horizontal ? 0 : position, y1 = horizontal ? position : 0;
+      const x2 = horizontal ? w : position, y2 = horizontal ? position : h;
+      const alpha = Math.max(0, Math.min(1, side.opacity * opacityMultiplier));
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#${color}" stroke-opacity="${alpha}" stroke-width="${strokeWidth}"${dash ? ` stroke-dasharray="${dash}"` : ''} stroke-linecap="${cap}" />`;
+    };
+    const sidePaint = (name, side) => {
+      if (!(side.width > 0) || !side.color || /^(?:none|hidden)$/.test(side.style)) return '';
+      const width = side.width;
+      if (side.style === 'dashed') return line(name, side, width / 2, width, side.color, `${width * 3} ${width * 3}`);
+      if (side.style === 'dotted') return line(name, side, width / 2, width, side.color, `0.01 ${width * 2}`, 'round');
+      if (side.style === 'double' && width >= 2) {
+        return line(name, side, width / 6, width / 3, side.color) +
+          line(name, side, width * 5 / 6, width / 3, side.color);
+      }
+      if (side.style === 'groove' || side.style === 'ridge') {
+        const firstIsDark = side.style === 'groove';
+        const first = adjustColor(side.color, firstIsDark ? -48 : 48);
+        const second = adjustColor(side.color, firstIsDark ? 48 : -48);
+        return line(name, side, width / 4, width / 2, first) +
+          line(name, side, width * 3 / 4, width / 2, second);
+      }
+      if (side.style === 'inset' || side.style === 'outset') {
+        const darkSide = name === 'top' || name === 'left';
+        const dark = side.style === 'inset' ? darkSide : !darkSide;
+        return line(name, side, width / 2, width, adjustColor(side.color, dark ? -48 : 48));
+      }
+      return line(name, side, width / 2, width, side.color);
+    };
+    borderRects += sidePaint('top', sides.top);
+    borderRects += sidePaint('right', sides.right);
+    borderRects += sidePaint('bottom', sides.bottom);
+    borderRects += sidePaint('left', sides.left);
 
     const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
@@ -64496,6 +64543,29 @@
     return decision;
   }
 
+  // Pseudo-elements are positioned relative to their owner, while the normal
+  // overflow helper intentionally starts at the owner's parent. Include the
+  // owner itself here so an oversized ::before/::after strip is clipped by a
+  // card with overflow:hidden just like it is in the browser.
+  function clipPseudoOptionsToOwner(options, node, config) {
+    const clippedByParents = clipPptOptionsToOverflow(options, node, config);
+    if (!clippedByParents || !node || !node.ownerDocument) return clippedByParents;
+    const style = getNodeWindow(node).getComputedStyle(node);
+    const overflow = `${style.overflowX || style.overflow || ''} ${style.overflowY || style.overflow || ''}`.toLowerCase();
+    if (!/\b(hidden|clip|auto|scroll)\b/.test(overflow)) return clippedByParents;
+    const rect = rectToPlainObject(node.getBoundingClientRect());
+    const clipX = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
+    const clipY = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
+    const clipW = rect.width * PX_TO_INCH * config.scale;
+    const clipH = rect.height * PX_TO_INCH * config.scale;
+    const left = Math.max(clippedByParents.x, clipX);
+    const top = Math.max(clippedByParents.y, clipY);
+    const right = Math.min(clippedByParents.x + clippedByParents.w, clipX + clipW);
+    const bottom = Math.min(clippedByParents.y + clippedByParents.h, clipY + clipH);
+    if (right <= left || bottom <= top) return null;
+    return { ...clippedByParents, x: left, y: top, w: right - left, h: bottom - top };
+  }
+
   function getTextStyle(style, scale, fontContext = null, textSampleOverride = null) {
     let colorObj = parseColor(style.color);
 
@@ -64691,11 +64761,21 @@
         (parseFloat(leafStyle.paddingTop) || 0) > 0 ||
         (parseFloat(leafStyle.paddingBottom) || 0) > 0;
       const leafClass = String(node.getAttribute('class') || '');
+      const parentFlexDirection = parent
+        ? String(getNodeWindow(parent).getComputedStyle(parent).flexDirection || 'row').toLowerCase()
+        : 'row';
+      const parentIsColumnFlex = parentFlexDirection.startsWith('column');
       // Compact visual tags are best represented by one native rounded text
       // shape. This keeps the fill, radius, padding and centered glyphs in a
       // single editable PPT object; other flex chips still use the split path
       // when they contain effects that cannot be represented natively.
-      const isCompactTag = /(?:^|\s)(?:tag|chip|badge)(?:\s|$)/i.test(leafClass);
+      const isCompactTag =
+        /^(?:inline-)?flex$/.test(parentDisplay) &&
+        !parentIsColumnFlex &&
+        !/^(?:absolute|fixed)$/.test(leafStyle.position) &&
+        (leafHasVisibleBg || leafHasBorder || leafHasRadius || leafHasPadding) &&
+        !isNonTrivialCssValue(leafStyle.filter) &&
+        String(leafStyle.mixBlendMode || 'normal').toLowerCase() === 'normal';
       if (
         /^(?:inline-)?flex$/.test(parentDisplay) &&
         !/^(?:absolute|fixed)$/.test(leafStyle.position) &&
@@ -64704,10 +64784,27 @@
         if (isCompactTag && !isNonTrivialCssValue(leafStyle.filter) && leafStyle.mixBlendMode === 'normal') {
           return true;
         }
+        // Column flex stacks commonly contain large, padded title blocks. They
+        // are still text containers (so their fill/radius and glyphs remain
+        // editable), but must not be classified as compact chips.
+        if (parentIsColumnFlex) return true;
         return false;
       }
       return true;
     }
+
+    // Rich paragraphs often contain inline spans/divs for highlights and
+    // emphasis. Keep the paragraph as one editable text container when every
+    // child participates in inline flow; collectInlineTextParts will preserve
+    // each child's run style while the browser range pass below records line
+    // boundaries.
+    const allInlineFlowChildren = children.every((el) => {
+      if (isFormulaElement(el) || ['IMG', 'SVG', 'CANVAS', 'VIDEO'].includes(el.tagName)) return false;
+      const childStyle = getNodeWindow(el).getComputedStyle(el);
+      return !/^(?:absolute|fixed)$/.test(childStyle.position || '') &&
+        /^(?:inline|inline-block|inline-flex)$/.test(String(childStyle.display || '').toLowerCase());
+    });
+    if (allInlineFlowChildren) return true;
 
     // Flex/grid containers are layout boundaries, not rich-text runs. Flattening
     // their children into one PPT text box destroys gap/space-between placement
@@ -64873,35 +64970,68 @@
       const parent = node.parentElement || rootContainer;
       if (!parent) return parts;
 
-      let textVal = String(node.nodeValue || '')
-        .replace(/[\n\r\t]+/g, ' ')
-        .replace(/\s{2,}/g, ' ');
-
-      if (!trimState.hasRenderableText || trimState.trimNextLeading) {
-        textVal = textVal.trimStart();
-      }
-
       const nodeStyle = getNodeWindow(parent).getComputedStyle(parent);
-      if (nodeStyle.textTransform === 'uppercase') textVal = textVal.toUpperCase();
-      if (nodeStyle.textTransform === 'lowercase') textVal = textVal.toLowerCase();
-
-      if (!textVal) return parts;
-
-      const textOptions = applyOpacityToTextStyle(
-        getTextStyle(nodeStyle, scale, parent, textVal),
-        effectiveOpacity
+      const rawText = String(node.nodeValue || '');
+      const segments = [];
+      let segment = '';
+      let previousLine = null;
+      let offset = 0;
+      // Whitespace may sit at the boundary between differently styled inline
+      // nodes (for example `Simple <b>bold</b>`). Carry it through the shared
+      // traversal state so splitting runs does not concatenate their words.
+      let whitespacePending = Boolean(
+        trimState.pendingSpace && trimState.hasRenderableText && !trimState.trimNextLeading
       );
-      if (textOptions.hidden) return parts;
-      delete textOptions.hidden;
-
-      sanitizeTextRunHighlight(textOptions, nodeStyle, parent === rootContainer);
-
-      parts.push({
-        text: textVal,
-        options: textOptions,
-      });
-      trimState.hasRenderableText = true;
-      trimState.trimNextLeading = false;
+      const flush = (breakLine = false) => {
+        const value = segment.trimEnd();
+        if (!value) { segment = ''; return; }
+        const transformed = nodeStyle.textTransform === 'uppercase' ? value.toUpperCase()
+          : nodeStyle.textTransform === 'lowercase' ? value.toLowerCase() : value;
+        const textOptions = applyOpacityToTextStyle(
+          getTextStyle(nodeStyle, scale, parent, transformed), effectiveOpacity
+        );
+        if (textOptions.hidden) { segment = ''; return; }
+        delete textOptions.hidden;
+        sanitizeTextRunHighlight(textOptions, nodeStyle, parent === rootContainer);
+        segments.push({ text: transformed, options: breakLine ? { ...textOptions, breakLine: true } : textOptions });
+        segment = '';
+      };
+      for (const character of Array.from(rawText)) {
+        const charLength = character.length;
+        const range = getNodeWindow(parent).document.createRange();
+        let rect = null;
+        try {
+          range.setStart(node, offset);
+          range.setEnd(node, Math.min(rawText.length, offset + charLength));
+          rect = Array.from(range.getClientRects()).find((candidate) => candidate.width > 0.01 && candidate.height > 0.01) || null;
+        } catch (_) { /* Some replaced/hidden inline nodes have no client rect. */ }
+        if (range.detach) range.detach();
+        offset += charLength;
+        if (/\s/.test(character)) {
+          whitespacePending = true;
+          continue;
+        }
+        if (rect) {
+          const line = Math.round((rect.top + rect.height / 2) * 10) / 10;
+          if (previousLine !== null && Math.abs(line - previousLine) > Math.max(1, rect.height * 0.45)) {
+            flush(true);
+            whitespacePending = false;
+          } else if (whitespacePending && (segment || trimState.hasRenderableText)) {
+            segment += ' ';
+          }
+          previousLine = line;
+        } else if (whitespacePending && (segment || trimState.hasRenderableText)) {
+          segment += ' ';
+        }
+        if (!trimState.hasRenderableText && !segment && /^\s/.test(character)) continue;
+        segment += character;
+        whitespacePending = false;
+        trimState.hasRenderableText = true;
+        trimState.trimNextLeading = false;
+      }
+      flush(false);
+      trimState.pendingSpace = whitespacePending;
+      parts.push(...segments);
       return parts;
     }
 
@@ -65300,6 +65430,77 @@
     return null;
   }
 
+  function parseCssBoxShadowLayers(shadowStr) {
+    if (!shadowStr || shadowStr === 'none') return [];
+    const result = [];
+    for (const rawLayer of splitTopLevelCommaParts(String(shadowStr))) {
+      let layer = String(rawLayer || '').trim();
+      if (!layer) continue;
+      const inset = /(?:^|\s)inset(?:\s|$)/i.test(layer);
+      layer = layer.replace(/(?:^|\s)inset(?:\s|$)/ig, ' ').trim();
+      const colorMatch = layer.match(/rgba?\([^)]*\)|hsla?\([^)]*\)|#[\da-f]{3,8}\b|\b[a-z]+\b(?!\s*\()/i);
+      const color = parseColor(colorMatch ? colorMatch[0] : 'rgba(0,0,0,1)');
+      if (colorMatch) layer = layer.replace(colorMatch[0], ' ').trim();
+      const tokens = layer.split(/\s+/).filter(Boolean);
+      if (tokens.length < 2 || tokens.length > 4) continue;
+      if (tokens.some((token) => !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?$/i.test(token))) continue;
+      const values = tokens.map(Number.parseFloat);
+      const [dx, dy, blur = 0, spread = 0] = values;
+      if (![dx, dy, blur, spread].every(Number.isFinite) || blur < 0 || !color.hex || color.opacity <= 0) continue;
+      result.push({ inset, dx, dy, blur, spread, color: color.hex, opacity: color.opacity });
+    }
+    return result;
+  }
+
+  /**
+   * Compatibility fallback for surfaces which cannot use the native shadow
+   * helpers below. Solid surfaces use native outer shadows / inner effect trees;
+   * only unsupported surfaces need these isolated SVG paint layers.
+   */
+  function generateCssBoxShadowVisuals(width, height, style, layers, opacityMultiplier = 1) {
+    if (!isRenderableSvgSize(width, height) || !style || !Array.isArray(layers) || !layers.length) return null;
+    const safeOpacity = Math.max(0, Math.min(1, Number(opacityMultiplier) || 0));
+    const corners = resolveCssCornerRadii(style, width, height);
+    const ownerPath = roundedBoxSvgPath(0, 0, width, height, corners);
+    const outer = layers.filter((layer) => !layer.inset);
+    const inner = layers.filter((layer) => layer.inset);
+    const result = { outer: null, inner: null };
+
+    if (outer.length) {
+      const padding = Math.ceil(Math.max(...outer.map((layer) =>
+        Math.max(Math.abs(layer.dx), Math.abs(layer.dy)) + layer.blur * 2 + Math.abs(layer.spread) + 3
+      )));
+      const fallbackPainted = [];
+      outer.forEach((layer, index) => {
+        // Office versions that ignore SVG filter primitives still render basic
+        // vector paint. This shifted silhouette keeps the shadow visible.
+        const opacity = Math.max(0, Math.min(1, layer.opacity * safeOpacity * 0.42));
+        const repeats = layer.blur > 0 ? 3 : 1;
+        for (let repeat = repeats; repeat >= 1; repeat--) {
+          const factor = repeat / repeats;
+          fallbackPainted.push(`<path d="${ownerPath}" fill="#${layer.color}" fill-opacity="${opacity * (0.35 + 0.65 * factor)}" transform="translate(${layer.dx * factor} ${layer.dy * factor})"/>`);
+        }
+      });
+      result.outer = {
+        padding,
+        data: encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width + padding * 2}" height="${height + padding * 2}" viewBox="${-padding} ${-padding} ${width + padding * 2} ${height + padding * 2}"><g id="landpptOuterShadow">${fallbackPainted.join('')}</g></svg>`),
+      };
+    }
+
+    if (inner.length) {
+      const fallbackPainted = [];
+      inner.forEach((layer, index) => {
+        const strokeWidth = Math.max(1, layer.blur * 0.9 + Math.abs(layer.spread) * 2);
+        fallbackPainted.push(`<path d="${ownerPath}" fill="none" stroke="#${layer.color}" stroke-opacity="${Math.max(0, Math.min(1, layer.opacity * safeOpacity * 0.38))}" stroke-width="${strokeWidth}" clip-path="url(#innerClip)"/>`);
+      });
+      result.inner = {
+        padding: 0,
+        data: encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><clipPath id="innerClip"><path d="${ownerPath}"/></clipPath></defs><g id="landpptInnerShadow">${fallbackPainted.join('')}</g></svg>`),
+      };
+    }
+    return result.outer || result.inner ? result : null;
+  }
+
   function parseHardBoxShadow(shadowStr) {
     if (!shadowStr || shadowStr === 'none') return null;
     const shadows = String(shadowStr).split(/,(?![^()]*\))/);
@@ -65372,6 +65573,98 @@
     return { type: 'shape', zIndex, domOrder: domOrder - 0.0001, shapeType, options };
   }
 
+  function createLayeredOuterShadowShapeItems(
+    layers,
+    shapeType,
+    shapeOptions,
+    scale,
+    effectiveOpacity,
+    zIndex,
+    domOrder,
+    fill
+  ) {
+    if (!Array.isArray(layers) || !shapeType || !shapeOptions || !fill) return [];
+    return layers.filter((layer) => !layer.inset).map((layer, index) => {
+      const distance = Math.hypot(layer.dx, layer.dy);
+      // DrawingML outerShdw.dir follows the CSS shadow offset direction.
+      let angle = Math.atan2(layer.dy, layer.dx) * 180 / Math.PI;
+      angle = ((angle % 360) + 360) % 360;
+      return {
+        type: 'shape',
+        zIndex,
+        domOrder: domOrder - 0.0003 + index / 100000,
+        shapeType,
+        options: {
+          ...shapeOptions,
+          objectName: `CSS outer shadow layer ${domOrder} ${index}`,
+          fill,
+          line: { type: 'none' },
+          shadow: {
+            type: 'outer',
+            color: layer.color,
+            opacity: Math.max(0, Math.min(1, layer.opacity * effectiveOpacity)),
+            blur: Math.max(0, layer.blur * 0.75 * scale),
+            offset: distance * 0.75 * scale,
+            angle,
+            rotateWithShape: true,
+          },
+        },
+      };
+    });
+  }
+
+  function createLayeredInnerShadowShapeItems(
+    layers,
+    shapeType,
+    shapeOptions,
+    scale,
+    effectiveOpacity,
+    zIndex,
+    domOrder,
+    fill
+  ) {
+    if (!Array.isArray(layers) || !shapeType || !shapeOptions || !fill) return [];
+    const insetLayers = layers.filter((layer) => layer.inset);
+    if (!insetLayers.length) return [];
+    const fillHex = String(fill.color || '').replace(/^#/, '').toUpperCase();
+    const fillChannels = /^[0-9A-F]{6}$/.test(fillHex)
+      ? [0, 2, 4].map((offset) => parseInt(fillHex.slice(offset, offset + 2), 16))
+      : [128, 128, 128];
+    const fillLuminance = fillChannels[0] * 0.2126 + fillChannels[1] * 0.7152 + fillChannels[2] * 0.0722;
+    const nativeInnerShadows = insetLayers.map((layer, index) => {
+      // CSS inset shadows expose the clipped side opposite to the offset;
+      // DrawingML innerShdw.dir describes the visible side itself.
+      let angle = Math.atan2(layer.dy, layer.dx) * 180 / Math.PI + 180;
+      angle = ((angle % 360) + 360) % 360;
+      const shadowHex = String(layer.color || '').replace(/^#/, '').toUpperCase();
+      const shadowChannels = /^[0-9A-F]{6}$/.test(shadowHex)
+        ? [0, 2, 4].map((offset) => parseInt(shadowHex.slice(offset, offset + 2), 16))
+        : [0, 0, 0];
+      const shadowLuminance = shadowChannels[0] * 0.2126 + shadowChannels[1] * 0.7152 + shadowChannels[2] * 0.0722;
+      return {
+        type: 'inner', color: layer.color,
+        opacity: Math.max(0, Math.min(1, layer.opacity)),
+        blur: Math.max(0, layer.blur * 0.75 * scale),
+        offset: Math.hypot(layer.dx, layer.dy) * 0.75 * scale,
+        angle,
+        blendMode: index === 0 ? undefined : (shadowLuminance >= fillLuminance ? 'screen' : 'mult'),
+      };
+    });
+    return [{
+        type: 'shape',
+        zIndex,
+        domOrder: domOrder - 0.00001,
+        shapeType,
+        options: {
+          ...shapeOptions,
+          objectName: `CSS inset shadow surface ${domOrder}`,
+          fill: { ...fill, transparency: 100 - (100 - (fill.transparency || 0)) * effectiveOpacity },
+          line: { type: 'none' },
+          nativeInnerShadows,
+        },
+      }];
+  }
+
   /**
    * Hard, zero-blur CSS shadows are commonly used as a second offset border.
    * A risk-subtree bitmap can clip or flatten those shadows, especially when
@@ -65432,7 +65725,7 @@
   /**
    * Generates an SVG image for gradients, supporting degrees and keywords.
    */
-  function generateGradientSVG(w, h, bgString, radius, border) {
+  function generateGradientSVG(w, h, bgString, radius, border, opacityMultiplier = 1) {
     try {
       if (!isRenderableSvgSize(w, h))
         return null;
@@ -65555,6 +65848,7 @@
       // CSS scales equal corner radii together when they overlap. SVG clamps
       // rx/ry independently, turning a 999px-radius thin strip into an ellipse.
       const safeRadius = Math.min(Math.max(0, Number(radius) || 0), w / 2, h / 2);
+      const finalOpacity = Math.max(0, Math.min(1, Number(opacityMultiplier) || 0));
       const svg = `
       <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
           <defs>
@@ -65562,7 +65856,7 @@
               ${stopsXML}
             </linearGradient>
           </defs>
-          <rect x="0" y="0" width="${w}" height="${h}" rx="${safeRadius}" ry="${safeRadius}" fill="url(#grad)" ${strokeAttr} />
+          <rect x="0" y="0" width="${w}" height="${h}" rx="${safeRadius}" ry="${safeRadius}" fill="url(#grad)" opacity="${finalOpacity}" ${strokeAttr} />
       </svg>`;
 
       return encodeSvgDataUri(svg);
@@ -65570,6 +65864,41 @@
       console.warn('Gradient generation failed:', e);
       return null;
     }
+  }
+
+  // CSS border-image does not expose its gradient through borderColor. Render
+  // the painted edge as a transparent SVG overlay so a gradient border keeps
+  // its colors without flattening the element's text or background.
+  function generateBorderImageGradientSVG(w, h, style, opacityMultiplier = 1) {
+    const source = String(style && (style.borderImageSource || style.borderImage) || '').trim();
+    // Computed styles serialize stops as rgb(...), so the gradient function
+    // itself contains nested parentheses. Use a greedy capture here; the
+    // computed borderImageSource value contains only the function.
+    const gradientMatch = source.match(/((?:linear|radial|conic)-gradient\(.*\))/i);
+    if (!gradientMatch || !isRenderableSvgSize(w, h)) return null;
+    const parsed = /^linear-gradient\(/i.test(gradientMatch[1])
+      ? parseNativeLinearGradient(gradientMatch[1]) : null;
+    if (!parsed || !parsed.stops || parsed.stops.length < 2) return null;
+    const sides = [
+      { width: parseFloat(style.borderTopWidth) || 0, x1: 0, y1: 0, x2: w, y2: 0 },
+      { width: parseFloat(style.borderRightWidth) || 0, x1: w, y1: 0, x2: w, y2: h },
+      { width: parseFloat(style.borderBottomWidth) || 0, x1: w, y1: h, x2: 0, y2: h },
+      { width: parseFloat(style.borderLeftWidth) || 0, x1: 0, y1: h, x2: 0, y2: 0 },
+    ].filter((side) => side.width > 0);
+    if (!sides.length) return null;
+    const cssAngle = ((Number(parsed.angle) || 0) + 90) % 360;
+    const radians = cssAngle * Math.PI / 180;
+    const dx = Math.sin(radians), dy = -Math.cos(radians);
+    const magnitude = (Math.abs(w * dx) + Math.abs(h * dy)) / 2;
+    const cx = w / 2, cy = h / 2;
+    const stops = parsed.stops.map((stop) => {
+      const alpha = Math.max(0, Math.min(1, (1 - (Number(stop.transparency) || 0) / 100) * opacityMultiplier));
+      return `<stop offset="${Math.max(0, Math.min(1, Number(stop.pos) / 100000)) * 100}%" stop-color="#${String(stop.color || '000000').slice(0, 6)}" stop-opacity="${alpha}"/>`;
+    }).join('');
+    const lines = sides.map((side) =>
+      `<line x1="${side.x1}" y1="${side.y1}" x2="${side.x2}" y2="${side.y2}" stroke="url(#borderGradient)" stroke-width="${side.width}" stroke-linecap="butt"/>`
+    ).join('');
+    return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="borderGradient" gradientUnits="userSpaceOnUse" x1="${cx - dx * magnitude}" y1="${cy - dy * magnitude}" x2="${cx + dx * magnitude}" y2="${cy + dy * magnitude}">${stops}</linearGradient></defs>${lines}</svg>`);
   }
 
   function generateBlurredSVG(w, h, color, radius, blurPx) {
@@ -66404,6 +66733,38 @@
       Math.abs(a * d - b * c - 1) < 0.0001;
   }
 
+  // A translucent surface with only blur/saturation backdrop treatment can be
+  // represented by a native PPT fill and shadow. Rasterizing this broad
+  // container would unnecessarily flatten all of its editable descendants.
+  function isNativeBackdropSurface(node, style) {
+    if (!node || !style) return false;
+    const backdrop = String(
+      getStyleProperty(style, 'backdropFilter', 'backdrop-filter') ||
+      getStyleProperty(style, 'webkitBackdropFilter', '-webkit-backdrop-filter') || ''
+    ).trim().toLowerCase();
+    if (!backdrop || !/^(?:(?:blur|saturate)\([^)]*\)\s*)+$/.test(backdrop)) return false;
+    const background = parseColor(style.backgroundColor);
+    if (!background.hex || background.opacity <= 0) return false;
+    if (isNonTrivialCssValue(style.backgroundImage) || isNonTrivialCssValue(style.filter) ||
+        isNonTrivialCssValue(style.clipPath || style.webkitClipPath) ||
+        isNonTrivialCssValue(style.maskImage || style.webkitMaskImage)) return false;
+    return true;
+  }
+
+  function isGradientTextElement(node, style = null) {
+    if (!node || !String(node.textContent || '').trim()) return false;
+    const computed = style || getNodeWindow(node).getComputedStyle(node);
+    const clip = String(computed.webkitBackgroundClip || computed.backgroundClip || '').toLowerCase();
+    return clip === 'text' && /(?:linear|radial|conic)-gradient\s*\(/i.test(String(computed.backgroundImage || ''));
+  }
+
+  function isStandaloneNumericLabel(node, style = null) {
+    if (!node || node.children?.length || !/^\d{1,4}(?:[./]\d{1,4})?$/.test(String(node.textContent || '').trim())) return false;
+    const computed = style || getNodeWindow(node).getComputedStyle(node);
+    return (parseFloat(computed.webkitTextStrokeWidth || computed.textStrokeWidth) || 0) <= 0 &&
+      !isNonTrivialCssValue(computed.backgroundImage) || isGradientTextElement(node, computed);
+  }
+
   function hasTransformedDescendant(node, maxNodes = 240) {
     if (!node || !node.querySelectorAll) return false;
     const boundaryRect = rectToPlainObject(node.getBoundingClientRect());
@@ -66478,11 +66839,16 @@
       getStyleProperty(style, 'clipPath', 'clip-path');
     if (isComplexClipPath(clipPath)) result.reasons.push('complex-clip-path');
 
-    if (isNonTrivialCssValue(style.filter)) result.reasons.push('filter');
+    if (isNonTrivialCssValue(style.filter) &&
+        !(isStandaloneNumericLabel(node, style) && /^drop-shadow\(/i.test(String(style.filter).trim()))) {
+      result.reasons.push('filter');
+    }
     const backdropFilter =
       getStyleProperty(style, 'backdropFilter', 'backdrop-filter') ||
       getStyleProperty(style, 'webkitBackdropFilter', '-webkit-backdrop-filter');
-    if (isNonTrivialCssValue(backdropFilter)) result.reasons.push('backdrop-filter');
+    if (isNonTrivialCssValue(backdropFilter) && !isNativeBackdropSurface(node, style)) {
+      result.reasons.push('backdrop-filter');
+    }
 
     if (String(style.mixBlendMode || '').toLowerCase() !== 'normal' && style.mixBlendMode) {
       result.reasons.push('mix-blend-mode');
@@ -66602,7 +66968,14 @@
   }
 
   /** Extracts editable text one browser-laid-out line at a time using Range rects. */
-  function collectEditableTextLineItems(boundary, config, zIndex, domOrder, boundaryOpacity = 1) {
+  function collectEditableTextLineItems(
+    boundary,
+    config,
+    zIndex,
+    domOrder,
+    boundaryOpacity = 1,
+    options = {}
+  ) {
     if (!boundary || !boundary.ownerDocument) return [];
     const doc = boundary.ownerDocument;
     const win = doc.defaultView || window;
@@ -66709,11 +67082,15 @@
         const rect = line.rect;
         const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
         const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
-        // Risk-subtree text is emitted above the captured visual layer. Keep
-        // the live container width so a line that Range reports as an
-        // over-wide CJK run still wraps in PowerPoint instead of becoming a
-        // narrow no-wrap text box.
-        const w = Math.max(0.01, boundaryWidth, (rect.width + 1.5) * PX_TO_INCH * config.scale);
+        // Risk-subtree text normally keeps the live container width so an
+        // over-wide CJK run can still wrap in PowerPoint. Inline visual runs
+        // are different: their child backgrounds/padding are positioned from
+        // the live DOM, so every browser-confirmed line must remain locked to
+        // its Range box instead of being reflowed by Office font metrics.
+        const rangeWidth = (rect.width + (options.widthBufferPx || 1.5)) * PX_TO_INCH * config.scale;
+        const w = options.lockBrowserLines
+          ? Math.max(0.01, rangeWidth)
+          : Math.max(0.01, boundaryWidth, rangeWidth);
         const h = Math.max(0.01, rect.height * 1.08 * PX_TO_INCH * config.scale);
         items.push({
           type: 'text',
@@ -66721,6 +67098,7 @@
           domOrder: domOrder + (++lineOrder) / 10000,
           textParts: [{ text: line.text, options: { ...textStyle } }],
           options: {
+            objectName: `${options.objectNamePrefix || 'Editable DOM line'} ${domOrder} ${lineOrder}`,
             x,
             y,
             w,
@@ -66729,13 +67107,267 @@
             autoFit: false,
             fit: 'none',
             valign: 'mid',
-            wrap: true,
+            wrap: !options.lockBrowserLines,
+            noWrap: Boolean(options.lockBrowserLines),
             rotate: rotation || 0,
           },
         });
       }
     }
     return items;
+  }
+
+  function hasVisibleCssBorder(style) {
+    return ['Top', 'Right', 'Bottom', 'Left'].some((side) => {
+      if (!(parseFloat(style[`border${side}Width`]) > 0)) return false;
+      if (/^(?:none|hidden)$/.test(String(style[`border${side}Style`] || '').toLowerCase())) return false;
+      return parseColor(style[`border${side}Color`]).opacity > 0;
+    });
+  }
+
+  function isInlineVisualSurfaceElement(element, style) {
+    if (!element || !style || !String(element.textContent || '').trim()) return false;
+    if (/^(?:absolute|fixed)$/.test(String(style.position || '').toLowerCase())) return false;
+    if (!/^(?:inline|inline-block|inline-flex)$/.test(String(style.display || '').toLowerCase())) return false;
+    if (String(style.webkitBackgroundClip || style.backgroundClip || '').toLowerCase() === 'text') return false;
+    const background = parseColor(style.backgroundColor);
+    return Boolean(
+      (background.hex && background.opacity > 0) ||
+      isNonTrivialCssValue(style.backgroundImage) ||
+      hasVisibleCssBorder(style) ||
+      isNonTrivialCssValue(style.boxShadow)
+    );
+  }
+
+  /**
+   * Builds independent visual surfaces for styled inline descendants. PPT
+   * rich-text runs cannot represent CSS padding, rounded backgrounds, borders
+   * or gradients. These layers retain the browser box model while the text is
+   * restored above them from live Range geometry.
+   */
+  function collectInlineVisualSurfaceItems(
+    boundary,
+    config,
+    zIndex,
+    domOrder,
+    boundaryOpacity = 1,
+    globalOptions = {}
+  ) {
+    if (!boundary || !boundary.querySelectorAll) return { items: [], jobs: [] };
+    const win = getNodeWindow(boundary);
+    const candidates = Array.from(boundary.querySelectorAll('*')).filter((element) =>
+      isInlineVisualSurfaceElement(element, win.getComputedStyle(element))
+    );
+    if (!candidates.length) return { items: [], jobs: [] };
+
+    const items = [];
+    const jobs = [];
+    const capturedRoots = [];
+    const pxScale = PX_TO_INCH * config.scale;
+    for (let index = 0; index < candidates.length; index++) {
+      const element = candidates[index];
+      if (capturedRoots.some((root) => root.contains(element))) continue;
+      const style = win.getComputedStyle(element);
+      const backgroundImage = String(style.backgroundImage || '').trim();
+      const gradientLayers = splitTopLevelCommaParts(backgroundImage).filter((part) =>
+        /\b(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(part)
+      );
+      const hasGradient = gradientLayers.length > 0;
+      const supportsGradient = gradientLayers.length === 1 && /^linear-gradient\s*\(/i.test(gradientLayers[0]);
+      const hasUnsupportedBackground =
+        isNonTrivialCssValue(backgroundImage) && (!hasGradient || !supportsGradient);
+      const hardShadow = isNonTrivialCssValue(style.boxShadow)
+        ? parseHardBoxShadow(style.boxShadow)
+        : null;
+      const borderInfo = getBorderInfo(style, config.scale);
+      const hasUnsupportedCompositeBorder =
+        borderInfo.type === 'composite' &&
+        Object.values(borderInfo.sides).some((side) =>
+          side.width > 0 && side.opacity > 0 && side.style !== 'solid'
+        );
+      const hasUnsupportedEffect =
+        hasUnsupportedBackground ||
+        hasUnsupportedCompositeBorder ||
+        (isNonTrivialCssValue(style.boxShadow) && !hardShadow) ||
+        isNonTrivialCssValue(style.filter) ||
+        isNonTrivialCssValue(style.backdropFilter || style.webkitBackdropFilter) ||
+        isNonTrivialCssValue(style.clipPath || style.webkitClipPath) ||
+        isNonTrivialCssValue(style.maskImage || style.webkitMaskImage) ||
+        String(style.mixBlendMode || 'normal').toLowerCase() !== 'normal';
+      const rects = Array.from(element.getClientRects()).filter((rect) => rect.width > 0.25 && rect.height > 0.25);
+      if (!rects.length) continue;
+      const elementOpacity = getRelativeTextOpacity(element, boundary, boundaryOpacity);
+      const rotation = getCumulativeTextRotation(element, config.root);
+      const background = parseColor(style.backgroundColor);
+
+      if (hasUnsupportedEffect) {
+        const rect = element.getBoundingClientRect();
+        const imageItem = {
+          type: 'image',
+          zIndex: nextRenderableZIndex(zIndex),
+          domOrder: domOrder + 0.2 + index / 10000,
+          options: {
+            objectName: `Inline visual capture ${domOrder} ${index}`,
+            data: null,
+            x: config.offX + (rect.left - config.rootX) * pxScale,
+            y: config.offY + (rect.top - config.rootY) * pxScale,
+            w: rect.width * pxScale,
+            h: rect.height * pxScale,
+            rotate: 0,
+          },
+        };
+        items.push(imageItem);
+        capturedRoots.push(element);
+        jobs.push(async () => {
+          const captured = await captureRiskSubtreeVisual(element, globalOptions);
+          if (!captured || !captured.data) {
+            imageItem.skip = true;
+            return;
+          }
+          const padIn = captured.paddingPx * pxScale;
+          imageItem.options.data = captured.data;
+          imageItem.options.x -= padIn;
+          imageItem.options.y -= padIn;
+          imageItem.options.w += padIn * 2;
+          imageItem.options.h += padIn * 2;
+        });
+        continue;
+      }
+
+      for (let fragmentIndex = 0; fragmentIndex < rects.length; fragmentIndex++) {
+        const rect = rects[fragmentIndex];
+        const size = recoverUnrotatedSizeFromBoundingBox(rect.width, rect.height, rotation);
+        const widthPx = size.width;
+        const heightPx = size.height;
+        const w = widthPx * pxScale;
+        const h = heightPx * pxScale;
+        const x = config.offX + (rect.left + rect.width / 2 - config.rootX) * pxScale - w / 2;
+        const y = config.offY + (rect.top + rect.height / 2 - config.rootY) * pxScale - h / 2;
+        const fragmentOrder = domOrder + 0.2 + index / 10000 + fragmentIndex / 1000000;
+        const surfaceZ = nextRenderableZIndex(zIndex);
+        const cornerGeometry = getNativeCssCornerGeometry(style, widthPx, heightPx, pxScale);
+        const baseOptions = {
+          objectName: `Inline visual surface ${domOrder} ${index} ${fragmentIndex}`,
+          x,
+          y,
+          w,
+          h,
+          rotate: rotation || 0,
+          ...cornerGeometry.options,
+        };
+
+        const hardShadowItem = createHardShadowShapeItem(
+          hardShadow,
+          cornerGeometry.shapeType,
+          baseOptions,
+          rotation,
+          config.scale,
+          elementOpacity,
+          surfaceZ,
+          fragmentOrder
+        );
+        if (hardShadowItem) items.push(hardShadowItem);
+
+        if (background.hex && background.opacity > 0) {
+          items.push({
+            type: 'shape',
+            shapeType: cornerGeometry.shapeType,
+            zIndex: surfaceZ,
+            domOrder: fragmentOrder,
+            options: {
+              ...baseOptions,
+              fill: {
+                color: background.hex,
+                transparency: (1 - background.opacity * elementOpacity) * 100,
+              },
+              line: { type: 'none' },
+            },
+          });
+        }
+
+        if (supportsGradient) {
+          const gradientData = generateGradientSVG(
+            widthPx,
+            heightPx,
+            gradientLayers[0],
+            parseFloat(style.borderRadius) || 0,
+            null,
+            elementOpacity
+          );
+          if (!gradientData) continue;
+          items.push({
+            type: 'image',
+            zIndex: surfaceZ,
+            domOrder: fragmentOrder + 0.01,
+            options: {
+              objectName: `Inline visual gradient ${domOrder} ${index} ${fragmentIndex}`,
+              data: gradientData,
+              x,
+              y,
+              w,
+              h,
+              rotate: rotation || 0,
+            },
+          });
+        }
+
+        if (borderInfo.type === 'uniform') {
+          const borderGeometry = getNativeUniformBorderGeometry(
+            style,
+            { x, y, w, h, widthPx, heightPx, rotate: rotation },
+            config.scale
+          );
+          items.push({
+            type: 'shape',
+            shapeType: borderGeometry.shapeType,
+            zIndex: surfaceZ,
+            domOrder: fragmentOrder + 0.02,
+            options: {
+              objectName: `Inline visual border ${domOrder} ${index} ${fragmentIndex}`,
+              ...borderGeometry.options,
+              fill: { type: 'none' },
+              line: applyOpacityToLineOptions(borderInfo.options, elementOpacity),
+            },
+          });
+        } else if (borderInfo.type === 'composite') {
+          const borderItems = createNativeCompositeBorderItems(
+            style,
+            borderInfo.sides,
+            { x, y, w, h, widthPx, heightPx, rotate: rotation },
+            config.scale,
+            surfaceZ,
+            fragmentOrder + 0.02,
+            elementOpacity
+          );
+          if (borderItems) items.push(...borderItems);
+        }
+
+        const pseudoItems = collectPseudoDecorationItems(
+          element,
+          style,
+          {
+            x,
+            y,
+            w,
+            h,
+            widthPx,
+            heightPx,
+            rotation,
+            root: config.root,
+            rootX: config.rootX,
+            rootY: config.rootY,
+            offX: config.offX,
+            offY: config.offY,
+          },
+          config.scale,
+          surfaceZ,
+          fragmentOrder + 0.03,
+          elementOpacity
+        );
+        items.push(...pseudoItems);
+      }
+    }
+    return { items, jobs };
   }
 
   function hideEditableTextInCaptureClone(clonedRoot) {
@@ -66755,6 +67387,13 @@
     // currentColor-driven icons and other visual descendants intact.
     htmlTextNodes.forEach((node) => {
       if (!node.parentNode) return;
+      // Gradient text is itself the visual layer. Hiding it before the alpha
+      // matte leaves a transparent/black replacement when CSS uses
+      // background-clip:text, so preserve that text in the bitmap pass.
+      const parentStyle = win.getComputedStyle(node.parentElement);
+      const parentClip = String(parentStyle.webkitBackgroundClip || parentStyle.backgroundClip || '').toLowerCase();
+      const parentBackground = String(parentStyle.backgroundImage || '').toLowerCase();
+      if (parentClip === 'text' && /(?:linear|radial|conic)-gradient\s*\(/.test(parentBackground)) return;
       const wrapper = doc.createElement('span');
       wrapper.setAttribute('data-landppt-hidden-editable-text', 'true');
       wrapper.textContent = node.nodeValue;
@@ -66932,6 +67571,67 @@
     return output;
   }
 
+  /** Paints CSS background-clip:text as a transparent PNG glyph mask. */
+  function captureGradientTextVisual(node, style, options = {}) {
+    if (!isGradientTextElement(node, style) || getBrowserTextVisualLineCount(node) !== 1) return null;
+    const parsed = parseNativeLinearGradient(String(style.backgroundImage || ''));
+    if (!parsed || !Array.isArray(parsed.stops) || parsed.stops.length < 2) return null;
+    const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+
+    const rect = node.getBoundingClientRect();
+    const widthPx = Math.max(1, rect.width);
+    const heightPx = Math.max(1, rect.height);
+    const padding = Math.max(4, Math.min(32, estimateRiskCapturePadding(style, options)));
+    const scale = Math.max(2, Math.min(4, Number(options.decorativeTextRasterScale) || 3));
+    const canvas = node.ownerDocument.createElement('canvas');
+    canvas.width = Math.ceil((widthPx + padding * 2) * scale);
+    canvas.height = Math.ceil((heightPx + padding * 2) * scale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.scale(scale, scale);
+    ctx.clearRect(0, 0, widthPx + padding * 2, heightPx + padding * 2);
+
+    const fontSize = Math.max(1, parseFloat(style.fontSize) || 16);
+    const fontStyle = String(style.fontStyle || 'normal');
+    const fontWeight = String(style.fontWeight || '400');
+    const fontFamily = String(style.fontFamily || 'sans-serif');
+    ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+    ctx.fontKerning = 'normal';
+    if ('letterSpacing' in ctx) ctx.letterSpacing = String(style.letterSpacing || '0px');
+
+    const cssAngle = ((Number(parsed.angle) || 0) + 90) % 360;
+    const radians = cssAngle * Math.PI / 180;
+    const dx = Math.sin(radians), dy = -Math.cos(radians);
+    const magnitude = (Math.abs(widthPx * dx) + Math.abs(heightPx * dy)) / 2;
+    const centerX = padding + widthPx / 2, centerY = padding + heightPx / 2;
+    const gradient = ctx.createLinearGradient(
+      centerX - dx * magnitude, centerY - dy * magnitude,
+      centerX + dx * magnitude, centerY + dy * magnitude
+    );
+    parsed.stops.forEach((stop) => {
+      const alpha = Math.max(0, Math.min(1,
+        (1 - (Number(stop.transparency) || 0) / 100) *
+        (Number.isFinite(Number(options.opacity)) ? Number(options.opacity) : 1)
+      ));
+      const hex = String(stop.color || '000000').padStart(6, '0').slice(0, 6);
+      const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+      gradient.addColorStop(Math.max(0, Math.min(1, Number(stop.pos) / 100000)), `rgba(${r},${g},${b},${alpha})`);
+    });
+    ctx.fillStyle = gradient;
+
+    const range = node.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    const textRect = range.getBoundingClientRect();
+    if (range.detach) range.detach();
+    const metrics = ctx.measureText(text);
+    const left = padding + (textRect.left - rect.left) - (metrics.actualBoundingBoxLeft || 0);
+    const baseline = padding + (textRect.top - rect.top) + (metrics.actualBoundingBoxAscent || fontSize * 0.8);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, left, baseline);
+    return { data: canvas.toDataURL('image/png'), paddingPx: padding };
+  }
+
   function shouldRasterizeDecorativeText(node, style) {
     if (!node || node.nodeType !== 1 || !style) return false;
     if (node.children && node.children.length > 0) return false;
@@ -66948,6 +67648,17 @@
       /(?:deco|decorative|watermark|year-mark|chapter[-_]?num(?:ber)?|section[-_]?num(?:ber)?)/i.test(
         className
       );
+    // Standalone numeric labels (chapter numbers, page counters and metric
+    // values) remain editable when they have no browser-only paint effects.
+    // Do not classify them as decorative screenshots merely because the font
+    // is large or a display face is unavailable on the export host.
+    const plainNumericLabel =
+      /^\d{1,4}(?:[./]\d{1,4})?$/.test(text) &&
+      !hasTextShadow &&
+      (!isNonTrivialCssValue(style.filter) || /^drop-shadow\(/i.test(String(style.filter).trim())) &&
+      (!isNonTrivialCssValue(style.backgroundImage) || isGradientTextElement(node, style)) &&
+      (parseFloat(style.webkitTextStrokeWidth || style.textStrokeWidth) || 0) <= 0;
+    if (plainNumericLabel) return false;
     // Small labels (navigation captions, English eyebrows, page numbers) are
     // semantic content even when they use tracking. Keep them editable; the
     // raster fallback is reserved for genuinely display-sized decoration.
@@ -67157,6 +67868,67 @@
     if (!visualBox) return false;
     const r = node.getBoundingClientRect(), rr = root.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && (r.width < rr.width * 0.95 || r.height < rr.height * 0.85);
+  }
+
+  // Repeated small, empty visual leaves (dot matrices, swatches and similar
+  // ornaments) are one editing unit in the source DOM. Keep every child as a
+  // native PPT shape, but wrap the siblings in one real DrawingML group so the
+  // decoration can be selected/moved as a whole. Detection is structural and
+  // geometric; it does not depend on project IDs or CSS class names.
+  function isPptxDecorativeCollection(node, style, root) {
+    if (!node || node === root || node.namespaceURI !== 'http://www.w3.org/1999/xhtml') return false;
+    const children = Array.from(node.children || []);
+    if (children.length < 3 || children.length > 256 || String(node.textContent || '').trim()) return false;
+    const display = String(style.display || '').toLowerCase();
+    const layoutCollection = /^(?:inline-)?(?:grid|flex)$/.test(display) || children.every((child) => {
+      const childStyle = getNodeWindow(child).getComputedStyle(child);
+      return /^(?:absolute|fixed)$/.test(String(childStyle.position || '').toLowerCase());
+    });
+    if (!layoutCollection) return false;
+
+    const rootRect = root.getBoundingClientRect();
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 0.5 && rect.height > 0.5) ||
+        rect.width > rootRect.width * 0.5 || rect.height > rootRect.height * 0.5) return false;
+    const dimensions = [];
+    const allVisualLeaves = children.every((child) => {
+      if (child.children.length || String(child.textContent || '').trim() ||
+          ['IMG', 'SVG', 'CANVAS', 'VIDEO', 'IFRAME'].includes(child.tagName)) return false;
+      const childStyle = getNodeWindow(child).getComputedStyle(child);
+      if (childStyle.display === 'none' || childStyle.visibility === 'hidden' || parseFloat(childStyle.opacity) === 0) {
+        return false;
+      }
+      const childRect = child.getBoundingClientRect();
+      if (!(childRect.width > 0.5 && childRect.height > 0.5)) return false;
+      const background = parseColor(childStyle.backgroundColor);
+      const visibleSurface =
+        (background.hex && background.opacity > 0.001) ||
+        isNonTrivialCssValue(childStyle.backgroundImage) ||
+        hasVisibleCssBorder(childStyle);
+      if (!visibleSurface) return false;
+      const maxLeafDimension = Math.min(96, Math.min(rootRect.width, rootRect.height) * 0.14);
+      if (childRect.width > maxLeafDimension || childRect.height > maxLeafDimension) return false;
+      dimensions.push({ width: childRect.width, height: childRect.height });
+      return true;
+    });
+    if (!allVisualLeaves || dimensions.length < 3) return false;
+    const widths = dimensions.map((item) => item.width);
+    const heights = dimensions.map((item) => item.height);
+    return Math.max(...widths) / Math.max(0.5, Math.min(...widths)) <= 2.5 &&
+      Math.max(...heights) / Math.max(0.5, Math.min(...heights)) <= 2.5;
+  }
+
+  function getPptxGroupName(node, decorative) {
+    if (!decorative) {
+      const title = node.querySelector('h1,h2,h3,h4,h5,h6,[class*="title"]');
+      const label = String(title ? title.textContent : node.textContent).replace(/\s+/g, ' ').trim().slice(0, 60);
+      return `Card: ${label}`;
+    }
+    const identifier = String(node.id || (node.getAttribute('class') || '').trim().split(/\s+/)[0] || node.tagName)
+      .replace(/[^\p{L}\p{N}_-]+/gu, ' ')
+      .trim()
+      .slice(0, 48);
+    return `Decoration group: ${identifier || 'visual collection'}`;
   }
 
   function compareSemanticRenderItems(a, b) {
@@ -67601,12 +68373,14 @@
           currentOpacity = currentOpacity * Math.max(0, Math.min(1, nodeOpacity));
           if (currentOpacity <= 0.001) return;
         }
-        if (globalOptions.semanticGrouping !== false && isPptxSemanticContainer(node, nodeStyle, root)) {
-          const title = node.querySelector('h1,h2,h3,h4,h5,h6,[class*="title"]');
-          const label = String(title ? title.textContent : node.textContent).replace(/\s+/g, ' ').trim().slice(0, 60);
-          const group = { name: `Card: ${label}`, depth: parentGroups.length,
+        const semanticContainer = globalOptions.semanticGrouping !== false &&
+          isPptxSemanticContainer(node, nodeStyle, root);
+        const decorativeCollection = globalOptions.semanticGrouping !== false &&
+          isPptxDecorativeCollection(node, nodeStyle, root);
+        if (semanticContainer || decorativeCollection) {
+          const group = { name: getPptxGroupName(node, decorativeCollection), depth: parentGroups.length,
             zIndex: normalizeRenderableZIndex(currentZ), domOrder: order, names: [],
-            stackingContext: !isEffectivelyIdentityTransform(nodeStyle.transform) ||
+            stackingContext: decorativeCollection || !isEffectivelyIdentityTransform(nodeStyle.transform) ||
               nodeStyle.zIndex !== 'auto' || currentOpacity < parentOpacity };
           semanticGroups.push(group);
           currentGroups = [...parentGroups, group];
@@ -67626,6 +68400,18 @@
       );
 
       if (result) {
+        if (result.semanticGroupName && globalOptions.semanticGrouping !== false) {
+          const generatedGroup = {
+            name: result.semanticGroupName,
+            depth: currentGroups.length,
+            zIndex: normalizeRenderableZIndex(currentZ),
+            domOrder: order,
+            names: [],
+            stackingContext: true,
+          };
+          semanticGroups.push(generatedGroup);
+          currentGroups = [...currentGroups, generatedGroup];
+        }
         if (result.items) {
           result.items.forEach((item) => { item.semanticGroups = currentGroups; });
           // Push items immediately to queue (data might be missing but filled later)
@@ -68357,6 +69143,49 @@
     });
   }
 
+  /** Capture only an element's own CSS paint, never its semantic descendants. */
+  async function elementBackgroundToCanvasImage(node, widthPx, heightPx, options = {}) {
+    if (!node || !node.ownerDocument) return null;
+    const tempAttribute = 'data-landppt-background-capture';
+    const previous = node.getAttribute(tempAttribute);
+    const captureId = `background-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    node.setAttribute(tempAttribute, captureId);
+    const scale = Math.max(1, Math.min(3, Number(options.scale) || 2));
+    try {
+      const canvas = await html2canvas(node, {
+        backgroundColor: null,
+        logging: false,
+        scale,
+        useCORS: true,
+        width: Math.max(1, Math.ceil(widthPx)),
+        height: Math.max(1, Math.ceil(heightPx)),
+        x: 0,
+        y: 0,
+        removeContainer: true,
+        imageTimeout: 4000,
+        onclone: (clonedDoc) => {
+          const clonedNode = clonedDoc.querySelector(`[${tempAttribute}="${captureId}"]`);
+          if (!clonedNode) return;
+          clonedNode.style.setProperty('box-shadow', 'none', 'important');
+          clonedNode.style.setProperty('color', 'transparent', 'important');
+          Array.from(clonedNode.children).forEach((child) => {
+            child.style.setProperty('visibility', 'hidden', 'important');
+          });
+          const style = clonedDoc.createElement('style');
+          style.textContent = `[${tempAttribute}="${captureId}"]::before,[${tempAttribute}="${captureId}"]::after{content:none!important;display:none!important}`;
+          clonedDoc.head.appendChild(style);
+        },
+      });
+      return canvas ? canvas.toDataURL('image/png') : null;
+    } catch (error) {
+      console.warn('Element background capture failed:', error);
+      return null;
+    } finally {
+      if (previous === null) node.removeAttribute(tempAttribute);
+      else node.setAttribute(tempAttribute, previous);
+    }
+  }
+
   /**
    * Helper to identify elements that should be rendered as icons (Images).
    * Detects Custom Elements AND generic tags (<i>, <span>) with icon classes/pseudo-elements.
@@ -68706,13 +69535,82 @@
     const widths = names.map((name) => /^(none|hidden)$/.test(sides[name].style)
       ? 0 : Math.max(0, Number(sides[name].width) || 0));
     const visible = names.map((name, i) => widths[i] > 0 && sides[name].color && sides[name].opacity > 0);
-    // Keep the existing fallback for unimplemented patterned/3D border styles.
-    if (names.some((name, i) => visible[i] && sides[name].style !== 'solid')) return null;
     const { widthPx: width, heightPx: height } = geometry;
     const [top, right, bottom, left] = widths;
     // A zero-content CSS box can still paint borders (rules and triangles).
     if (!(width > 0 && height > 0 && width >= left + right && height >= top + bottom)) return null;
     const radii = resolveCssCornerRadii(style, width, height);
+    const patterned = names.some((name, i) => visible[i] && sides[name].style !== 'solid');
+    if (patterned) {
+      const supported = names.every((name, i) =>
+        !visible[i] || /^(?:solid|dashed|dotted|double)$/.test(sides[name].style)
+      );
+      const visibleCount = visible.filter(Boolean).length;
+      const hasRadius = radii.some((corner) => corner.rx > 0.01 || corner.ry > 0.01);
+      // A single patterned side (rules/dividers) maps exactly to a native PPT
+      // line. Mixed square borders do as well. Rounded multi-side patterns use
+      // the SVG path below so the corner clipping remains faithful.
+      if (!supported || (hasRadius && visibleCount > 1)) return null;
+      const pxScale = PX_TO_INCH * scale;
+      const rotation = Number(geometry.rotate) || 0;
+      const angle = rotation * Math.PI / 180;
+      const ownerCenterX = geometry.x + geometry.w / 2;
+      const ownerCenterY = geometry.y + geometry.h / 2;
+      const patternedItems = [];
+      const addSegment = (name, side, inset, strokeWidth, dashType, sequence) => {
+        const index = names.indexOf(name);
+        let x1 = 0, y1 = 0, x2 = width, y2 = 0;
+        if (name === 'top') {
+          x1 = radii[0].rx; x2 = width - radii[1].rx; y1 = y2 = inset;
+        } else if (name === 'right') {
+          x1 = x2 = width - inset; y1 = radii[1].ry; y2 = height - radii[2].ry;
+        } else if (name === 'bottom') {
+          x1 = radii[3].rx; x2 = width - radii[2].rx; y1 = y2 = height - inset;
+        } else {
+          x1 = x2 = inset; y1 = radii[0].ry; y2 = height - radii[3].ry;
+        }
+        if (x2 < x1 || y2 < y1) return;
+        const localCenterX = (x1 + x2) / 2 - width / 2;
+        const localCenterY = (y1 + y2) / 2 - height / 2;
+        const centerX = ownerCenterX + localCenterX * pxScale * Math.cos(angle) - localCenterY * pxScale * Math.sin(angle);
+        const centerY = ownerCenterY + localCenterX * pxScale * Math.sin(angle) + localCenterY * pxScale * Math.cos(angle);
+        const lineW = Math.abs(x2 - x1) * pxScale;
+        const lineH = Math.abs(y2 - y1) * pxScale;
+        patternedItems.push({
+          type: 'shape',
+          shapeType: 'line',
+          zIndex,
+          domOrder: domOrder + 0.1 + index / 1000 + sequence / 10000,
+          options: {
+            objectName: `CSS ${side.style} border ${name} ${domOrder} ${sequence}`,
+            x: centerX - lineW / 2,
+            y: centerY - lineH / 2,
+            w: lineW,
+            h: lineH,
+            rotate: rotation,
+            line: {
+              color: side.color,
+              transparency: (1 - Math.max(0, Math.min(1, side.opacity * opacity))) * 100,
+              width: strokeWidth * 0.75 * scale,
+              dashType,
+              ...(side.style === 'dotted' ? { beginArrowType: 'none', endArrowType: 'none' } : {}),
+            },
+          },
+        });
+      };
+      names.forEach((name, index) => {
+        if (!visible[index]) return;
+        const side = sides[name];
+        const sideWidth = widths[index];
+        if (side.style === 'double' && sideWidth >= 2) {
+          addSegment(name, side, sideWidth / 6, sideWidth / 3, 'solid', 0);
+          addSegment(name, side, sideWidth * 5 / 6, sideWidth / 3, 'solid', 1);
+        } else {
+          addSegment(name, side, sideWidth / 2, sideWidth, mapDashType(side.style), 0);
+        }
+      });
+      return patternedItems;
+    }
     const origins = [[0, 0], [width, 0], [width, height], [0, height]];
     const signs = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
     const insets = [[left, top], [right, top], [right, bottom], [left, bottom]];
@@ -68951,6 +69849,164 @@
       borderLeft, borderTop, rotation: geometry.rotation - relativeRotation };
   }
 
+  function roundedBoxSvgPath(left, top, width, height, corners) {
+    const [tl, tr, br, bl] = corners;
+    const right = left + width, bottom = top + height;
+    const arc = (corner, x, y) => corner.rx > 0 && corner.ry > 0
+      ? `A ${corner.rx} ${corner.ry} 0 0 1 ${x} ${y}` : `L ${x} ${y}`;
+    return `M ${left + tl.rx} ${top} H ${right - tr.rx} ${arc(tr, right, top + tr.ry)} ` +
+      `V ${bottom - br.ry} ${arc(br, right - br.rx, bottom)} H ${left + bl.rx} ` +
+      `${arc(bl, left, bottom - bl.ry)} V ${top + tl.ry} ${arc(tl, left + tl.rx, top)} Z`;
+  }
+
+  // Clip the painted SVG, not the PPT picture rectangle. The full owner radii
+  // are resolved against the card size BEFORE subtracting its border; never
+  // normalize a 24px card radius against a 3px pseudo-element height.
+  function clipPseudoSvgToOwner(data, baseStyle, geometry, pseudoOptions, scale, opacity = 1) {
+    const overflow = getOverflowClipAxes(baseStyle);
+    if (!data || !overflow.x || !overflow.y) return null;
+    const px = PX_TO_INCH * scale;
+    const width = geometry.widthPx, height = geometry.heightPx;
+    const borders = ['Left', 'Top', 'Right', 'Bottom'].map(side => Math.max(0, parseFloat(baseStyle[`border${side}Width`]) || 0));
+    const [left, top, right, bottom] = borders;
+    if (width <= left + right || height <= top + bottom) return null;
+    const corners = resolveCssCornerRadii(baseStyle, width, height).map((c, i) => ({
+      rx: Math.max(0, c.rx - (i === 0 || i === 3 ? left : right)),
+      ry: Math.max(0, c.ry - (i < 2 ? top : bottom)),
+    }));
+    const ownerAngle = (geometry.rotation || 0) * Math.PI / 180;
+    const pseudoAngle = (pseudoOptions.rotate || 0) * Math.PI / 180;
+    const inside = (x, y) => {
+      if (x < left || x > width - right || y < top || y > height - bottom) return false;
+      return corners.every((c, i) => {
+        if (!c.rx || !c.ry) return true;
+        const onLeft = i === 0 || i === 3, onTop = i < 2;
+        const cx = onLeft ? left + c.rx : width - right - c.rx;
+        const cy = onTop ? top + c.ry : height - bottom - c.ry;
+        if ((onLeft ? x >= cx : x <= cx) || (onTop ? y >= cy : y <= cy)) return true;
+        return ((x - cx) / c.rx) ** 2 + ((y - cy) / c.ry) ** 2 <= 1;
+      });
+    };
+    // A decoration completely inside this convex clip can retain its native
+    // shape. In particular, do not rasterize already-inset vertical rules.
+    if ([-1, 1].every(sx => [-1, 1].every(sy => {
+      const dx = sx * pseudoOptions.w / 2, dy = sy * pseudoOptions.h / 2;
+      const x = pseudoOptions.x + pseudoOptions.w / 2 + dx * Math.cos(pseudoAngle) - dy * Math.sin(pseudoAngle) - geometry.x - geometry.w / 2;
+      const y = pseudoOptions.y + pseudoOptions.h / 2 + dx * Math.sin(pseudoAngle) + dy * Math.cos(pseudoAngle) - geometry.y - geometry.h / 2;
+      return inside(width / 2 + (x * Math.cos(ownerAngle) + y * Math.sin(ownerAngle)) / px,
+        height / 2 + (-x * Math.sin(ownerAngle) + y * Math.cos(ownerAngle)) / px);
+    }))) return null;
+    try {
+      const comma = data.indexOf(',');
+      const source = data.slice(0, comma).includes(';base64')
+        ? decodeURIComponent(escape(atob(data.slice(comma + 1)))) : decodeURIComponent(data.slice(comma + 1));
+      const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
+      if (doc.querySelector('parsererror')) return null;
+      const svg = doc.documentElement, ns = 'http://www.w3.org/2000/svg';
+      const defs = doc.createElementNS(ns, 'defs'), clip = doc.createElementNS(ns, 'clipPath');
+      const id = 'landppt-owner-padding-clip';
+      clip.setAttribute('id', id);
+      clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
+      const path = doc.createElementNS(ns, 'path');
+      path.setAttribute('d', roundedBoxSvgPath(left, top, width - left - right, height - top - bottom, corners));
+      const angle = (pseudoOptions.rotate || 0) * Math.PI / 180;
+      const dx = geometry.x + geometry.w / 2 - pseudoOptions.x - pseudoOptions.w / 2;
+      const dy = geometry.y + geometry.h / 2 - pseudoOptions.y - pseudoOptions.h / 2;
+      const cx = pseudoOptions.w / px / 2 + (dx * Math.cos(angle) + dy * Math.sin(angle)) / px;
+      const cy = pseudoOptions.h / px / 2 + (-dx * Math.sin(angle) + dy * Math.cos(angle)) / px;
+      path.setAttribute('transform', `translate(${cx} ${cy}) rotate(${(geometry.rotation || 0) - (pseudoOptions.rotate || 0)}) translate(${-width / 2} ${-height / 2})`);
+      clip.appendChild(path); defs.appendChild(clip);
+      const paint = doc.createElementNS(ns, 'g');
+      paint.setAttribute('clip-path', `url(#${id})`);
+      paint.setAttribute('opacity', String(Math.max(0, Math.min(1, opacity))));
+      for (const child of Array.from(svg.children)) {
+        if (child.localName !== 'defs') paint.appendChild(child);
+      }
+      svg.appendChild(defs); svg.appendChild(paint);
+      svg.setAttribute('data-landppt-owner-clip', 'padding-box');
+      // Use the bundle's base64 encoder; percent-encoded SVG data alone is
+      // not a portable image payload for the PPT SVG + PNG fallback pipeline.
+      return encodeSvgDataUri(new XMLSerializer().serializeToString(svg));
+    } catch (error) {
+      console.warn('Pseudo-element rounded clip failed:', error);
+      return null;
+    }
+  }
+
+  // Return the nearest rounded overflow ancestor for an empty decorative
+  // element (for example a real div used as a card side rule).  Pseudo
+  // elements have their own clipping path above; ordinary child divs need the
+  // same treatment before they are emitted as native rectangles.
+  function getRoundedOverflowAncestor(node, root) {
+    let current = node && node.parentElement;
+    while (current && current !== root) {
+      const style = getNodeWindow(current).getComputedStyle(current);
+      const overflow = getOverflowClipAxes(style);
+      const radius = resolveCssCornerRadii(
+        style,
+        current.offsetWidth || current.getBoundingClientRect().width,
+        current.offsetHeight || current.getBoundingClientRect().height
+      );
+      if ((overflow.x || overflow.y) && radius.some((corner) => corner.rx > 0 && corner.ry > 0)) {
+        return { node: current, style, rect: current.getBoundingClientRect() };
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function measureFlexPseudoGeometry(node, pseudoSelector, pseudoStyle, geometry, scale) {
+    const doc = node.ownerDocument;
+    const win = doc.defaultView;
+    const ownerStyle = win.getComputedStyle(node);
+    if (!/^(?:inline-)?flex$/.test(ownerStyle.display) ||
+        /^(?:absolute|fixed)$/.test(pseudoStyle.position)) return null;
+    // Pseudo-elements have no DOMRect API. Temporarily replace this one with
+    // a real flex item at the same position. Let the browser account for the
+    // content-box padding, gaps, flex-basis, shrink/grow, order and alignment.
+    // Snapshot the live computed declaration before suppressing the pseudo.
+    const probe = doc.createElement('span');
+    for (const key of pseudoStyle) probe.style.setProperty(key, pseudoStyle.getPropertyValue(key), 'important');
+    probe.textContent = decodePseudoContentValue(pseudoStyle.content);
+    probe.style.setProperty('content', 'normal', 'important');
+    probe.style.setProperty('transition', 'none', 'important');
+    probe.style.setProperty('animation', 'none', 'important');
+    const rotation = (geometry.rotation || 0) + getRotation(pseudoStyle.transform);
+    const attribute = 'data-landppt-flex-pseudo-probe';
+    const previousAttribute = node.getAttribute(attribute);
+    const rule = doc.createElement('style');
+    rule.textContent = `[${attribute}="active"]${pseudoSelector}{content:none!important;display:none!important}`;
+    try {
+      node.setAttribute(attribute, 'active');
+      (doc.head || doc.documentElement).appendChild(rule);
+      if (pseudoSelector === '::before') node.insertBefore(probe, node.firstChild);
+      else node.appendChild(probe);
+      const rect = probe.getBoundingClientRect();
+      const style = win.getComputedStyle(probe);
+      const size = (dimension, sides) => {
+        const extras = sides.reduce((sum, side) => sum + (parseFloat(style[`padding${side}`]) || 0) +
+          (parseFloat(style[`border${side}Width`]) || 0), 0);
+        return Math.max(extras, (parseFloat(style[dimension]) || 0) + (style.boxSizing === 'border-box' ? 0 : extras));
+      };
+      const width = size('width', ['Left', 'Right']);
+      const height = size('height', ['Top', 'Bottom']);
+      if (!(width > 0 && height > 0)) return null;
+      const ownerRect = node.getBoundingClientRect();
+      const px = PX_TO_INCH * scale;
+      return {
+        width, height,
+        x: geometry.x + geometry.w / 2 + (rect.left + rect.width / 2 - ownerRect.left - ownerRect.width / 2 - width / 2) * px,
+        y: geometry.y + geometry.h / 2 + (rect.top + rect.height / 2 - ownerRect.top - ownerRect.height / 2 - height / 2) * px,
+        rotate: rotation,
+      };
+    } finally {
+      probe.remove();
+      rule.remove();
+      if (previousAttribute === null) node.removeAttribute(attribute);
+      else node.setAttribute(attribute, previousAttribute);
+    }
+  }
+
   function collectPseudoDecorationItems(
     node,
     baseStyle,
@@ -68976,6 +70032,7 @@
       }
       if (!pseudoStyle) continue;
       if (pseudoStyle.display === 'none' || pseudoStyle.visibility === 'hidden') continue;
+      if (['none', 'normal'].includes(String(pseudoStyle.content))) continue;
 
       const pseudoContent = decodePseudoContentValue(pseudoStyle.content);
       const pseudoOpacityRaw = parseFloat(pseudoStyle.opacity);
@@ -68996,6 +70053,7 @@
       const horizontalExtras = borderLeftPx + borderRightPx + paddingLeftPx + paddingRightPx;
       const verticalExtras = borderTopPx + borderBottomPx + paddingTopPx + paddingBottomPx;
       const pseudoPosition = String(pseudoStyle.position || 'static').toLowerCase();
+      const flexPseudoGeometry = measureFlexPseudoGeometry(node, pseudoSelector, pseudoStyle, geometry, scale);
       const positioningBox = getPseudoPositioningBox(node, baseStyle, geometry, scale, pseudoPosition);
       const positioningWidth = positioningBox ? positioningBox.width : geometry.widthPx;
       const positioningHeight = positioningBox ? positioningBox.height : geometry.heightPx;
@@ -69019,6 +70077,10 @@
       const pseudoMarginRight = parseFloat(pseudoStyle.marginRight) || 0;
       let pseudoWidth = resolvePseudoLength(pseudoStyle.width, positioningWidth);
       let pseudoHeight = resolvePseudoLength(pseudoStyle.height, positioningHeight);
+      if (flexPseudoGeometry) {
+        pseudoWidth = flexPseudoGeometry.width - (isBorderBox ? 0 : horizontalExtras);
+        pseudoHeight = flexPseudoGeometry.height - (isBorderBox ? 0 : verticalExtras);
+      }
       if (!Number.isFinite(pseudoWidth) && measuredText) pseudoWidth = measuredText.width;
       if (!Number.isFinite(pseudoHeight) && measuredText) pseudoHeight = measuredText.height;
       if (!Number.isFinite(pseudoWidth) && Number.isFinite(leftValue) && Number.isFinite(rightValue)) {
@@ -69126,15 +70188,45 @@
           rotate: positionedRotation + getRotation(pseudoStyle.transform),
         },
       };
+      if (flexPseudoGeometry) {
+        Object.assign(itemBase.options, {
+          x: flexPseudoGeometry.x, y: flexPseudoGeometry.y,
+          w: flexPseudoGeometry.width * pxToInchScale,
+          h: flexPseudoGeometry.height * pxToInchScale,
+          rotate: flexPseudoGeometry.rotate,
+        });
+      }
+      const originalPseudoOptions = { ...itemBase.options };
+      const clippedPseudoOptions = clipPseudoOptionsToOwner(itemBase.options, node, {
+        ...geometry,
+        root: geometry.root || node.ownerDocument.body,
+        rootX: geometry.rootX ?? 0,
+        rootY: geometry.rootY ?? 0,
+        offX: geometry.offX ?? 0,
+        offY: geometry.offY ?? 0,
+        scale,
+      });
+      if (clippedPseudoOptions) itemBase.options = clippedPseudoOptions;
 
+      const ownerOverflow = `${baseStyle.overflowX || baseStyle.overflow || ''} ${baseStyle.overflowY || baseStyle.overflow || ''}`.toLowerCase();
+      if (/\b(hidden|clip|auto|scroll)\b/.test(ownerOverflow)) {
+        const left = Math.max(itemBase.options.x, geometry.x);
+        const top = Math.max(itemBase.options.y, geometry.y);
+        const right = Math.min(itemBase.options.x + itemBase.options.w, geometry.x + geometry.w);
+        const bottom = Math.min(itemBase.options.y + itemBase.options.h, geometry.y + geometry.h);
+        if (right > left && bottom > top) {
+          itemBase.options = { ...itemBase.options, x: left, y: top, w: right - left, h: bottom - top };
+        }
+      }
       const pseudoCornerGeometry = getNativeCssCornerGeometry(
         pseudoStyle, renderedWidth, renderedHeight, pxToInchScale
       );
       const pseudoShapeType = pseudoCornerGeometry.shapeType;
       Object.assign(itemBase.options, pseudoCornerGeometry.options);
       const pseudoBg = parseColor(pseudoStyle.backgroundColor);
-      const borderInfo = getBorderInfo(pseudoStyle, scale);
+      const pseudoBgImageValue = String(pseudoStyle.backgroundImage || '').trim();
       const hasPseudoFill = pseudoBg.hex && pseudoBg.opacity > 0;
+      const borderInfo = getBorderInfo(pseudoStyle, scale);
       const hasPseudoBorder = borderInfo.type === 'uniform' && borderInfo.options;
       const finalAlpha = hasPseudoFill
         ? Math.max(0, Math.min(1, safeOpacity * pseudoOpacity * pseudoBg.opacity))
@@ -69197,7 +70289,7 @@
         continue;
       }
 
-      const pseudoBgImage = String(pseudoStyle.backgroundImage || '').trim();
+      const pseudoBgImage = pseudoBgImageValue;
       if (/repeating-linear-gradient\s*\(/i.test(pseudoBgImage) && (renderedWidth <= 2.5 || renderedHeight <= 2.5)) {
         const dashColor = parseColor(getGradientFallbackColor(pseudoBgImage));
         if (dashColor.hex && dashColor.opacity > 0) {
@@ -69227,23 +70319,76 @@
       if (pseudoBgImage && pseudoBgImage !== 'none' && pseudoBgImage.includes('gradient(')) {
         const pseudoRadius = parseFloat(pseudoStyle.borderRadius) || 0;
         const gradientData = generateGradientSVG(
-          pseudoWidth,
-          pseudoHeight,
+          renderedWidth,
+          renderedHeight,
           pseudoBgImage,
           pseudoRadius,
-          null
+          null,
+          safeOpacity * pseudoOpacity
         );
         if (gradientData) {
+          const clippedData = clipPseudoSvgToOwner(
+            gradientData, baseStyle, geometry, originalPseudoOptions, scale, 1
+          );
           items.push({
             type: 'image',
             ...itemBase,
-            options: { ...itemBase.options, data: gradientData },
+            // Preserve the original viewport and gradient coordinate system:
+            // cropping changes alpha, never the image size or color stops.
+            options: clippedData ? { ...originalPseudoOptions, data: clippedData }
+              : { ...itemBase.options, data: gradientData },
           });
           continue;
         }
       }
 
       if (!hasPseudoFill && !hasPseudoBorder) continue;
+
+      // A pseudo strip can be clipped by the owner's rounded overflow even
+      // when it is border-only.  Build its painted silhouette as SVG first,
+      // then apply the same owner padding-box clip used by gradient strips.
+      // This prevents the two top/bottom corners of a full-height ::before
+      // rule from protruding beyond a rounded card.
+      if (hasPseudoFill || hasPseudoBorder) {
+        const pseudoCorners = resolveCssCornerRadii(pseudoStyle, renderedWidth, renderedHeight);
+        const pseudoPath = roundedBoxSvgPath(0, 0, renderedWidth, renderedHeight, pseudoCorners);
+        const fillMarkup = hasPseudoFill
+          ? `fill="#${pseudoBg.hex}" fill-opacity="${pseudoBg.opacity}"`
+          : 'fill="none"';
+        let strokeMarkup = '';
+        if (hasPseudoBorder) {
+          const strokeColor = parseColor(pseudoStyle.borderColor);
+          const strokeWidth = Math.max(
+            parseFloat(pseudoStyle.borderTopWidth) || 0,
+            parseFloat(pseudoStyle.borderRightWidth) || 0,
+            parseFloat(pseudoStyle.borderBottomWidth) || 0,
+            parseFloat(pseudoStyle.borderLeftWidth) || 0
+          );
+          if (strokeColor.hex && strokeWidth > 0) {
+            strokeMarkup = ` stroke="#${strokeColor.hex}" stroke-opacity="${strokeColor.opacity}" stroke-width="${strokeWidth}"`;
+          }
+        }
+        const pseudoPaintData = encodeSvgDataUri(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${renderedWidth}" height="${renderedHeight}" viewBox="0 0 ${renderedWidth} ${renderedHeight}"><path d="${pseudoPath}" ${fillMarkup}${strokeMarkup}/></svg>`
+        );
+        const clippedData = clipPseudoSvgToOwner(
+          pseudoPaintData,
+          baseStyle,
+          geometry,
+          originalPseudoOptions,
+          scale,
+          safeOpacity * pseudoOpacity
+        );
+        if (clippedData) {
+          items.push({
+            type: 'image',
+            zIndex: itemBase.zIndex,
+            domOrder: itemBase.domOrder,
+            options: { ...originalPseudoOptions, data: clippedData },
+          });
+          continue;
+        }
+      }
 
       items.push({
         type: 'shape',
@@ -69526,11 +70671,80 @@
       };
     }
 
+    // Empty child divs used as accent bars are visual leaves, but unlike
+    // pseudo-elements they bypass collectPseudoDecorationItems.  If such a
+    // leaf crosses a rounded overflow card, rasterize only its own painted
+    // path with the card silhouette as a mask so the PPT remains editable at
+    // the card and text level without a protruding rectangle.
+    if (
+      node.children.length === 0 &&
+      !String(node.textContent || '').trim() &&
+      !isNonTrivialCssValue(style.backgroundImage) &&
+      (directClipBackground.hex || parseFloat(style.borderWidth) > 0)
+    ) {
+      const roundedOwner = getRoundedOverflowAncestor(node, config.root);
+      if (roundedOwner) {
+        const owner = roundedOwner.node;
+        const ownerRect = roundedOwner.rect;
+        const ownerWidthPx = owner.offsetWidth || ownerRect.width;
+        const ownerHeightPx = owner.offsetHeight || ownerRect.height;
+        const ownerRotation = getCumulativeTextRotation(owner, config.root);
+        const ownerGeometry = {
+          x: config.offX + (ownerRect.left + ownerRect.width / 2 - config.rootX) * PX_TO_INCH * config.scale - ownerWidthPx * PX_TO_INCH * config.scale / 2,
+          y: config.offY + (ownerRect.top + ownerRect.height / 2 - config.rootY) * PX_TO_INCH * config.scale - ownerHeightPx * PX_TO_INCH * config.scale / 2,
+          w: ownerWidthPx * PX_TO_INCH * config.scale,
+          h: ownerHeightPx * PX_TO_INCH * config.scale,
+          widthPx: ownerWidthPx,
+          heightPx: ownerHeightPx,
+          rotation: ownerRotation,
+        };
+        const corners = resolveCssCornerRadii(style, widthPx, heightPx);
+        const path = roundedBoxSvgPath(0, 0, widthPx, heightPx, corners);
+        const fill = directClipBackground.hex
+          ? `fill="#${directClipBackground.hex}" fill-opacity="${directClipBackground.opacity}"`
+          : 'fill="none"';
+        const borderColor = parseColor(style.borderColor);
+        const borderWidth = Math.max(
+          parseFloat(style.borderTopWidth) || 0,
+          parseFloat(style.borderRightWidth) || 0,
+          parseFloat(style.borderBottomWidth) || 0,
+          parseFloat(style.borderLeftWidth) || 0
+        );
+        const stroke = borderColor.hex && borderWidth > 0
+          ? ` stroke="#${borderColor.hex}" stroke-opacity="${borderColor.opacity}" stroke-width="${borderWidth}"`
+          : '';
+        const paintData = encodeSvgDataUri(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}"><path d="${path}" ${fill}${stroke}/></svg>`
+        );
+        const clippedData = clipPseudoSvgToOwner(
+          paintData,
+          roundedOwner.style,
+          ownerGeometry,
+          { x, y, w, h, rotate: rotation },
+          config.scale,
+          safeOpacity
+        );
+        if (clippedData) {
+          return {
+            items: [{ type: 'image', zIndex, domOrder, options: { data: clippedData, x, y, w, h, rotate: rotation } }],
+            stopRecursion: true,
+          };
+        }
+      }
+    }
+
     // Browser-composited effects are captured as a visual island. Text is deliberately
     // removed from the bitmap and restored below as editable, line-positioned text.
     if (node.nodeName.toUpperCase() !== 'SVG' && globalOptions.hybridRiskFallback !== false) {
       const risk = analyzeRiskSubtree(node, style);
-      if (risk.risky) {
+      // A multi-layer background on a semantic container does not require the
+      // entire subtree to become one bitmap. Its own paint is captured later as
+      // a background-only layer while descendants keep normal export semantics.
+      const backgroundOnlyRisk =
+        node.children.length > 0 &&
+        risk.reasons.length === 1 &&
+        risk.reasons[0] === 'multi-layer-gradient';
+      if (risk.risky && !backgroundOnlyRisk) {
         const isolatedClipAncestor =
           risk.reasons.length === 1 &&
           risk.reasons[0] === 'transformed-clipping' &&
@@ -69594,13 +70808,9 @@
           // CSS rotation again in PowerPoint would double-transform the visual island.
           options: { x: visualX, y: visualY, w: visualW, h: visualH, rotate: 0, data: null },
         };
-        const textItems = collectEditableTextLineItems(
-          node,
-          config,
-          zIndex,
-          domOrder,
-          safeOpacity
-        );
+        const textItems = isGradientTextElement(node, style)
+          ? []
+          : collectEditableTextLineItems(node, config, zIndex, domOrder, safeOpacity);
         const hardShadowItems = collectRiskSubtreeHardShadowItems(
           node,
           config,
@@ -69619,7 +70829,14 @@
         getRiskFallbackDebug().push(debugEntry);
 
         const job = async () => {
-          const captured = await captureRiskSubtreeVisual(node, globalOptions);
+          // html2canvas paints background-clip:text as a rectangular gradient
+          // with dark glyphs in several browsers. Build a real transparent
+          // glyph mask first; retain the two-pass subtree capture for all
+          // other composited effects and multi-line gradient text.
+          const captured = isGradientTextElement(node, style)
+            ? captureGradientTextVisual(node, style, { ...globalOptions, opacity: safeOpacity }) ||
+              await captureRiskSubtreeVisual(node, globalOptions)
+            : await captureRiskSubtreeVisual(node, globalOptions);
           if (!captured || !captured.data) {
             imageItem.skip = true;
             debugEntry.error = 'capture-failed';
@@ -70190,6 +71407,11 @@
       (gradientLayerCount > 1 ||
         /\b(?:radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(backgroundImageValue) ||
         hasMaskImage);
+    const isComplexContainerGradientBackground =
+      hasAnyGradientBackground &&
+      !hasUrlBackgroundImage &&
+      hasLeafChildren &&
+      gradientLayerCount > 1;
     const isVisualLeafWithUrlBackground =
       hasUrlBackgroundImage && !hasLeafTextContent && !hasLeafChildren;
 
@@ -70217,7 +71439,14 @@
             w: bandW, h: bandH, rotate: rotation, line: { type: 'none' },
             fill: { color: band.color, transparency: (1 - band.opacity * safeOpacity) * 100 } } });
       });
-      return { items: stripeItems, stopRecursion: true };
+      return {
+        items: stripeItems,
+        // Repeating CSS stripes are emitted as several native rectangles. Mark
+        // the generated siblings so the DrawingML postprocessor wraps them in
+        // one selectable group while keeping every band independently editable.
+        semanticGroupName: getPptxGroupName(node, true),
+        stopRecursion: true,
+      };
     }
 
     if (isComplexLeafGradientBackground) {
@@ -70305,8 +71534,99 @@
 
     const shadowStr = style.boxShadow;
     const hasShadow = shadowStr && shadowStr !== 'none';
-    const hardShadow = hasShadow ? parseHardBoxShadow(shadowStr) : null;
+    const shadowLayers = hasShadow ? parseCssBoxShadowLayers(shadowStr) : [];
+    const needsLayeredShadowVisual = shadowLayers.length > 1 || shadowLayers.some((layer) => layer.inset);
+    const shadowVisual = needsLayeredShadowVisual
+      ? generateCssBoxShadowVisuals(widthPx, heightPx, style, shadowLayers, safeOpacity)
+      : null;
+    const nativeLayeredOuterShadowItems =
+      needsLayeredShadowVisual && bgColorObj.hex && !hasAnyGradientBackground
+        ? createLayeredOuterShadowShapeItems(
+            shadowLayers,
+            nativeCornerGeometry.shapeType,
+            { x, y, w, h, rotate: rotation, ...nativeCornerGeometry.options },
+            config.scale,
+            safeOpacity,
+            zIndex,
+            domOrder,
+            { color: bgColorObj.hex, transparency: (1 - bgColorObj.opacity * safeOpacity) * 100 }
+          )
+        : [];
+    const nativeLayeredInnerShadowItems =
+      needsLayeredShadowVisual && bgColorObj.hex && !hasAnyGradientBackground
+        ? createLayeredInnerShadowShapeItems(
+            shadowLayers,
+            nativeCornerGeometry.shapeType,
+            { x, y, w, h, rotate: rotation, ...nativeCornerGeometry.options },
+            config.scale,
+            safeOpacity,
+            zIndex,
+            domOrder,
+            { color: bgColorObj.hex, transparency: (1 - bgColorObj.opacity) * 100 }
+          )
+        : [];
+    const hardShadow = shadowVisual ? null : (hasShadow ? parseHardBoxShadow(shadowStr) : null);
     const softEdge = getSoftEdges(style.filter, config.scale);
+
+    if (nativeLayeredOuterShadowItems.length) {
+      items.push(...nativeLayeredOuterShadowItems);
+    } else if (shadowVisual && shadowVisual.outer && shadowVisual.outer.data) {
+      const shadowPad = shadowVisual.outer.padding * PX_TO_INCH * config.scale;
+      items.push({
+        type: 'image',
+        zIndex,
+        domOrder: domOrder - 0.0002,
+        options: {
+          objectName: `CSS layered outer shadow ${domOrder}`,
+          data: shadowVisual.outer.data,
+          x: x - shadowPad,
+          y: y - shadowPad,
+          w: w + shadowPad * 2,
+          h: h + shadowPad * 2,
+          rotate: rotation,
+        },
+      });
+    }
+
+    if (isComplexContainerGradientBackground) {
+      const backgroundItem = {
+        type: 'image',
+        zIndex,
+        domOrder,
+        options: {
+          objectName: `CSS layered background ${domOrder}`,
+          data: null,
+          x,
+          y,
+          w,
+          h,
+          rotate: rotation,
+        },
+      };
+      items.push(backgroundItem);
+      if (shadowVisual && shadowVisual.inner && shadowVisual.inner.data) {
+        items.push({
+          type: 'image',
+          zIndex,
+          domOrder: domOrder + 0.08,
+          options: {
+            objectName: `CSS inset shadow ${domOrder}`,
+            data: shadowVisual.inner.data,
+            x,
+            y,
+            w,
+            h,
+            rotate: rotation,
+          },
+        });
+      }
+      const job = async () => {
+        const data = await elementBackgroundToCanvasImage(node, widthPx, heightPx, { scale: 2 });
+        if (data) backgroundItem.options.data = data;
+        else backgroundItem.skip = true;
+      };
+      return { items, job, stopRecursion: false };
+    }
 
     let isImageWrapper = false;
     const imgChild = Array.from(node.children).find((c) => c.tagName === 'IMG');
@@ -70321,8 +71641,31 @@
     const isCompactTag = /(?:^|\s)(?:tag|chip|badge)(?:\s|$)/i.test(
       String(node.getAttribute && node.getAttribute('class') || '')
     );
+    const inlineVisualArtifacts = isText
+      ? collectInlineVisualSurfaceItems(
+          node,
+          config,
+          zIndex,
+          domOrder,
+          safeOpacity,
+          globalOptions
+        )
+      : { items: [], jobs: [] };
+    const inlineVisualSurfaceItems = inlineVisualArtifacts.items;
+    const preserveInlineVisualSurfaces =
+      inlineVisualSurfaceItems.length > 0;
+    const inlineVisualTextItems = preserveInlineVisualSurfaces
+      ? collectEditableTextLineItems(
+          node,
+          config,
+          zIndex,
+          domOrder + 0.4,
+          safeOpacity,
+          { lockBrowserLines: true, objectNamePrefix: 'Inline editable text' }
+        )
+      : [];
 
-    if (isText) {
+    if (isText && !preserveInlineVisualSurfaces) {
       const textParts = finalizeInlineTextParts(
         collectInlineTextParts(node, config.scale, safeOpacity, node)
       );
@@ -70360,7 +71703,10 @@
 
         let margin = getTextBoxMargin(style, config.scale);
         margin[0] += getLeadingFlexPseudoInset(node, style, config.scale);
-        if (align === 'center' && valign === 'middle') margin = [0, 0, 0, 0];
+        // Centering controls glyph placement inside the CSS content box; it
+        // must not erase the element's padding. Keeping the insets is also
+        // important after shapes are wrapped in a DrawingML group, because
+        // the group transform preserves geometry but cannot restore margins.
 
         const canSafelyPadSingleLineTextBox =
           browserLineCount === 1 &&
@@ -70374,19 +71720,28 @@
             PX_TO_INCH *
             config.scale
           : 0;
+        // Preserve a browser-confirmed single line for visual text leaves.
+        // PowerPoint's font metrics include its own text insets and can wrap a
+        // line that fit in the browser (notably large cover titles). This is
+        // deliberately limited to leaf boxes with a visual surface; ordinary
+        // paragraph boxes keep normal wrapping semantics.
+        const isSingleLineVisualLeaf =
+          browserLineCount === 1 &&
+          !hasLeafChildren &&
+          (bgColorObj.hex || borderRadiusValue > 0 || hasUniformBorder || hasShadow);
         textPayload = {
           text: textParts,
           align,
           valign,
           margin,
-          // Keep normal text boxes in DrawingML's wrapping mode even when the
-          // browser reports a single visual line.  Office otherwise treats a
-          // shape as no-wrap after a width/height round-trip, and a later edit
-          // can reflow a paragraph into one long line.  Writing-mode text is
+          // Keep browser-confirmed single-line visual leaves unwrapped. Office
+          // can otherwise apply its own font metrics and reflow a line that
+          // fit in the browser (notably large cover titles). Ordinary text
+          // boxes retain DrawingML wrapping semantics; writing-mode text is
           // intentionally kept unwrapped because its 90° geometry is handled
           // separately.
-          wrap: getWritingModeRotation(style) ? false : true,
-          noWrap: Boolean(isCompactTag),
+          wrap: getWritingModeRotation(style) ? false : !isSingleLineVisualLeaf,
+          noWrap: Boolean(isCompactTag || isSingleLineVisualLeaf),
           widthBuffer: singleLineWidthBuffer,
           writingModeRotation: getWritingModeRotation(style),
         };
@@ -70417,7 +71772,31 @@
       }
     }
 
-    const nativeGradientFill = !textPayload ? parseNativeLinearGradient(backgroundImageValue) : null;
+    const parsedNativeGradientFill = !textPayload ? parseNativeLinearGradient(backgroundImageValue) : null;
+    const nativeGradientFill = parsedNativeGradientFill
+      ? {
+          ...parsedNativeGradientFill,
+          stops: parsedNativeGradientFill.stops.map((stop) => ({
+            ...stop,
+            transparency:
+              (1 - (1 - Math.max(0, Math.min(100, Number(stop.transparency) || 0)) / 100) * safeOpacity) * 100,
+          })),
+        }
+      : null;
+    // A zero-blur CSS shadow is normally emitted as a separate silhouette so
+    // hard-edged decorative cards keep their exact stepped outline.  When the
+    // owner itself is an editable text shape, that extra silhouette becomes a
+    // second rounded rectangle underneath the text box.  Keep the structure
+    // editable by mapping a single, no-spread hard shadow to the native shape
+    // shadow instead; this also preserves the owner radius and border.
+    const nativeTextHardShadow = Boolean(
+      textPayload &&
+      hardShadow &&
+      hardShadow.spread === 0 &&
+      !hasCompositeBorder &&
+      splitTopLevelCommaParts(shadowStr).length === 1 &&
+      getVisibleShadow(shadowStr, config.scale)
+    );
     if (nativeGradientFill) {
       const nativeShapeOptions = {
         x,
@@ -70428,7 +71807,7 @@
         fill: nativeGradientFill,
         line: { type: 'none' },
       };
-      if (hasShadow && !hardShadow) nativeShapeOptions.shadow = getVisibleShadow(shadowStr, config.scale);
+      if (hasShadow && !hardShadow && !shadowVisual) nativeShapeOptions.shadow = getVisibleShadow(shadowStr, config.scale);
       const nativeShapeType = nativeCornerGeometry.shapeType;
       Object.assign(nativeShapeOptions, nativeCornerGeometry.options);
       const nativeHardShadowItem = createHardShadowShapeItem(
@@ -70479,7 +71858,8 @@
           heightPx,
           style.backgroundImage,
           borderRadiusValue,
-          null
+          null,
+          safeOpacity
         );
       }
 
@@ -70576,7 +71956,7 @@
           w,
           h,
           rotate: rotation,
-          fill: useSolidFill
+          fill: useSolidFill && !nativeLayeredInnerShadowItems.length
             ? { color: bgColorObj.hex, transparency: transparency }
             : { type: 'none' },
           line:
@@ -70585,21 +71965,25 @@
               : { type: 'none' },
         };
 
-        if (hasShadow && !hardShadow) shapeOpts.shadow = getVisibleShadow(shadowStr, config.scale);
+        if (hasShadow && !shadowVisual && (!hardShadow || nativeTextHardShadow)) {
+          shapeOpts.shadow = getVisibleShadow(shadowStr, config.scale);
+        }
 
         const shapeType = nativeCornerGeometry.shapeType;
         Object.assign(shapeOpts, nativeCornerGeometry.options);
 
-        const hardShadowItem = createHardShadowShapeItem(
-          hardShadow,
-          shapeType,
-          shapeOpts,
-          rotation,
-          config.scale,
-          safeOpacity,
-          zIndex,
-          domOrder
-        );
+        const hardShadowItem = nativeTextHardShadow
+          ? null
+          : createHardShadowShapeItem(
+              hardShadow,
+              shapeType,
+              shapeOpts,
+              rotation,
+              config.scale,
+              safeOpacity,
+              zIndex,
+              domOrder
+            );
         if (hardShadowItem) items.push(hardShadowItem);
 
         if (mergeUniformBorderFill) {
@@ -70677,6 +72061,25 @@
 
     }
 
+    if (nativeLayeredInnerShadowItems.length) {
+      items.push(...nativeLayeredInnerShadowItems);
+    } else if (shadowVisual && shadowVisual.inner && shadowVisual.inner.data) {
+      items.push({
+        type: 'image',
+        zIndex,
+        domOrder: domOrder + 0.08,
+        options: {
+          objectName: `CSS inset shadow ${domOrder}`,
+          data: shadowVisual.inner.data,
+          x,
+          y,
+          w,
+          h,
+          rotate: rotation,
+        },
+      });
+    }
+
     if (hasCompositeBorder) {
       if (nativeCompositeBorders) {
         items.push(...nativeCompositeBorders);
@@ -70699,10 +72102,27 @@
       }
     }
 
+    const borderImageSource = String(style.borderImageSource || '').trim();
+    if (borderImageSource && /(?:linear|radial|conic)-gradient\s*\(/i.test(borderImageSource)) {
+      const borderImageData = generateBorderImageGradientSVG(widthPx, heightPx, style, safeOpacity);
+      if (borderImageData) {
+        items.push({
+          type: 'image',
+          zIndex,
+          domOrder: domOrder + 0.15,
+          options: { objectName: `CSS border-image gradient ${domOrder}`, data: borderImageData, x, y, w, h, rotate: rotation },
+        });
+      }
+    }
+
+    if (preserveInlineVisualSurfaces) {
+      items.push(...inlineVisualSurfaceItems);
+    }
+
     const pseudoDecorationItems = collectPseudoDecorationItems(
       node,
       style,
-      { x, y, w, h, widthPx, heightPx, rotation },
+      { x, y, w, h, widthPx, heightPx, rotation, root: config.root, rootX: config.rootX, rootY: config.rootY, offX: config.offX, offY: config.offY },
       config.scale,
       zIndex,
       domOrder,
@@ -70712,7 +72132,20 @@
       items.push(...pseudoDecorationItems);
     }
 
-    return { items, stopRecursion: !!textPayload };
+    if (preserveInlineVisualSurfaces) {
+      items.push(...inlineVisualTextItems);
+    }
+
+    const inlineVisualJob = inlineVisualArtifacts.jobs.length
+      ? async () => {
+          for (const job of inlineVisualArtifacts.jobs) await job();
+        }
+      : null;
+    return {
+      items,
+      job: inlineVisualJob,
+      stopRecursion: !!textPayload || preserveInlineVisualSurfaces,
+    };
   }
 
   function isComplexHierarchy(root) {
@@ -70819,7 +72252,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-03-compact-tag-nowrap-v71';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-08-shadow-direction-fix-v104';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

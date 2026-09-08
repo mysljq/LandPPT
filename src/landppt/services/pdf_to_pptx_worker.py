@@ -1,4 +1,4 @@
-﻿"""
+"""
 Worker entrypoint to run PDF->PPTX conversion in a separate process.
 """
 

@@ -1,0 +1,2 @@
+const fs=require('fs'),JSZip=require('jszip');
+(async()=>{const z=await JSZip.loadAsync(fs.readFileSync('tmp/inner-latest.pptx'));const x=await z.file('ppt/slides/slide1.xml').async('string');for(const m of x.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)){if(m[0].includes('CSS inset shadow surface')){console.log(m[0].match(/name="[^"]+"/)[0]);console.log([...m[0].matchAll(/<a:innerShdw[\s\S]*?<\/a:innerShdw>/g)].map(v=>v[0]).join('\n'));}}})();

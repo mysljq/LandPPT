@@ -1,4 +1,4 @@
-﻿import { apiClient } from '../modules/apiClient.js';
+import { apiClient } from '../modules/apiClient.js';
 import { debounce, formatBytes } from '../modules/domUtils.js';
 import { emit } from '../modules/eventBus.js';
 
