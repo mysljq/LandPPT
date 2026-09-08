@@ -418,8 +418,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260908-shadow-direction-fix-v104';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-08-shadow-direction-fix-v104';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260908-gradient-text-flex-v105';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-08-gradient-text-flex-v105';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_font_family_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-08-shadow-direction-fix-v104"
+EXPECTED_PATCH_VERSION = "2026-09-08-gradient-text-flex-v105"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 
 

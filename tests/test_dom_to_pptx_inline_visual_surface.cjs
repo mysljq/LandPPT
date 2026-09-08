@@ -62,7 +62,7 @@ async function main() {
       return { data: btoa(binary), version: domToPptx.__landpptPatchVersion };
     });
 
-    assert.equal(result.version, '2026-09-08-shadow-direction-fix-v104');
+    assert.equal(result.version, '2026-09-08-gradient-text-flex-v105');
     const zip = await JSZip.loadAsync(Buffer.from(result.data, 'base64'));
     const slideName = Object.keys(zip.files).find((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
     const xml = await zip.file(slideName).async('string');

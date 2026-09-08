@@ -12958,6 +12958,7 @@
     // Color / Font / Highlight / Outline are children of <a:rPr>, so add them now before closing the runProperties tag
     if (
       opts.color ||
+      opts.textGradient ||
       opts.fontFace ||
       opts.eaFontFace ||
       opts.latinFontFace ||
@@ -12970,7 +12971,9 @@
       if (opts.outline && typeof opts.outline === 'object') {
         runProps += "<a:ln w=\"".concat(valToPts(opts.outline.size || 0.75), "\">").concat(genXmlColorSelection({ color: opts.outline.color || 'FFFFFF', transparency: opts.outline.transparency }), "</a:ln>");
       }
-      if (opts.color)
+      if (opts.textGradient)
+        runProps += genXmlColorSelection(opts.textGradient);
+      else if (opts.color)
         runProps += genXmlColorSelection({ color: opts.color, transparency: opts.transparency });
       // Text effects belong to the glyph run, not the textbox's background.
       // CT_TextCharacterProperties orders effects before highlight/font nodes.
@@ -63388,30 +63391,32 @@
     ];
   }
 
-  /** Accounts for empty visual pseudo-elements that participate in a flex row before text. */
-  function getLeadingFlexPseudoInset(node, style, scale) {
-    if (!node || !node.ownerDocument || !String(style.display || '').includes('flex')) return 0;
+  /** Accounts for empty visual pseudo-elements occupying either side of flex text. */
+  function getFlexPseudoInsets(node, style, scale) {
+    if (!node || !node.ownerDocument || !String(style.display || '').includes('flex')) return [0, 0];
     const direction = String(style.flexDirection || 'row').toLowerCase();
-    if (direction === 'row-reverse' || direction.startsWith('column')) return 0;
-    let pseudo;
-    try {
-      pseudo = node.ownerDocument.defaultView.getComputedStyle(node, '::before');
-    } catch (_) {
-      return 0;
-    }
-    if (!pseudo || pseudo.display === 'none' || pseudo.visibility === 'hidden') return 0;
-    if (decodePseudoContentValue(pseudo.content)) return 0;
-    if (/^(?:absolute|fixed)$/.test(String(pseudo.position || '').toLowerCase())) return 0;
-    const width = parseFloat(pseudo.width);
-    if (!Number.isFinite(width) || width <= 0) return 0;
-    const borderWidth =
-      (parseFloat(pseudo.borderLeftWidth) || 0) + (parseFloat(pseudo.borderRightWidth) || 0);
-    const renderedWidth =
-      String(pseudo.boxSizing || '').toLowerCase() === 'border-box' ? width : width + borderWidth;
-    let gap = parseFloat(style.columnGap);
-    if (!Number.isFinite(gap)) gap = parseFloat(style.gap);
-    if (!Number.isFinite(gap)) gap = 0;
-    return (renderedWidth + gap) * 0.75 * scale;
+    if (direction.startsWith('column')) return [0, 0];
+    const measure = (selector) => {
+      let pseudo;
+      try { pseudo = node.ownerDocument.defaultView.getComputedStyle(node, selector); }
+      catch (_) { return 0; }
+      if (!pseudo || pseudo.display === 'none' || pseudo.visibility === 'hidden') return 0;
+      if (decodePseudoContentValue(pseudo.content)) return 0;
+      if (/^(?:absolute|fixed)$/.test(String(pseudo.position || '').toLowerCase())) return 0;
+      const width = parseFloat(pseudo.width);
+      if (!Number.isFinite(width) || width <= 0) return 0;
+      const borderWidth =
+        (parseFloat(pseudo.borderLeftWidth) || 0) + (parseFloat(pseudo.borderRightWidth) || 0);
+      const renderedWidth = String(pseudo.boxSizing || '').toLowerCase() === 'border-box'
+        ? width : width + borderWidth;
+      let gap = parseFloat(style.columnGap);
+      if (!Number.isFinite(gap)) gap = parseFloat(style.gap);
+      if (!Number.isFinite(gap)) gap = 0;
+      return (renderedWidth + gap) * 0.75 * scale;
+    };
+    const before = measure('::before');
+    const after = measure('::after');
+    return direction === 'row-reverse' ? [after, before] : [before, after];
   }
 
   /** Counts browser-laid-out text lines, grouping multiple inline Range rects by baseline. */
@@ -64570,6 +64575,9 @@
     let colorObj = parseColor(style.color);
 
     const bgClip = style.webkitBackgroundClip || style.backgroundClip;
+    const textGradient = bgClip === 'text'
+      ? parseNativeLinearGradient(String(style.backgroundImage || ''))
+      : null;
     if (colorObj.opacity === 0 && bgClip === 'text') {
       const fallback = getGradientFallbackColor(style.backgroundImage);
       if (fallback) colorObj = parseColor(fallback);
@@ -64623,7 +64631,8 @@
       : 0;
 
     return {
-      ...(isEffectivelyHiddenText ? { hidden: true } : { color: colorObj.hex || '000000' }),
+      ...(textGradient ? { textGradient } :
+        (isEffectivelyHiddenText ? { hidden: true } : { color: colorObj.hex || '000000' })),
       ...(textTransparency > 0.1 ? { transparency: textTransparency } : {}),
       ...(primaryFontFace ? { fontFace: primaryFontFace } : {}),
       ...(exportEastAsiaFontFace && exportEastAsiaFontFace !== primaryFontFace
@@ -71702,7 +71711,9 @@
         if (Math.abs(pt - pb) < 2 && bgColorObj.hex) valign = 'middle';
 
         let margin = getTextBoxMargin(style, config.scale);
-        margin[0] += getLeadingFlexPseudoInset(node, style, config.scale);
+        const flexPseudoInsets = getFlexPseudoInsets(node, style, config.scale);
+        margin[0] += flexPseudoInsets[0];
+        margin[1] += flexPseudoInsets[1];
         // Centering controls glyph placement inside the CSS content box; it
         // must not erase the element's padding. Keeping the insets is also
         // important after shapes are wrapped in a DrawingML group, because
@@ -72252,7 +72263,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-08-shadow-direction-fix-v104';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-08-gradient-text-flex-v105';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
