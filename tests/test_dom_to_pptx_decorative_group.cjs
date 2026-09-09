@@ -5,7 +5,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { chromium } = require('playwright');
 const JSZip = require('jszip');
 
-const VERSION = '2026-09-08-gradient-text-flex-v105';
+const VERSION = '2026-09-09-inline-inset-native-v109';
 
 function readPage25() {
   const db = new DatabaseSync(path.join(process.cwd(), 'landppt.db'), { readOnly: true });

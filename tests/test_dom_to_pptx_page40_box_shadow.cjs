@@ -5,9 +5,10 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { chromium } = require('playwright');
 const JSZip = require('jszip');
+const { PNG } = require('pngjs');
 
 const PROJECT = '542faf1c-ba6e-4386-9be1-a79d4cf4cb80';
-const VERSION = '2026-09-08-gradient-text-flex-v105';
+const VERSION = '2026-09-09-inline-inset-native-v109';
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
@@ -71,23 +72,38 @@ async function main() {
       'shadow helper elements were not retained inside a PPT group');
     assert.ok(xml.includes('AEA394') && xml.includes('FFFDF7'),
       'the dark/light neumorphic outer-shadow colors were not preserved');
-    assert.ok((xml.match(/<a:innerShdw/g) || []).length >= 14, 'missing native inner shadows');
-    const insetSurfaces = (xml.match(/<p:sp>[\s\S]*?<\/p:sp>/g) || [])
-      .filter((shape) => shape.includes('CSS inset shadow surface'));
-    assert.equal(insetSurfaces.length, result.stats.inset,
-      'each inset owner must have one surface, not mutually occluding duplicates');
-    for (const shape of insetSurfaces) {
-      assert.match(shape, /<a:effectDag type="tree">/, 'missing sequential native effect tree');
-      assert.equal((shape.match(/<a:innerShdw/g) || []).length, 2,
-        'both dark and light inset layers must be present');
-      assert.match(shape, /<a:blend blend="screen"><a:cont type="tree"><a:innerShdw/,
-        'the light inset layer must be composited instead of being discarded by a serial effect tree');
-      assert.ok(shape.indexOf('AEA394') < shape.indexOf('FFFDF7'),
-        'CSS inset layer order must be retained');
-      assert.match(shape, /<a:innerShdw[^>]*dir="(13500000|22500000)"/,
+    assert.ok((xml.match(/<a:innerShdw/g) || []).length >= result.stats.inset, 'missing native inner shadows');
+    const allShapes = xml.match(/<p:sp>[\s\S]*?<\/p:sp>/g) || [];
+    const compositeInsetShapes = allShapes.filter((shape) => shape.includes('CSS inset shadow composite'));
+    const fallbackInsetShapes = allShapes.filter((shape) => shape.includes('CSS inset shadow layer'));
+    assert.ok(compositeInsetShapes.length >= 5,
+      'opaque multi-inset surfaces should use a picture-fill/native-shadow composite');
+    assert.equal(compositeInsetShapes.reduce((count, shape) => count + (shape.match(/<a:innerShdw/g) || []).length, 0), compositeInsetShapes.length,
+      'each inset composite must contain exactly one native inner shadow');
+    for (const shape of compositeInsetShapes) {
+      assert.match(shape, /<a:blipFill[^>]*>[\s\S]*?<a:blip r:embed="rId\d+"\/>/,
+        'the baked bright inset must be the native shape picture fill');
+      assert.doesNotMatch(shape, /<a:alphaModFix|<a:solidFill>/,
+        'the composite source fill must be opaque and must not use a translucent solid surface');
+    }
+    const pictureFillPngs = await Promise.all(Object.values(zip.files)
+      .filter((entry) => /^ppt\/media\/shape-fill-.*\.png$/i.test(entry.name))
+      .map(async (entry) => PNG.sync.read(await entry.async('nodebuffer'))));
+    assert.ok(pictureFillPngs.length >= 5, 'the baked bright inset picture fills are missing');
+    for (const png of pictureFillPngs) {
+      for (let offset = 3; offset < png.data.length; offset += 4) {
+        assert.equal(png.data[offset], 255, 'inset picture fills must be fully opaque at every pixel');
+      }
+    }
+    assert.equal(fallbackInsetShapes.reduce((count, shape) => count + (shape.match(/<a:innerShdw/g) || []).length, 0), fallbackInsetShapes.length,
+      'each semi-transparent fallback shape must contain exactly one native inner shadow');
+    assert.equal((xml.match(/<a:effectDag/g) || []).length, 0,
+      'multi-layer inset shadows must not use an Office effect DAG');
+    assert.ok(compositeInsetShapes.some((shape) => shape.includes('AEA394')),
+      'the dark inset layer must remain the editable native effect');
+    for (const shape of [...compositeInsetShapes, ...fallbackInsetShapes]) {
+      assert.match(shape, /<a:innerShdw[^>]*dir="(?:13500000|2700000|22500000|4500000|31500000)"/,
         'inner shadow direction must account for CSS inset clipping semantics');
-      const fill = shape.match(/<a:solidFill>[\s\S]*?<\/a:solidFill>/)?.[0];
-      assert.ok(fill && !fill.includes('val="1000"'), '99%-transparent inset surface would erase its shadow');
       for (const effect of shape.match(/<a:innerShdw\b[^>]*>/g) || []) {
         assert.doesNotMatch(effect, /rotWithShape|sx=|sy=|algn=/, 'innerShdw contains invalid outer-only attributes');
       }

@@ -9261,7 +9261,26 @@
       options.line.beginArrowType = options.lineHead; // @deprecated (part of `ShapeLineProps` now)
     if (typeof options.lineTail === 'string')
       options.line.endArrowType = options.lineTail; // @deprecated (part of `ShapeLineProps` now)
-    // 4: Create hyperlink rels
+    // 4: Register an optional picture/texture fill for the shape. PowerPoint
+    // supports a native blipFill directly on p:spPr; keeping the bitmap there
+    // (instead of adding a separate picture object) preserves the editable
+    // shape geometry and lets a single native inner shadow remain attached to
+    // the same object.
+    if (typeof options.pictureFillData === 'string' && options.pictureFillData.includes('base64,')) {
+      const mimeMatch = options.pictureFillData.match(/^data:image\/(png|jpeg|jpg);base64,/i);
+      const pictureExtn = mimeMatch ? (mimeMatch[1].toLowerCase() === 'jpeg' ? 'jpg' : mimeMatch[1].toLowerCase()) : 'png';
+      const pictureRelId = getNewRelId(target);
+      target._relsMedia.push({
+        path: `preencoded-shape-fill-${pictureRelId}.${pictureExtn}`,
+        type: `image/${pictureExtn === 'jpg' ? 'jpeg' : pictureExtn}`,
+        extn: pictureExtn,
+        data: options.pictureFillData,
+        rId: pictureRelId,
+        Target: `../media/shape-fill-${target._slideNum}-${target._relsMedia.length + 1}.${pictureExtn}`,
+      });
+      newObject.pictureFillRid = pictureRelId;
+    }
+    // 5: Create hyperlink rels
     createHyperlinkRels(target, newObject);
     // LAST: Add object to slide
     target._slideObjects.push(newObject);
@@ -12469,8 +12488,16 @@
             }
             strSlideXml += '</a:avLst></a:prstGeom>';
           }
-          // Option: FILL
-          strSlideXml += slideItemObj.options.fill ? genXmlColorSelection(slideItemObj.options.fill) : '<a:noFill/>';
+          // Option: FILL. A picture fill is deliberately emitted on the shape
+          // itself rather than as a sibling p:pic so the fill is clipped by the
+          // native round-rect/ellipse/custom geometry and remains one editable
+          // PowerPoint object with its shadow.
+          if (slideItemObj.pictureFillRid) {
+            strSlideXml += `<a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="rId${slideItemObj.pictureFillRid}"/><a:srcRect/><a:stretch><a:fillRect/></a:stretch></a:blipFill>`;
+          }
+          else {
+            strSlideXml += slideItemObj.options.fill ? genXmlColorSelection(slideItemObj.options.fill) : '<a:noFill/>';
+          }
           // shape Type: LINE: line color
           if (slideItemObj.options.line) {
             strSlideXml += slideItemObj.options.line.width ? "<a:ln w=\"".concat(valToPts(slideItemObj.options.line.width), "\">") : '<a:ln>';
@@ -12486,25 +12513,7 @@
             strSlideXml += '</a:ln>';
           }
           // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
-          if (slideItemObj.options.nativeInnerShadows?.length) {
-            // Each CSS inset layer must be evaluated from the source surface.
-            // Consecutive innerShdw children form a serial pipeline in Office,
-            // so only one direction survives visually. Explicit blend nodes
-            // preserve every dark/light layer in the final native effect.
-            strSlideXml += '<a:effectDag type="tree">';
-            const nativeInnerEffects = slideItemObj.options.nativeInnerShadows.map((inner) =>
-              createShadowElement(inner, DEF_SHAPE_SHADOW)
-                .replace(/^<a:effectLst>|<\/a:effectLst>$/g, '')
-            );
-            strSlideXml += nativeInnerEffects[0];
-            for (let nativeInnerIndex = 1; nativeInnerIndex < nativeInnerEffects.length; nativeInnerIndex++) {
-              const blendMode = slideItemObj.options.nativeInnerShadows[nativeInnerIndex].blendMode || 'over';
-              strSlideXml += `<a:blend blend="${blendMode}"><a:cont type="tree">`;
-              strSlideXml += nativeInnerEffects[nativeInnerIndex];
-              strSlideXml += '</a:cont></a:blend>';
-            }
-            strSlideXml += '</a:effectDag>';
-          } else if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
+          if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
             slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
             slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
             slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
@@ -65622,6 +65631,58 @@
     });
   }
 
+  function getShadowColorLuminance(color) {
+    const [r, g, b] = gradientHexToRgb(color).map((channel) => channel / 255);
+    const linear = [r, g, b].map((channel) =>
+      channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4)
+    );
+    return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+  }
+
+  /**
+   * Paints the non-native inset-shadow layers into an opaque bitmap. The base
+   * rectangle intentionally covers the complete raster: transparency is not
+   * used to combine the bright and dark surfaces, so their colors cannot be
+   * altered by alpha stacking in Office. The receiving PowerPoint shape clips
+   * this bitmap to its own native geometry.
+   */
+  function generateOpaqueInsetShadowFillSvg(width, height, style, layers, fillColor) {
+    if (!isRenderableSvgSize(width, height) || !style || !Array.isArray(layers) || !layers.length || !fillColor) return null;
+    const corners = resolveCssCornerRadii(style, width, height);
+    const ownerPath = roundedBoxSvgPath(0, 0, width, height, corners);
+    const filterParts = [
+      '<feComponentTransfer in="SourceAlpha" result="landpptInverseAlpha"><feFuncA type="table" tableValues="1 0"/></feComponentTransfer>',
+    ];
+    const mergeNodes = ['<feMergeNode in="SourceGraphic"/>'];
+    layers.forEach((layer, index) => {
+      const spread = Number(layer.spread) || 0;
+      const spreadInput = spread
+        ? `landpptSpread${index}`
+        : 'landpptInverseAlpha';
+      if (spread) {
+        filterParts.push(
+          `<feMorphology in="landpptInverseAlpha" operator="${spread > 0 ? 'dilate' : 'erode'}" radius="${Math.abs(spread)}" result="${spreadInput}"/>`
+        );
+      }
+      filterParts.push(
+        `<feGaussianBlur in="${spreadInput}" stdDeviation="${Math.max(0.01, (Number(layer.blur) || 0) / 2)}" result="landpptBlur${index}"/>`,
+        `<feOffset in="landpptBlur${index}" dx="${Number(layer.dx) || 0}" dy="${Number(layer.dy) || 0}" result="landpptOffset${index}"/>`,
+        `<feFlood flood-color="#${layer.color}" flood-opacity="${Math.max(0, Math.min(1, Number(layer.opacity) || 0))}" result="landpptColor${index}"/>`,
+        `<feComposite in="landpptColor${index}" in2="landpptOffset${index}" operator="in" result="landpptColored${index}"/>`,
+        `<feComposite in="landpptColored${index}" in2="SourceAlpha" operator="in" result="landpptInset${index}"/>`
+      );
+      mergeNodes.push(`<feMergeNode in="landpptInset${index}"/>`);
+    });
+    filterParts.push(`<feMerge>${mergeNodes.join('')}</feMerge>`);
+    return encodeSvgDataUri(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
+      `<defs><filter id="landpptInsetComposite" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">${filterParts.join('')}</filter></defs>` +
+      `<rect width="${width}" height="${height}" fill="#${fillColor}"/>` +
+      `<path d="${ownerPath}" fill="#${fillColor}" filter="url(#landpptInsetComposite)"/>` +
+      '</svg>'
+    );
+  }
+
   function createLayeredInnerShadowShapeItems(
     layers,
     shapeType,
@@ -65630,48 +65691,109 @@
     effectiveOpacity,
     zIndex,
     domOrder,
-    fill
+    fill,
+    style,
+    widthPx,
+    heightPx
   ) {
     if (!Array.isArray(layers) || !shapeType || !shapeOptions || !fill) return [];
     const insetLayers = layers.filter((layer) => layer.inset);
     if (!insetLayers.length) return [];
-    const fillHex = String(fill.color || '').replace(/^#/, '').toUpperCase();
-    const fillChannels = /^[0-9A-F]{6}$/.test(fillHex)
-      ? [0, 2, 4].map((offset) => parseInt(fillHex.slice(offset, offset + 2), 16))
-      : [128, 128, 128];
-    const fillLuminance = fillChannels[0] * 0.2126 + fillChannels[1] * 0.7152 + fillChannels[2] * 0.0722;
-    const nativeInnerShadows = insetLayers.map((layer, index) => {
+
+    const makeNativeItem = (layer, index, itemFill, objectName) => {
       // CSS inset shadows expose the clipped side opposite to the offset;
       // DrawingML innerShdw.dir describes the visible side itself.
       let angle = Math.atan2(layer.dy, layer.dx) * 180 / Math.PI + 180;
       angle = ((angle % 360) + 360) % 360;
-      const shadowHex = String(layer.color || '').replace(/^#/, '').toUpperCase();
-      const shadowChannels = /^[0-9A-F]{6}$/.test(shadowHex)
-        ? [0, 2, 4].map((offset) => parseInt(shadowHex.slice(offset, offset + 2), 16))
-        : [0, 0, 0];
-      const shadowLuminance = shadowChannels[0] * 0.2126 + shadowChannels[1] * 0.7152 + shadowChannels[2] * 0.0722;
       return {
-        type: 'inner', color: layer.color,
-        opacity: Math.max(0, Math.min(1, layer.opacity)),
-        blur: Math.max(0, layer.blur * 0.75 * scale),
-        offset: Math.hypot(layer.dx, layer.dy) * 0.75 * scale,
-        angle,
-        blendMode: index === 0 ? undefined : (shadowLuminance >= fillLuminance ? 'screen' : 'mult'),
-      };
-    });
-    return [{
         type: 'shape',
         zIndex,
-        domOrder: domOrder - 0.00001,
+        domOrder: domOrder - 0.0002 + index / 100000,
         shapeType,
         options: {
           ...shapeOptions,
-          objectName: `CSS inset shadow surface ${domOrder}`,
-          fill: { ...fill, transparency: 100 - (100 - (fill.transparency || 0)) * effectiveOpacity },
+          objectName,
+          fill: itemFill,
           line: { type: 'none' },
-          nativeInnerShadows,
+          shadow: {
+            type: 'inner',
+            color: layer.color,
+            opacity: Math.max(0, Math.min(1, layer.opacity * effectiveOpacity)),
+            blur: Math.max(0, layer.blur * 0.75 * scale),
+            offset: Math.hypot(layer.dx, layer.dy) * 0.75 * scale,
+            angle,
+            rotateWithShape: true,
+          },
         },
-      }];
+      };
+    };
+
+    const fillTransparency = Math.max(0, Math.min(100, Number(fill.transparency) || 0));
+    const canUseOpaquePictureComposite =
+      insetLayers.length > 1 &&
+      fill.color &&
+      fillTransparency <= 0.01 &&
+      effectiveOpacity >= 0.999 &&
+      isRenderableSvgSize(widthPx, heightPx) &&
+      style;
+
+    if (canUseOpaquePictureComposite) {
+      const baseLuminance = getShadowColorLuminance(fill.color);
+      let nativeIndex = 0;
+      let bestDarkScore = -Infinity;
+      insetLayers.forEach((layer, index) => {
+        const luminance = getShadowColorLuminance(layer.color);
+        const darkScore = (baseLuminance - luminance) * layer.opacity;
+        if (darkScore > bestDarkScore) {
+          bestDarkScore = darkScore;
+          nativeIndex = index;
+        }
+      });
+      // If every layer is lighter than the base, retain the strongest contrast
+      // as the one native effect and bake the others into the picture fill.
+      if (bestDarkScore <= 0) {
+        let bestContrast = -Infinity;
+        insetLayers.forEach((layer, index) => {
+          const contrast = Math.abs(baseLuminance - getShadowColorLuminance(layer.color)) * layer.opacity;
+          if (contrast > bestContrast) {
+            bestContrast = contrast;
+            nativeIndex = index;
+          }
+        });
+      }
+      const nativeLayer = insetLayers[nativeIndex];
+      const bakedLayers = insetLayers.filter((_layer, index) => index !== nativeIndex);
+      const item = makeNativeItem(
+        nativeLayer,
+        0,
+        { color: fill.color, transparency: 0 },
+        `CSS inset shadow composite ${domOrder}`
+      );
+      const result = [item];
+      result.job = async () => {
+        const svgData = generateOpaqueInsetShadowFillSvg(widthPx, heightPx, style, bakedLayers, fill.color);
+        const pngData = svgData ? await rasterizeSvgDataUri(svgData, widthPx, heightPx, 3) : null;
+        if (pngData) item.options.pictureFillData = pngData;
+      };
+      return result;
+    }
+
+    // Semi-transparent surfaces cannot be baked against an unknown ancestor
+    // color. Retain the prior one-shape-per-layer fallback for those cases.
+    const orderedInsetLayers = insetLayers
+      .map((layer, index) => ({ layer, index }))
+      .sort((a, b) => (b.layer.opacity - a.layer.opacity) || (a.index - b.index))
+      .map((entry) => entry.layer);
+    return orderedInsetLayers.map((layer, index) => {
+      const requestedOpacity = Math.max(0, Math.min(1, layer.opacity * effectiveOpacity));
+      const sourceAlpha = Math.max(0.25, Math.min(1, requestedOpacity || 0.25));
+      return makeNativeItem(
+        { ...layer, opacity: requestedOpacity / Math.max(effectiveOpacity, 0.0001) / sourceAlpha },
+        index,
+        { ...fill, transparency: 100 - (100 - (fill.transparency || 0)) * sourceAlpha },
+        `CSS inset shadow layer ${domOrder} ${index}`
+      );
+    });
   }
 
   /**
@@ -67188,6 +67310,19 @@
       const hardShadow = isNonTrivialCssValue(style.boxShadow)
         ? parseHardBoxShadow(style.boxShadow)
         : null;
+      const shadowLayers = isNonTrivialCssValue(style.boxShadow)
+        ? parseCssBoxShadowLayers(style.boxShadow)
+        : [];
+      // Solid inline badges/chips with inset shadows can use the same native
+      // shape path as block surfaces. Do not send them through html2canvas just
+      // because parseHardBoxShadow intentionally ignores inset layers.
+      const hasNativeInsetShadow =
+        shadowLayers.length > 0 &&
+        shadowLayers.some((layer) => layer.inset) &&
+        shadowLayers.every((layer) => layer.inset) &&
+        !hasUnsupportedBackground;
+      const hasUnsupportedShadow =
+        isNonTrivialCssValue(style.boxShadow) && !hardShadow && !hasNativeInsetShadow;
       const borderInfo = getBorderInfo(style, config.scale);
       const hasUnsupportedCompositeBorder =
         borderInfo.type === 'composite' &&
@@ -67197,7 +67332,7 @@
       const hasUnsupportedEffect =
         hasUnsupportedBackground ||
         hasUnsupportedCompositeBorder ||
-        (isNonTrivialCssValue(style.boxShadow) && !hardShadow) ||
+        hasUnsupportedShadow ||
         isNonTrivialCssValue(style.filter) ||
         isNonTrivialCssValue(style.backdropFilter || style.webkitBackdropFilter) ||
         isNonTrivialCssValue(style.clipPath || style.webkitClipPath) ||
@@ -67277,7 +67412,25 @@
         );
         if (hardShadowItem) items.push(hardShadowItem);
 
-        if (background.hex && background.opacity > 0) {
+        const nativeInsetItems = hasNativeInsetShadow && background.hex
+          ? createLayeredInnerShadowShapeItems(
+              shadowLayers,
+              cornerGeometry.shapeType,
+              { ...baseOptions },
+              config.scale,
+              elementOpacity,
+              surfaceZ,
+              fragmentOrder,
+              { color: background.hex, transparency: (1 - background.opacity * elementOpacity) * 100 },
+              style,
+              widthPx,
+              heightPx
+            )
+          : [];
+        if (nativeInsetItems.length) items.push(...nativeInsetItems);
+        if (nativeInsetItems.job) jobs.push(nativeInsetItems.job);
+
+        if (background.hex && background.opacity > 0 && !nativeInsetItems.length) {
           items.push({
             type: 'shape',
             shapeType: cornerGeometry.shapeType,
@@ -71571,7 +71724,10 @@
             safeOpacity,
             zIndex,
             domOrder,
-            { color: bgColorObj.hex, transparency: (1 - bgColorObj.opacity) * 100 }
+            { color: bgColorObj.hex, transparency: (1 - bgColorObj.opacity) * 100 },
+            style,
+            widthPx,
+            heightPx
           )
         : [];
     const hardShadow = shadowVisual ? null : (hasShadow ? parseHardBoxShadow(shadowStr) : null);
@@ -72147,9 +72303,12 @@
       items.push(...inlineVisualTextItems);
     }
 
-    const inlineVisualJob = inlineVisualArtifacts.jobs.length
+    const renderJobs = [];
+    if (nativeLayeredInnerShadowItems.job) renderJobs.push(nativeLayeredInnerShadowItems.job);
+    renderJobs.push(...inlineVisualArtifacts.jobs);
+    const inlineVisualJob = renderJobs.length
       ? async () => {
-          for (const job of inlineVisualArtifacts.jobs) await job();
+          for (const job of renderJobs) await job();
         }
       : null;
     return {
@@ -72263,7 +72422,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-08-gradient-text-flex-v105';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-inset-native-v109';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
