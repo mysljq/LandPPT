@@ -79,7 +79,7 @@ async function main() {
   try {
     console.log('checking page 35 gradient');
     const gradient = await exportPage(browser, readSlideHtml(34), '.deco-accent');
-    assert.equal(gradient.version, '2026-09-09-inline-inset-native-v109');
+    assert.equal(gradient.version, '2026-09-09-inline-empty-leaf-v122');
     const scale = emuScale(gradient);
     const gradientShapes = [...gradient.xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)]
       .map((match) => match[0])

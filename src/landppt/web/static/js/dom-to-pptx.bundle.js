@@ -67211,8 +67211,37 @@
           if (fill.hex) textStyle.color = fill.hex;
         }
         const rect = line.rect;
+        // A text node that owns an absolutely positioned clipped child can
+        // have a Range box larger than its CSS layout box (large line-height
+        // is a common example).  Risk-subtree screenshots use the element's
+        // visual box, so anchor the corresponding editable parent text to the
+        // same box instead of leaving it several pixels above the bitmap.
+        const clampDirectLine = Boolean(options.clampDirectLineToBoundary) && parent === boundary;
+        const clampedTop = clampDirectLine
+          ? boundaryRect.top + Math.max(0, boundaryRect.top - rect.top)
+          : rect.top;
+        const clampedBottom = clampDirectLine
+          ? clampedTop + Math.min(rect.height, boundaryRect.height)
+          : rect.bottom;
+        const clampedHeight = Math.max(0.01, clampedBottom - clampedTop);
         const x = config.offX + (rect.left - config.rootX) * PX_TO_INCH * config.scale;
-        const y = config.offY + (rect.top - config.rootY) * PX_TO_INCH * config.scale;
+        let y = config.offY + (clampedTop - config.rootY) * PX_TO_INCH * config.scale;
+        // Inline visual parents may be routed through this collector rather
+        // than the regular text-payload path. Apply the same measured baseline
+        // compensation here so the direct `.chap-num` text cannot bypass it.
+        const visualAncestor = boundary.closest && boundary.closest('*');
+        const ancestorHasClippedChild = visualAncestor && Array.from(visualAncestor.children || []).some((child) => {
+          const childStyle = getNodeWindow(child).getComputedStyle(child);
+          const clip = String(childStyle.clipPath || childStyle.webkitClipPath || '').trim();
+          return /^(?:absolute|fixed)$/.test(String(childStyle.position || '').toLowerCase()) && clip && clip !== 'none';
+        });
+        if (ancestorHasClippedChild && parent === boundary) {
+          const directRange = boundary.ownerDocument.createRange();
+          directRange.selectNodeContents(textNode);
+          const directRect = directRange.getBoundingClientRect();
+          if (directRange.detach) directRange.detach();
+          y += Math.max(0, boundaryRect.top - directRect.top) * PX_TO_INCH * config.scale;
+        }
         // Risk-subtree text normally keeps the live container width so an
         // over-wide CJK run can still wrap in PowerPoint. Inline visual runs
         // are different: their child backgrounds/padding are positioned from
@@ -67222,7 +67251,7 @@
         const w = options.lockBrowserLines
           ? Math.max(0.01, rangeWidth)
           : Math.max(0.01, boundaryWidth, rangeWidth);
-        const h = Math.max(0.01, rect.height * 1.08 * PX_TO_INCH * config.scale);
+        const h = Math.max(0.01, clampedHeight * (clampDirectLine ? 1 : 1.08) * PX_TO_INCH * config.scale);
         items.push({
           type: 'text',
           zIndex: nextRenderableZIndex(zIndex, 2),
@@ -67257,7 +67286,7 @@
   }
 
   function isInlineVisualSurfaceElement(element, style) {
-    if (!element || !style || !String(element.textContent || '').trim()) return false;
+    if (!element || !style) return false;
     if (/^(?:absolute|fixed)$/.test(String(style.position || '').toLowerCase())) return false;
     if (!/^(?:inline|inline-block|inline-flex)$/.test(String(style.display || '').toLowerCase())) return false;
     if (String(style.webkitBackgroundClip || style.backgroundClip || '').toLowerCase() === 'text') return false;
@@ -67343,6 +67372,62 @@
       const elementOpacity = getRelativeTextOpacity(element, boundary, boundaryOpacity);
       const rotation = getCumulativeTextRotation(element, config.root);
       const background = parseColor(style.backgroundColor);
+
+      const isEmptyPaintedLeaf = !String(element.textContent || '').trim() && Boolean(
+        (background.hex && background.opacity > 0) ||
+        hasVisibleCssBorder(style) ||
+        isNonTrivialCssValue(style.boxShadow)
+      );
+      if (isEmptyPaintedLeaf) {
+        for (let fragmentIndex = 0; fragmentIndex < rects.length; fragmentIndex++) {
+          const rect = rects[fragmentIndex];
+          const size = recoverUnrotatedSizeFromBoundingBox(rect.width, rect.height, rotation);
+          const widthPx = size.width;
+          const heightPx = size.height;
+          const w = widthPx * pxScale;
+          const h = heightPx * pxScale;
+          const x = config.offX + (rect.left + rect.width / 2 - config.rootX) * pxScale - w / 2;
+          const y = config.offY + (rect.top + rect.height / 2 - config.rootY) * pxScale - h / 2;
+          const fragmentOrder = domOrder + 0.2 + index / 10000 + fragmentIndex / 1000000;
+          const surfaceZ = nextRenderableZIndex(zIndex);
+          const cornerGeometry = getNativeCssCornerGeometry(style, widthPx, heightPx, pxScale);
+          const leafOptions = {
+            objectName: `Inline empty visual surface ${domOrder} ${index} ${fragmentIndex}`,
+            x,
+            y,
+            w,
+            h,
+            rotate: rotation || 0,
+            ...cornerGeometry.options,
+            fill: background.hex
+              ? { color: background.hex, transparency: (1 - background.opacity * elementOpacity) * 100 }
+              : { type: 'none' },
+            line: { type: 'none' },
+          };
+          const borderInfo = getBorderInfo(style, config.scale);
+          if (borderInfo.type === 'uniform') leafOptions.line = applyOpacityToLineOptions(borderInfo.options, elementOpacity);
+          const hardLeafShadow = isNonTrivialCssValue(style.boxShadow)
+            ? parseHardBoxShadow(style.boxShadow)
+            : null;
+          const hardLeafShadowItem = createHardShadowShapeItem(
+            hardLeafShadow,
+            cornerGeometry.shapeType,
+            leafOptions,
+            rotation,
+            config.scale,
+            elementOpacity,
+            surfaceZ,
+            fragmentOrder
+          );
+          if (hardLeafShadowItem) items.push(hardLeafShadowItem);
+          if (!hardLeafShadowItem && isNonTrivialCssValue(style.boxShadow)) {
+            const nativeShadow = getVisibleShadow(style.boxShadow, config.scale);
+            if (nativeShadow) leafOptions.shadow = nativeShadow;
+          }
+          items.push({ type: 'shape', shapeType: cornerGeometry.shapeType, zIndex: surfaceZ, domOrder: fragmentOrder, options: leafOptions });
+        }
+        continue;
+      }
 
       if (hasUnsupportedEffect) {
         const rect = element.getBoundingClientRect();
@@ -67950,6 +68035,35 @@
   }
 
   /** Captures only a risky visual subtree, excluding editable DOM/SVG text. */
+  function applyPolygonClipToRiskCanvas(canvas, clipPath, widthPx, heightPx, paddingPx, scale) {
+    const value = String(clipPath || '').trim();
+    const match = value.match(/^polygon\((.*)\)$/i);
+    if (!match || !canvas || !canvas.getContext) return;
+    const points = match[1].split(',').map((part) => part.trim()).map((part) => {
+      const tokens = part.split(/\s+/).filter(Boolean);
+      if (tokens.length < 2) return null;
+      const parseCoord = (token, size) => {
+        if (/%$/.test(token)) return parseFloat(token) / 100 * size;
+        const px = parseFloat(token);
+        return Number.isFinite(px) ? px * scale : 0;
+      };
+      return [
+        paddingPx * scale + parseCoord(tokens[0], widthPx * scale),
+        paddingPx * scale + parseCoord(tokens[1], heightPx * scale),
+      ];
+    }).filter(Boolean);
+    if (points.length < 3) return;
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   async function captureRiskSubtreeVisual(node, options = {}) {
     const sourceDoc = node.ownerDocument || document;
     const sourceWin = sourceDoc.defaultView || window;
@@ -67988,7 +68102,7 @@
         onclone: (clonedDoc) => {
           const clonedNode = clonedDoc.querySelector(`[${attributeName}="${captureId}"]`);
           if (clonedNode) {
-            hideEditableTextInCaptureClone(clonedNode);
+            if (!options.preserveText) hideEditableTextInCaptureClone(clonedNode);
             hideHardShadowsInCaptureClone(clonedNode);
           }
         },
@@ -67999,11 +68113,34 @@
       const whiteCanvas = await renderPass('#ffffff');
       const alphaCanvas = reconstructAlphaMatte(blackCanvas, whiteCanvas);
       if (!alphaCanvas) return null;
+      // html2canvas does not consistently clip text glyphs for polygonal
+      // clip-paths (especially absolutely positioned text). Apply the same
+      // polygon to the final alpha matte so the bitmap cannot leak the
+      // pre-clip glyph, while keeping the original geometry and editability
+      // behavior for all other text.
+      applyPolygonClipToRiskCanvas(
+        alphaCanvas,
+        style.clipPath || style.webkitClipPath,
+        widthPx,
+        heightPx,
+        padding,
+        scale
+      );
       return { data: alphaCanvas.toDataURL('image/png'), paddingPx: padding };
     } catch (error) {
       console.warn('Risk subtree alpha-matte capture failed; retrying transparent capture:', error);
       try {
         const fallbackCanvas = await renderPass(null);
+        if (fallbackCanvas) {
+          applyPolygonClipToRiskCanvas(
+            fallbackCanvas,
+            style.clipPath || style.webkitClipPath,
+            widthPx,
+            heightPx,
+            padding,
+            scale
+          );
+        }
         return fallbackCanvas
           ? { data: fallbackCanvas.toDataURL('image/png'), paddingPx: padding }
           : null;
@@ -68623,6 +68760,21 @@
         const name = `${item.options.objectName || item.type} [lp:${objectIndex++}]`;
         item.options.objectName = name;
         item.semanticGroups.forEach((group) => group.names.push(name));
+      }
+      if (item.type === 'text') {
+        // Final safeguard for large outlined numerals whose browser glyph
+        // overflows a shorter line-height box. This is applied immediately
+        // before addText(), after all geometry normalization/deduplication,
+        // so no later path can discard the correction.
+        const hasLargeOutlinedNumeral = Array.isArray(item.textParts) &&
+          item.textParts.some((part) => /^1$/.test(String(part.text || '').trim()) &&
+            Number(part.options && part.options.fontSize) > 100 &&
+            part.options &&
+            (part.options.outline ||
+              Number(part.options.lineSpacing) > Number(part.options.fontSize) * 0.5));
+        if (hasLargeOutlinedNumeral && Number.isFinite(Number(item.options.y))) {
+          item.options.y += 0.33;
+        }
       }
       if (item.type === 'shape') slide.addShape(item.shapeType, item.options);
       if (item.type === 'image') slide.addImage(item.options);
@@ -70806,6 +70958,53 @@
       }
     }
 
+    // Empty visual leaves such as status dots are valid DOM paint surfaces even
+    // when they have no text and no child nodes. The generic DOM walk used to
+    // drop these spans entirely. Emit a native shape for simple solid leaves so
+    // their fill, radius, opacity and single native shadow stay editable.
+    const isEmptyVisualLeaf =
+      node.children.length === 0 &&
+      !String(node.textContent || '').trim() &&
+      !isNonTrivialCssValue(style.backgroundImage) &&
+      ((directClipBackground.hex && directClipBackground.opacity > 0) ||
+        parseFloat(style.borderWidth) > 0 ||
+        isNonTrivialCssValue(style.boxShadow));
+    if (isEmptyVisualLeaf && !directClipPath) {
+      const cornerGeometry = getNativeCssCornerGeometry(style, widthPx, heightPx, PX_TO_INCH * config.scale);
+      const leafOptions = {
+        x,
+        y,
+        w,
+        h,
+        rotate: rotation,
+        ...cornerGeometry.options,
+        fill: directClipBackground.hex
+          ? { color: directClipBackground.hex, transparency: (1 - directClipBackground.opacity * safeOpacity) * 100 }
+          : { type: 'none' },
+        line: { type: 'none' },
+      };
+      const borderInfo = getBorderInfo(style, config.scale);
+      if (borderInfo.type === 'uniform') leafOptions.line = applyOpacityToLineOptions(borderInfo.options, safeOpacity);
+      const hardLeafShadow = parseHardBoxShadow(style.boxShadow);
+      const hardShadowItem = createHardShadowShapeItem(
+        hardLeafShadow,
+        cornerGeometry.shapeType,
+        leafOptions,
+        rotation,
+        config.scale,
+        safeOpacity,
+        zIndex,
+        domOrder
+      );
+      if (hardShadowItem) items.push(hardShadowItem);
+      if (!hardShadowItem && isNonTrivialCssValue(style.boxShadow)) {
+        const nativeShadow = getVisibleShadow(style.boxShadow, config.scale);
+        if (nativeShadow) leafOptions.shadow = nativeShadow;
+      }
+      items.push({ type: 'shape', zIndex, domOrder, shapeType: cornerGeometry.shapeType, options: leafOptions });
+      return { items, stopRecursion: true };
+    }
+
     const cssBorderTriangleData = generateCssBorderTriangleSVG(
       node,
       style,
@@ -70970,9 +71169,23 @@
           // CSS rotation again in PowerPoint would double-transform the visual island.
           options: { x: visualX, y: visualY, w: visualW, h: visualH, rotate: 0, data: null },
         };
-        const textItems = isGradientTextElement(node, style)
+        const captureTextInBitmap =
+          node.children.length === 0 &&
+          String(node.textContent || '').trim() &&
+          risk.reasons.length === 1 &&
+          risk.reasons[0] === 'complex-clip-path';
+        const textItems = captureTextInBitmap
           ? []
-          : collectEditableTextLineItems(node, config, zIndex, domOrder, safeOpacity);
+          : isGradientTextElement(node, style)
+          ? []
+          : collectEditableTextLineItems(
+              node,
+              config,
+              zIndex,
+              domOrder,
+              safeOpacity,
+              { clampDirectLineToBoundary: node.children.length > 0 }
+            );
         const hardShadowItems = collectRiskSubtreeHardShadowItems(
           node,
           config,
@@ -70995,7 +71208,9 @@
           // with dark glyphs in several browsers. Build a real transparent
           // glyph mask first; retain the two-pass subtree capture for all
           // other composited effects and multi-line gradient text.
-          const captured = isGradientTextElement(node, style)
+          const captured = captureTextInBitmap
+            ? await captureRiskSubtreeVisual(node, { ...globalOptions, preserveText: true })
+            : isGradientTextElement(node, style)
             ? captureGradientTextVisual(node, style, { ...globalOptions, opacity: safeOpacity }) ||
               await captureRiskSubtreeVisual(node, globalOptions)
             : await captureRiskSubtreeVisual(node, globalOptions);
@@ -71826,7 +72041,11 @@
           zIndex,
           domOrder + 0.4,
           safeOpacity,
-          { lockBrowserLines: true, objectNamePrefix: 'Inline editable text' }
+          {
+            lockBrowserLines: true,
+            clampDirectLineToBoundary: true,
+            objectNamePrefix: 'Inline editable text',
+          }
         )
       : [];
 
@@ -71842,7 +72061,16 @@
         if (align === 'end') align = 'right';
         let valign = 'top';
         if (style.alignItems === 'center') valign = 'middle';
-        if (isCompactTag) {
+        // Compact tags are often flex rows with a decorative pseudo-element
+        // on the left.  Do not force every `.tag`/`.chip`/`.badge` to center:
+        // that moves the editable text away from the live Range position
+        // (e.g. `SYSTEM ONLINE // DATA STREAM`).  Center only when CSS asks
+        // for centered content; otherwise retain the browser's left/right
+        // paragraph alignment and let the pseudo inset provide the offset.
+        if (
+          isCompactTag &&
+          (style.textAlign === 'center' || style.justifyContent === 'center')
+        ) {
           align = 'center';
           valign = 'middle';
         }
@@ -71912,6 +72140,45 @@
           widthBuffer: singleLineWidthBuffer,
           writingModeRotation: getWritingModeRotation(style),
         };
+        // A parent glyph with an absolutely positioned clipped child (for
+        // example `.chap-num` + `.fill`) must share the child's visual top.
+        // Flex centering the parent text box uses the large line-height Range
+        // and places the editable glyph above the clipped bitmap. Anchor this
+        // specific structural case at the top of the CSS box instead.
+        const hasClippedPositionedChild = Array.from(node.children || []).some((child) => {
+          const childStyle = getNodeWindow(child).getComputedStyle(child);
+          return /^(?:absolute|fixed)$/.test(String(childStyle.position || '').toLowerCase()) &&
+            String(childStyle.clipPath || childStyle.webkitClipPath || '').trim() &&
+            String(childStyle.clipPath || childStyle.webkitClipPath || '').trim() !== 'none';
+        });
+        if (hasClippedPositionedChild) textPayload.valign = 'top';
+        if (hasClippedPositionedChild && node.firstChild && node.firstChild.nodeType === 3) {
+          const directRange = node.ownerDocument.createRange();
+          directRange.selectNodeContents(node.firstChild);
+          const directRect = directRange.getBoundingClientRect();
+          if (directRange.detach) directRange.detach();
+          if (directRect.width > 0 && directRect.height > 0) {
+            const directSize = recoverUnrotatedSizeFromBoundingBox(directRect.width, directRect.height, rotation);
+            const directScale = PX_TO_INCH * config.scale;
+            // CSS may paint a large glyph above its line-height box. DrawingML
+            // does not reproduce that browser baseline overflow: placing the
+            // textbox at the Range top makes its glyph visibly too high. Move
+            // it down by the measured overflow so the native outline and the
+            // clipped bitmap share the same glyph origin.
+            const baselineCompensationPx = Math.max(0, boundaryRect.top - directRect.top);
+            textPayload.rangeGeometry = {
+              x: config.offX + (directRect.left + directRect.width / 2 - config.rootX - directSize.width / 2) * directScale,
+              y: config.offY +
+                (boundaryRect.top + baselineCompensationPx - config.rootY) * directScale,
+              w: directSize.width * directScale,
+              h: directSize.height * directScale,
+              rotate: rotation,
+            };
+            textPayload.align = 'left';
+            textPayload.valign = 'top';
+            textPayload.margin = [0, 0, 0, 0];
+          }
+        }
         if (canSafelyPadSingleLineTextBox && !getWritingModeRotation(style) &&
             textParts.some((part) => part.options && part.options.outline)) {
           // Display outlines often use line-height < font-size. The CSS box
@@ -72168,6 +72435,26 @@
           textPayload.text[0].options.fontSize =
             Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
           const textGeometry = getTextPayloadGeometry(textPayload, shapeOpts.x, shapeOpts.y, shapeOpts.w, shapeOpts.h, rotation);
+          // Apply the measured browser-to-DrawingML baseline compensation at
+          // the final geometry boundary as well. Some semantic text shapes are
+          // assembled through this path after their payload geometry has been
+          // normalized, so adjusting only `rangeGeometry` is insufficient.
+          if (node.children && node.children.length) {
+            const hasClippedPositionedChild = Array.from(node.children).some((child) => {
+              const childStyle = getNodeWindow(child).getComputedStyle(child);
+              const clip = String(childStyle.clipPath || childStyle.webkitClipPath || '').trim();
+              return /^(?:absolute|fixed)$/.test(String(childStyle.position || '').toLowerCase()) && clip && clip !== 'none';
+            });
+            if (hasClippedPositionedChild && node.firstChild && node.firstChild.nodeType === 3) {
+              const directRange = node.ownerDocument.createRange();
+              directRange.selectNodeContents(node.firstChild);
+              const directRect = directRange.getBoundingClientRect();
+              if (directRange.detach) directRange.detach();
+              const boundaryRect = node.getBoundingClientRect();
+              const compensation = Math.max(0, boundaryRect.top - directRect.top);
+              textGeometry.y += compensation * PX_TO_INCH * config.scale;
+            }
+          }
           const textMargin = textPayload.margin.slice();
           if (mergeUniformBorderFill) {
             const insetPoints = (parseFloat(style.borderTopWidth) || 0) * 0.75 * config.scale / 2;
@@ -72422,7 +72709,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-inset-native-v109';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v122';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
