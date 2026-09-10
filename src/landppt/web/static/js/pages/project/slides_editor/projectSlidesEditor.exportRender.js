@@ -418,8 +418,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260909-inline-empty-leaf-v122';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v122';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260909-inline-empty-leaf-v126';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v126';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

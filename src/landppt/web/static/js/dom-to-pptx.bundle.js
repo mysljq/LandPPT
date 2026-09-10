@@ -65229,6 +65229,17 @@
     return Math.round(Math.atan2(b, a) * (180 / Math.PI) * 1000000) / 1000000;
   }
 
+  function getCssFlipFlags(style) {
+    const transform = String(style && style.transform || '').trim();
+    const match = transform.match(/^matrix\(([^)]+)\)$/i);
+    if (!match) return { flipH: false, flipV: false };
+    const values = match[1].split(',').map(Number);
+    if (values.length < 6 || values.some((value) => !Number.isFinite(value))) {
+      return { flipH: false, flipV: false };
+    }
+    return { flipH: values[0] < 0, flipV: values[3] < 0 };
+  }
+
   function getWritingModeRotation(style) {
     return style && /^(?:vertical|sideways)-/i.test(String(style.writingMode || '')) ? 90 : 0;
   }
@@ -67866,6 +67877,11 @@
       gradient.addColorStop(Math.max(0, Math.min(1, Number(stop.pos) / 100000)), `rgba(${r},${g},${b},${alpha})`);
     });
     ctx.fillStyle = gradient;
+    if (options.flipV || options.flipH) {
+      ctx.save();
+      ctx.translate(options.flipH ? (widthPx + padding * 2) : 0, options.flipV ? (heightPx + padding * 2) : 0);
+      ctx.scale(options.flipH ? -1 : 1, options.flipV ? -1 : 1);
+    }
 
     const range = node.ownerDocument.createRange();
     range.selectNodeContents(node);
@@ -67876,7 +67892,65 @@
     const baseline = padding + (textRect.top - rect.top) + (metrics.actualBoundingBoxAscent || fontSize * 0.8);
     ctx.textBaseline = 'alphabetic';
     ctx.fillText(text, left, baseline);
+    if (options.flipV || options.flipH) ctx.restore();
     return { data: canvas.toDataURL('image/png'), paddingPx: padding };
+  }
+
+  function isMaskedTextElement(node, style = null) {
+    if (!node || node.nodeType !== 1 || node.children.length > 0 || !String(node.textContent || '').trim()) return false;
+    const computed = style || getNodeWindow(node).getComputedStyle(node);
+    const mask = computed.webkitMaskImage || computed.maskImage || '';
+    return isNonTrivialCssValue(mask) && /linear-gradient\s*\(/i.test(String(mask));
+  }
+
+  /** Paints solid text + opacity + blur + CSS mask, then flips the composed result. */
+  function captureMaskedTextVisual(node, style, options = {}) {
+    if (!isMaskedTextElement(node, style) || getBrowserTextVisualLineCount(node) !== 1) return null;
+    const text = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+    const rect = node.getBoundingClientRect();
+    if (!text || rect.width <= 0 || rect.height <= 0) return null;
+    const widthPx = Math.max(1, rect.width), heightPx = Math.max(1, rect.height);
+    const padding = Math.max(4, Math.min(32, estimateRiskCapturePadding(style, options)));
+    const scale = Math.max(2, Math.min(4, Number(options.decorativeTextRasterScale) || 3));
+    const canvas = node.ownerDocument.createElement('canvas');
+    canvas.width = Math.ceil((widthPx + padding * 2) * scale);
+    canvas.height = Math.ceil((heightPx + padding * 2) * scale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.scale(scale, scale);
+    const fontSize = Math.max(1, parseFloat(style.fontSize) || 16);
+    ctx.font = `${style.fontStyle || 'normal'} ${style.fontWeight || '400'} ${fontSize}px ${style.fontFamily || 'sans-serif'}`;
+    ctx.fontKerning = 'normal';
+    if ('letterSpacing' in ctx) ctx.letterSpacing = String(style.letterSpacing || '0px');
+    const color = parseColor(style.color);
+    const opacity = Math.max(0, Math.min(1,
+      (Number.isFinite(Number(options.opacity)) ? Number(options.opacity) : 1) *
+      (Number.isFinite(color.opacity) ? color.opacity : 1)
+    ));
+    const hex = String(color.hex || '000000');
+    ctx.fillStyle = `rgba(${parseInt(hex.slice(0, 2), 16)},${parseInt(hex.slice(2, 4), 16)},${parseInt(hex.slice(4, 6), 16)},${opacity})`;
+    if (isNonTrivialCssValue(style.filter)) ctx.filter = String(style.filter);
+    const range = node.ownerDocument.createRange();
+    range.selectNodeContents(node);
+    const textRect = range.getBoundingClientRect();
+    if (range.detach) range.detach();
+    const metrics = ctx.measureText(text);
+    const left = padding + (textRect.left - rect.left) - (metrics.actualBoundingBoxLeft || 0);
+    const baseline = padding + (textRect.top - rect.top) + (metrics.actualBoundingBoxAscent || fontSize * 0.8);
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, left, baseline);
+    ctx.filter = 'none';
+    applyCssMaskToCanvas(ctx, style.webkitMaskImage || style.maskImage, widthPx + padding * 2, heightPx + padding * 2);
+
+    const flips = getCssFlipFlags(style);
+    if (!flips.flipH && !flips.flipV) return { data: canvas.toDataURL('image/png'), paddingPx: padding };
+    const output = node.ownerDocument.createElement('canvas');
+    output.width = canvas.width; output.height = canvas.height;
+    const outputCtx = output.getContext('2d');
+    outputCtx.translate(flips.flipH ? output.width : 0, flips.flipV ? output.height : 0);
+    outputCtx.scale(flips.flipH ? -1 : 1, flips.flipV ? -1 : 1);
+    outputCtx.drawImage(canvas, 0, 0);
+    return { data: output.toDataURL('image/png'), paddingPx: padding };
   }
 
   function shouldRasterizeDecorativeText(node, style) {
@@ -68109,6 +68183,26 @@
       });
 
     try {
+      const hasCssGradientVisual = /(?:linear|radial|conic)-gradient\s*\(/i.test(
+        String(style.backgroundImage || '')
+      );
+      if (hasCssGradientVisual) {
+        // Multi-layer and filtered gradients already have browser-computed
+        // premultiplied RGBA. Reconstructing them from black/white passes can
+        // shift translucent stops before PowerPoint composites the PNG again.
+        const transparentCanvas = await renderPass(null);
+        if (transparentCanvas) {
+          applyPolygonClipToRiskCanvas(
+            transparentCanvas,
+            style.clipPath || style.webkitClipPath,
+            widthPx,
+            heightPx,
+            padding,
+            scale
+          );
+          return { data: transparentCanvas.toDataURL('image/png'), paddingPx: padding };
+        }
+      }
       const blackCanvas = await renderPass('#000000');
       const whiteCanvas = await renderPass('#ffffff');
       const alphaCanvas = reconstructAlphaMatte(blackCanvas, whiteCanvas);
@@ -69273,6 +69367,7 @@
         backgroundColor: null,
         logging: false,
         scale: captureScale, // Higher scale for sharper icons
+        foreignObjectRendering: Boolean(options.foreignObjectRendering),
         useCORS: true, // critical for external fonts/images
         width: width + padding * 2, // Capture a larger area
         height: height + padding * 2,
@@ -70781,6 +70876,7 @@
         getTextStyle(style, config.scale, parent, textContent),
         effectiveOpacity
       );
+      Object.assign(textOptions, getCssFlipFlags(style));
       // This text node is reached only when its parent is a visual container
       // (for example a rounded flex tag). The parent is exported as a native
       // shape, so carrying its CSS background into a text highlight creates a
@@ -71176,7 +71272,7 @@
           risk.reasons[0] === 'complex-clip-path';
         const textItems = captureTextInBitmap
           ? []
-          : isGradientTextElement(node, style)
+          : isGradientTextElement(node, style) || isMaskedTextElement(node, style)
           ? []
           : collectEditableTextLineItems(
               node,
@@ -71210,8 +71306,15 @@
           // other composited effects and multi-line gradient text.
           const captured = captureTextInBitmap
             ? await captureRiskSubtreeVisual(node, { ...globalOptions, preserveText: true })
+            : isMaskedTextElement(node, style)
+            ? captureMaskedTextVisual(node, style, { ...globalOptions, opacity: safeOpacity }) ||
+              await captureRiskSubtreeVisual(node, { ...globalOptions, preserveText: true })
             : isGradientTextElement(node, style)
-            ? captureGradientTextVisual(node, style, { ...globalOptions, opacity: safeOpacity }) ||
+              ? captureGradientTextVisual(node, style, {
+                  ...globalOptions,
+                  opacity: safeOpacity,
+                  ...getCssFlipFlags(style),
+                }) ||
               await captureRiskSubtreeVisual(node, globalOptions)
             : await captureRiskSubtreeVisual(node, globalOptions);
           if (!captured || !captured.data) {
@@ -71838,6 +71941,7 @@
         const rasterData = await elementToCanvasImage(node, widthPx, heightPx, {
           padding: 0,
           scale: 2,
+          foreignObjectRendering: true,
         });
         if (rasterData) item.options.data = rasterData;
         else item.skip = true;
@@ -72390,6 +72494,7 @@
           w,
           h,
           rotate: rotation,
+          ...getCssFlipFlags(style),
           fill: useSolidFill && !nativeLayeredInnerShadowItems.length
             ? { color: bgColorObj.hex, transparency: transparency }
             : { type: 'none' },
@@ -72709,7 +72814,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v122';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v126';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
