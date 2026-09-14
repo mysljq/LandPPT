@@ -65231,13 +65231,25 @@
 
   function getCssFlipFlags(style) {
     const transform = String(style && style.transform || '').trim();
-    const match = transform.match(/^matrix\(([^)]+)\)$/i);
-    if (!match) return { flipH: false, flipV: false };
-    const values = match[1].split(',').map(Number);
-    if (values.length < 6 || values.some((value) => !Number.isFinite(value))) {
-      return { flipH: false, flipV: false };
+    const matrix2d = transform.match(/^matrix\(([^)]+)\)$/i);
+    if (matrix2d) {
+      const values = matrix2d[1].split(',').map(Number);
+      if (values.length >= 6 && values.every((value) => Number.isFinite(value))) {
+        return { flipH: values[0] < 0, flipV: values[3] < 0 };
+      }
     }
-    return { flipH: values[0] < 0, flipV: values[3] < 0 };
+    // Chromium serializes transforms containing 3-D functions (including a
+    // simple scaleY(-1) in some composed layouts) as matrix3d(). Read the
+    // diagonal scale components as well, otherwise reflected text falls back
+    // to its unflipped editable PPT textbox.
+    const matrix3d = transform.match(/^matrix3d\(([^)]+)\)$/i);
+    if (matrix3d) {
+      const values = matrix3d[1].split(',').map(Number);
+      if (values.length >= 16 && values.every((value) => Number.isFinite(value))) {
+        return { flipH: values[0] < 0, flipV: values[5] < 0 };
+      }
+    }
+    return { flipH: false, flipV: false };
   }
 
   function getWritingModeRotation(style) {
@@ -65283,6 +65295,32 @@
     clone.querySelectorAll('text').forEach((textNode) => textNode.remove());
   }
 
+  // getBoundingClientRect() already includes CSS translations applied to the
+  // SVG element.  Keeping a root translate() in the serialized SVG applies
+  // that offset a second time inside the PowerPoint image (notably
+  // `left:50%; transform:translateX(-50%)` trees/icons).  Pure translations
+  // are therefore safe to remove; rotations/skews remain serialized so their
+  // visual geometry is preserved by the existing rotation handling.
+  function isSvgPureTranslation(transform) {
+    const match = String(transform || '').match(/^matrix\(([^)]+)\)$/);
+    if (!match) return false;
+    const values = match[1].split(',').map(Number);
+    if (values.length !== 6 || !values.every(Number.isFinite)) return false;
+    const [a, b, c, d] = values;
+    return Math.abs(a - 1) < 0.0001 && Math.abs(b) < 0.0001 &&
+      Math.abs(c) < 0.0001 && Math.abs(d - 1) < 0.0001;
+  }
+
+  function removeSvgRootTranslation(source, clone) {
+    if (!source || !clone || !clone.style) return;
+    const computed = (source.ownerDocument?.defaultView || window).getComputedStyle(source);
+    if (isSvgPureTranslation(computed.transform)) {
+      clone.style.removeProperty('transform');
+      clone.style.removeProperty('transform-origin');
+      clone.style.removeProperty('transform-box');
+    }
+  }
+
   function svgToPng(node, options = {}) {
     return new Promise((resolve) => {
       const clone = node.cloneNode(true);
@@ -65291,6 +65329,7 @@
       const height = rect.height || 150;
 
       inlineSvgStyles(node, clone);
+      removeSvgRootTranslation(node, clone);
       if (options.stripText) stripSvgTextFromClone(clone);
       clone.setAttribute('width', width);
       clone.setAttribute('height', height);
@@ -65335,6 +65374,7 @@
         const height = rect.height || 150;
 
         inlineSvgStyles(node, clone);
+        removeSvgRootTranslation(node, clone);
         if (options.stripText) stripSvgTextFromClone(clone);
         clone.setAttribute('width', width);
         clone.setAttribute('height', height);
@@ -65974,6 +66014,27 @@
         });
       });
       if (parsedStops.length < 2) return null;
+      // Keep the RGB component of transparent stops aligned with the visible
+      // gradient instead of falling back to transparent black.  CSS gradients
+      // interpolate premultiplied colors, while SVG/Office may un-premultiply
+      // a transparent black stop and expose a gray/black fringe at the edges.
+      // Inheriting the nearest visible stop's color preserves a "white with
+      // varying alpha" gradient (for example a pseudo-element highlight)
+      // without changing its opacity.
+      parsedStops.forEach((stop, index) => {
+        if (stop.opacity > 0) return;
+        let nearest = null;
+        let distance = Infinity;
+        parsedStops.forEach((candidate, candidateIndex) => {
+          if (candidate.opacity <= 0 || candidateIndex === index) return;
+          const candidateDistance = Math.abs(candidateIndex - index);
+          if (candidateDistance < distance) {
+            nearest = candidate;
+            distance = candidateDistance;
+          }
+        });
+        if (nearest && nearest.color) stop.color = nearest.color;
+      });
       const axisSize = Math.max(w, h);
       parsedStops.forEach((stop, idx) => {
         const offset = normalizeGradientOffset(stop.offsetRaw, idx, parsedStops.length, axisSize);
@@ -68071,16 +68132,26 @@
     const captureId = `decorative-text-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     node.setAttribute(attributeName, captureId);
 
-    const renderPass = (backgroundColor) =>
+    const hasCssGradientVisual = /(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(
+      String(style.backgroundImage || '')
+    );
+    const hasCssFilterVisual = isNonTrivialCssValue(style.filter);
+    // Let the browser serialize and paint complex CSS itself. html2canvas's
+    // regular renderer approximates gradients and filters independently,
+    // which changes premultiplied translucent stops and blur falloff.
+    const preferBrowserNativeRaster = hasCssGradientVisual || hasCssFilterVisual;
+
+    const renderPass = (backgroundColor, capturePadding = padding) =>
       html2canvas(node, {
         backgroundColor,
         logging: false,
         scale,
+        foreignObjectRendering: preferBrowserNativeRaster,
         useCORS: true,
-        width: widthPx + padding * 2,
-        height: heightPx + padding * 2,
-        x: -padding,
-        y: -padding,
+        width: widthPx + capturePadding * 2,
+        height: heightPx + capturePadding * 2,
+        x: -capturePadding,
+        y: -capturePadding,
         removeContainer: true,
         imageTimeout: 4000,
       });
@@ -68138,6 +68209,111 @@
     ctx.restore();
   }
 
+  // html2canvas/foreignObject can interpret an explicit CSS radial-gradient
+  // `ellipse at ...` as a circle. Detect that mismatch from the captured alpha
+  // bounds and expand only the deficient axis to the element's aspect ratio.
+  // Correct browser captures already matching the requested ellipse are left
+  // untouched.
+  function normalizeExplicitEllipseGradientCanvas(canvas, backgroundImage) {
+    const radialCss = String(backgroundImage || '');
+    // Computed style commonly normalizes `ellipse at center` to an omitted
+    // shape keyword. CSS defaults that omitted keyword to ellipse; only an
+    // explicit `circle` must bypass this aspect-ratio correction.
+    if (!canvas || !/radial-gradient\s*\(/i.test(radialCss) ||
+        /radial-gradient\(\s*circle(?:\s+at\b|\s*,)/i.test(radialCss)) {
+      return canvas;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx || canvas.width < 2 || canvas.height < 2) return canvas;
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        if (pixels.data[(y * canvas.width + x) * 4 + 3] <= 4) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX || maxY < minY) return canvas;
+    const alphaWidth = maxX - minX + 1;
+    const alphaHeight = maxY - minY + 1;
+    const targetAspect = canvas.width / canvas.height;
+    const alphaAspect = alphaWidth / alphaHeight;
+    if (targetAspect > 1.15 && alphaAspect < targetAspect * 0.72) {
+      const cropWidth = Math.min(canvas.width, canvas.height);
+      const cropX = Math.max(0, (canvas.width - cropWidth) / 2);
+      const corrected = canvas.ownerDocument?.createElement('canvas') || document.createElement('canvas');
+      corrected.width = canvas.width;
+      corrected.height = canvas.height;
+      corrected.getContext('2d').drawImage(canvas, cropX, 0, cropWidth, canvas.height, 0, 0, canvas.width, canvas.height);
+      return corrected;
+    }
+    if (targetAspect < 1 / 1.15 && alphaAspect > targetAspect / 0.72) {
+      const cropHeight = Math.min(canvas.height, canvas.width);
+      const cropY = Math.max(0, (canvas.height - cropHeight) / 2);
+      const corrected = canvas.ownerDocument?.createElement('canvas') || document.createElement('canvas');
+      corrected.width = canvas.width;
+      corrected.height = canvas.height;
+      corrected.getContext('2d').drawImage(canvas, 0, cropY, canvas.width, cropHeight, 0, 0, canvas.width, canvas.height);
+      return corrected;
+    }
+    return canvas;
+  }
+
+  function applyRadialGradientAlphaFalloff(canvas, backgroundImage, widthPx, heightPx, paddingPx, scale) {
+    const css = String(backgroundImage || '');
+    if (!canvas || !/radial-gradient\s*\(/i.test(css) ||
+        /radial-gradient\(\s*circle(?:\s+at\b|\s*,)/i.test(css)) return canvas;
+    const match = css.match(/radial-gradient\((.*)\)/i);
+    if (!match) return canvas;
+    const parts = splitTopLevelCommaParts(match[1]);
+    if (parts.length < 2) return canvas;
+    const stopParts = /^(?:ellipse|circle)?(?:\s+at\s+[^,]+)?$/i.test(String(parts[0]).trim())
+      ? parts.slice(1) : parts;
+    const stops = stopParts.map((part) => {
+      const m = String(part).trim().match(/^(.*?)\s+(\d+(?:\.\d+)?)%\s*$/);
+      if (!m) return null;
+      const color = parseColor(m[1]);
+      return color ? { offset: Number(m[2]) / 100, opacity: color.opacity } : null;
+    }).filter(Boolean);
+    const transparentIndex = stops.findIndex((stop) => stop.opacity <= 0);
+    if (transparentIndex < 1) return canvas;
+    const end = stops[transparentIndex].offset;
+    const start = stops[transparentIndex - 1].offset;
+    if (!(end > start)) return canvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas;
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const centerX = paddingPx * scale + (widthPx * scale) / 2;
+    const centerY = paddingPx * scale + (heightPx * scale) / 2;
+    // CSS percentage stops are relative to the radial gradient's ending
+    // shape, not directly to half the element size. For the default
+    // `ellipse at center farthest-corner`, the farthest-side ellipse
+    // (width/2, height/2) must be uniformly enlarged by sqrt(2) so it reaches
+    // a corner. Thus a 70% stop lands at roughly 99% of each side, matching
+    // browser CSS instead of producing an ellipse about 29% too small.
+    const farthestCornerScale = Math.SQRT2;
+    const radiusX = Math.max(1, (widthPx * scale) / 2 * farthestCornerScale);
+    const radiusY = Math.max(1, (heightPx * scale) / 2 * farthestCornerScale);
+    for (let y = 0; y < canvas.height; y++) {
+      const dy = (y - centerY) / radiusY;
+      for (let x = 0; x < canvas.width; x++) {
+        const distance = Math.sqrt(((x - centerX) / radiusX) ** 2 + dy ** 2);
+        if (distance <= start) continue;
+        const factor = distance >= end ? 0 : (end - distance) / (end - start);
+        const alphaIndex = (y * canvas.width + x) * 4 + 3;
+        pixels.data[alphaIndex] = Math.round(pixels.data[alphaIndex] * Math.max(0, Math.min(1, factor)));
+      }
+    }
+    ctx.putImageData(pixels, 0, 0);
+    return canvas;
+  }
+
   async function captureRiskSubtreeVisual(node, options = {}) {
     const sourceDoc = node.ownerDocument || document;
     const sourceWin = sourceDoc.defaultView || window;
@@ -68146,6 +68322,11 @@
     const widthPx = Math.max(1, Math.ceil(rect.width));
     const heightPx = Math.max(1, Math.ceil(rect.height));
     const padding = estimateRiskCapturePadding(style, options);
+    const hasCssGradientVisual = /(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(
+      String(style.backgroundImage || '')
+    );
+    const hasCssFilterVisual = isNonTrivialCssValue(style.filter);
+    const preferBrowserNativeRaster = hasCssGradientVisual || hasCssFilterVisual;
     const requestedScale = Number.isFinite(Number(options.riskRasterScale)) ? Number(options.riskRasterScale) : 2;
     const maxPixels = Number.isFinite(Number(options.maxRiskRasterPixels))
       ? Number(options.maxRiskRasterPixels)
@@ -68161,16 +68342,16 @@
     const captureId = `risk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     node.setAttribute(attributeName, captureId);
 
-    const renderPass = (backgroundColor) =>
+    const renderPass = (backgroundColor, capturePadding = padding) =>
       html2canvas(node, {
         backgroundColor,
         logging: false,
         scale,
         useCORS: true,
-        width: widthPx + padding * 2,
-        height: heightPx + padding * 2,
-        x: -padding,
-        y: -padding,
+        width: widthPx + capturePadding * 2,
+        height: heightPx + capturePadding * 2,
+        x: -capturePadding,
+        y: -capturePadding,
         removeContainer: true,
         imageTimeout: 4000,
         onclone: (clonedDoc) => {
@@ -68178,29 +68359,181 @@
           if (clonedNode) {
             if (!options.preserveText) hideEditableTextInCaptureClone(clonedNode);
             hideHardShadowsInCaptureClone(clonedNode);
+            // Filters (notably blur) paint outside the element bounds. Keep
+            // overflow visible in the cloned browser surface so the padded
+            // capture contains the same soft falloff as the live DOM.
+            clonedNode.style.setProperty('overflow', 'visible', 'important');
+            clonedNode.style.setProperty('contain', 'none', 'important');
+            clonedNode.style.setProperty('clip', 'auto', 'important');
+            clonedNode.style.setProperty('clip-path', 'none', 'important');
+            // Re-apply computed filters because foreignObject style copying can omit
+            // external stylesheet declarations in some browsers.
+            if (style.filter && style.filter !== 'none') {
+              clonedNode.style.setProperty('filter', style.filter, 'important');
+              clonedNode.style.setProperty('-webkit-filter', style.filter, 'important');
+            }
+          }
+          // The foreignObject renderer creates an SVG viewport around the
+          // cloned document. Its default overflow can clip blur exactly at
+          // the element edge even when the element itself is overflow-visible.
+          // Remove that second clipping boundary; html2canvas dimensions and
+          // the capture padding still bound the final bitmap safely.
+          if (clonedDoc.documentElement) {
+            clonedDoc.documentElement.style.setProperty('overflow', 'visible', 'important');
+          }
+          if (clonedDoc.body) {
+            clonedDoc.body.style.setProperty('overflow', 'visible', 'important');
           }
         },
       });
 
     try {
-      const hasCssGradientVisual = /(?:linear|radial|conic)-gradient\s*\(/i.test(
-        String(style.backgroundImage || '')
-      );
-      if (hasCssGradientVisual) {
+      if (preferBrowserNativeRaster) {
         // Multi-layer and filtered gradients already have browser-computed
         // premultiplied RGBA. Reconstructing them from black/white passes can
         // shift translucent stops before PowerPoint composites the PNG again.
-        const transparentCanvas = await renderPass(null);
+        // Keep the CSS filter in the native pass as a first fidelity source;
+        // the Canvas blur below supplies the fallback when foreignObject
+        // drops that filter during cloning.
+        const hasBlurFilter = hasCssFilterVisual && /blur\(/i.test(String(style.filter || ''));
+        const transparentCanvas = await renderPass(null, hasBlurFilter ? 0 : padding);
         if (transparentCanvas) {
-          applyPolygonClipToRiskCanvas(
+          let visualCanvas = normalizeExplicitEllipseGradientCanvas(
             transparentCanvas,
+            style.backgroundImage
+          );
+          visualCanvas = applyRadialGradientAlphaFalloff(
+            visualCanvas,
+            style.backgroundImage,
+            widthPx,
+            heightPx,
+            hasBlurFilter ? 0 : padding,
+            scale
+          );
+          if (hasBlurFilter) {
+            // Start from an unpadded source, then create a real transparent
+            // buffer around it. This prevents the source gradient from being
+            // clipped before Canvas applies blur at the top/bottom edges.
+            const filteredCanvas = sourceDoc.createElement('canvas');
+            filteredCanvas.width = Math.ceil((widthPx + padding * 2) * scale);
+            filteredCanvas.height = Math.ceil((heightPx + padding * 2) * scale);
+            const filteredCtx = filteredCanvas.getContext('2d');
+            if (filteredCtx) {
+              const canvasFilter = String(style.filter).replace(/blur\(\s*(\d+(?:\.\d+)?)px\s*\)/gi,
+                (_, radius) => `blur(${Number(radius) * scale}px)`);
+              filteredCtx.clearRect(0, 0, filteredCanvas.width, filteredCanvas.height);
+              if ('filter' in filteredCtx) filteredCtx.filter = canvasFilter;
+              filteredCtx.drawImage(visualCanvas, padding * scale, padding * scale,
+                widthPx * scale, heightPx * scale);
+              if ('filter' in filteredCtx) filteredCtx.filter = 'none';
+              // Ensure horizontal bands retain a visible top/bottom diffusion
+              // after Office rescales the PNG. This alpha feather follows the
+              // CSS blur radius and removes any remaining hard color cutoff.
+              const isHorizontalGradientBand = /linear-gradient\(\s*(?:90deg|270deg|to\s+(?:right|left))/i.test(
+                String(style.backgroundImage || '')
+              );
+              const blurRadii = Array.from(String(style.filter).matchAll(/blur\(\s*(\d+(?:\.\d+)?)px\s*\)/gi))
+                .map((match) => Number(match[1]))
+                .filter((value) => Number.isFinite(value) && value > 0);
+              // A vertical gradient already contains its own top/bottom color
+              // ramp. Applying a second vertical alpha feather creates gray
+              // bands, so reserve the edge feather for horizontal bands such
+              // as peach-band.
+              if (blurRadii.length && isHorizontalGradientBand) {
+                const featherPx = Math.min(filteredCanvas.height / 2,
+                  Math.max(...blurRadii) * scale * 2);
+                if (featherPx > 0) {
+                  const feather = filteredCtx.createLinearGradient(0, 0, 0, filteredCanvas.height);
+                  const contentTop = padding * scale;
+                  const contentBottom = contentTop + heightPx * scale;
+                  const stop = (value) => Math.max(0, Math.min(1, value / filteredCanvas.height));
+                  feather.addColorStop(0, 'rgba(0,0,0,0)');
+                  feather.addColorStop(stop(contentTop - featherPx), 'rgba(0,0,0,0)');
+                  feather.addColorStop(stop(contentTop + featherPx), 'rgba(0,0,0,1)');
+                  feather.addColorStop(stop(contentBottom - featherPx), 'rgba(0,0,0,1)');
+                  feather.addColorStop(stop(contentBottom + featherPx), 'rgba(0,0,0,0)');
+                  feather.addColorStop(1, 'rgba(0,0,0,0)');
+                  filteredCtx.globalCompositeOperation = 'destination-in';
+                  filteredCtx.fillStyle = feather;
+                  filteredCtx.fillRect(0, 0, filteredCanvas.width, filteredCanvas.height);
+                  filteredCtx.globalCompositeOperation = 'source-over';
+                  // Some cloned browser canvases ignore destination-in with
+                  // gradient alpha. Apply the same feather directly to the
+                  // pixel alpha channel so the exported PNG is deterministic.
+                  const pixels = filteredCtx.getImageData(0, 0, filteredCanvas.width, filteredCanvas.height);
+                  for (let row = 0; row < filteredCanvas.height; row++) {
+                    const topFactor = (row - (contentTop - featherPx)) / (featherPx * 2);
+                    const bottomFactor = ((contentBottom + featherPx) - row) / (featherPx * 2);
+                    const factor = Math.max(0, Math.min(1, topFactor, bottomFactor));
+                    if (factor >= 0.999) continue;
+                    for (let column = 0; column < filteredCanvas.width; column++) {
+                      const alphaIndex = (row * filteredCanvas.width + column) * 4 + 3;
+                      pixels.data[alphaIndex] = Math.round(pixels.data[alphaIndex] * factor);
+                    }
+                  }
+                  filteredCtx.putImageData(pixels, 0, 0);
+                }
+              }
+              visualCanvas = filteredCanvas;
+            }
+          }
+          // A radial CSS gradient is an ellipse in the element's box.  Some
+          // foreignObject/browser combinations lose the transparent pixels
+          // around the radial falloff and return an opaque rectangular bitmap
+          // (which PowerPoint then displays as a rounded rectangle).  Only
+          // repair that failure mode: if the captured corners are already
+          // transparent, preserve the browser's native alpha untouched.
+          const radialBackground = String(style.backgroundImage || '');
+          const explicitCircleGradient = /radial-gradient\(\s*circle(?:\s+at\b|\s*,)/i.test(radialBackground);
+          if (hasCssGradientVisual && /radial-gradient\s*\(/i.test(radialBackground) &&
+              !explicitCircleGradient && visualCanvas) {
+            const radialCtx = visualCanvas.getContext('2d');
+            if (radialCtx) {
+              const radialWidth = visualCanvas.width;
+              const radialHeight = visualCanvas.height;
+              const radialPixels = radialCtx.getImageData(0, 0, radialWidth, radialHeight);
+              const cornerSamples = [
+                3 * radialWidth + 3,
+                3 * radialWidth + Math.max(3, radialWidth - 4),
+                Math.max(3, radialHeight - 4) * radialWidth + 3,
+                Math.max(3, radialHeight - 4) * radialWidth + Math.max(3, radialWidth - 4),
+              ];
+              const cornerAlpha = cornerSamples.reduce((sum, offset) => sum + radialPixels.data[offset * 4 + 3], 0) /
+                cornerSamples.length;
+              if (cornerAlpha > 0) {
+                const centerX = padding * scale + (widthPx * scale) / 2;
+                const centerY = padding * scale + (heightPx * scale) / 2;
+                const radiusX = Math.max(1, (widthPx * scale) / 2 + padding * scale);
+                const radiusY = Math.max(1, (heightPx * scale) / 2 + padding * scale);
+                for (let row = 0; row < radialHeight; row++) {
+                  const dy = (row - centerY) / radiusY;
+                  for (let column = 0; column < radialWidth; column++) {
+                    const dx = (column - centerX) / radiusX;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    let factor = 1;
+                    if (distance >= 1) factor = 0;
+                    else if (distance > 0.97) {
+                      const t = (distance - 0.97) / 0.03;
+                      factor = 1 - (t * t * (3 - 2 * t));
+                    }
+                    if (factor >= 0.999) continue;
+                    const alphaIndex = (row * radialWidth + column) * 4 + 3;
+                    radialPixels.data[alphaIndex] = Math.round(radialPixels.data[alphaIndex] * factor);
+                  }
+                }
+                radialCtx.putImageData(radialPixels, 0, 0);
+              }
+            }
+          }
+          applyPolygonClipToRiskCanvas(
+            visualCanvas,
             style.clipPath || style.webkitClipPath,
             widthPx,
             heightPx,
             padding,
             scale
           );
-          return { data: transparentCanvas.toDataURL('image/png'), paddingPx: padding };
+          return { data: visualCanvas.toDataURL('image/png'), paddingPx: padding };
         }
       }
       const blackCanvas = await renderPass('#000000');
@@ -69565,6 +69898,11 @@
         backgroundColor: null,
         logging: false,
         scale,
+        // The container's own background may contain several translucent
+        // gradient layers. Let the browser composite those layers once in a
+        // foreignObject instead of letting html2canvas approximate each stop
+        // independently (which creates the dark color blocks seen on page 46).
+        foreignObjectRendering: true,
         useCORS: true,
         width: Math.max(1, Math.ceil(widthPx)),
         height: Math.max(1, Math.ceil(heightPx)),
@@ -69577,8 +69915,17 @@
           if (!clonedNode) return;
           clonedNode.style.setProperty('box-shadow', 'none', 'important');
           clonedNode.style.setProperty('color', 'transparent', 'important');
-          Array.from(clonedNode.children).forEach((child) => {
+          // This capture is intentionally background-only. Hiding only the
+          // immediate children is insufficient: descendants may override
+          // `visibility`, causing their text/paint to leak into the bitmap
+          // and then appear a second time as editable PPT text.
+          Array.from(clonedNode.querySelectorAll('*')).forEach((child) => {
+            child.style.setProperty('display', 'none', 'important');
             child.style.setProperty('visibility', 'hidden', 'important');
+          });
+          // Remove direct text nodes as well; CSS cannot hide a bare text node.
+          clonedNode.childNodes.forEach((child) => {
+            if (child.nodeType === 3) child.nodeValue = '';
           });
           const style = clonedDoc.createElement('style');
           style.textContent = `[${tempAttribute}="${captureId}"]::before,[${tempAttribute}="${captureId}"]::after{content:none!important;display:none!important}`;
@@ -71198,10 +71545,18 @@
       // entire subtree to become one bitmap. Its own paint is captured later as
       // a background-only layer while descendants keep normal export semantics.
       const backgroundOnlyRisk =
-        node.children.length > 0 &&
+        (node.children.length > 0 || !String(node.textContent || '').trim()) &&
         risk.reasons.length === 1 &&
         risk.reasons[0] === 'multi-layer-gradient';
-      if (risk.risky && !backgroundOnlyRisk) {
+      // A backdrop-filter on a semantic container is a compositing hint for
+      // the container surface, not a reason to discard its editable cards.
+      // Keep traversing descendants so cards/text are emitted natively; leaf
+      // filter elements (fog bands, reflections) still use the raster path.
+      const preserveBackdropContainerChildren =
+        node.children.length > 0 &&
+        risk.reasons.length === 1 &&
+        risk.reasons[0] === 'backdrop-filter';
+      if (risk.risky && !backgroundOnlyRisk && !preserveBackdropContainerChildren) {
         const isolatedClipAncestor =
           risk.reasons.length === 1 &&
           risk.reasons[0] === 'transformed-clipping' &&
@@ -71265,11 +71620,16 @@
           // CSS rotation again in PowerPoint would double-transform the visual island.
           options: { x: visualX, y: visualY, w: visualW, h: visualH, rotate: 0, data: null },
         };
+        const cssFlip = getCssFlipFlags(style);
         const captureTextInBitmap =
           node.children.length === 0 &&
           String(node.textContent || '').trim() &&
-          risk.reasons.length === 1 &&
-          risk.reasons[0] === 'complex-clip-path';
+          (risk.reasons.length === 1 && risk.reasons[0] === 'complex-clip-path' ||
+            // CSS reflections are decorative visual effects. Keeping their
+            // glyphs in the browser-rasterized island avoids PowerPoint's
+            // text-box flip semantics, which can mirror the glyphs
+            // horizontally when CSS uses a matrix3d scaleY(-1).
+            (cssFlip.flipV && isNonTrivialCssValue(style.filter)));
         const textItems = captureTextInBitmap
           ? []
           : isGradientTextElement(node, style) || isMaskedTextElement(node, style)
@@ -71282,6 +71642,14 @@
               safeOpacity,
               { clampDirectLineToBoundary: node.children.length > 0 }
             );
+        // A reflected/ flipped element's text is exported separately for
+        // editability. Carry the CSS matrix flip onto those PPT text boxes;
+        // otherwise the bitmap's decorative layer and editable text diverge.
+        if (cssFlip.flipH || cssFlip.flipV) {
+          textItems.forEach((textItem) => {
+            if (textItem && textItem.options) Object.assign(textItem.options, cssFlip);
+          });
+        }
         const hardShadowItems = collectRiskSubtreeHardShadowItems(
           node,
           config,
@@ -71292,7 +71660,9 @@
         );
         const debugEntry = {
           tagName: node.tagName,
+          className: String(node.getAttribute && node.getAttribute('class') || ''),
           reasons: risk.reasons.slice(),
+          filter: String(style.filter || ''),
           textLineCount: textItems.length,
           hardShadowOverlayCount: hardShadowItems.length,
           captured: false,
@@ -71328,6 +71698,11 @@
           imageItem.options.y = visualY - padIn;
           imageItem.options.w = visualW + padIn * 2;
           imageItem.options.h = visualH + padIn * 2;
+          debugEntry.paddingPx = captured.paddingPx;
+          debugEntry.imageSize = {
+            width: Math.round((visualW + padIn * 2) / (PX_TO_INCH * config.scale)),
+            height: Math.round((visualH + padIn * 2) / (PX_TO_INCH * config.scale)),
+          };
           debugEntry.captured = true;
         };
 
@@ -72814,7 +73189,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-09-inline-empty-leaf-v126';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-radial-farthest-corner-v153';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
