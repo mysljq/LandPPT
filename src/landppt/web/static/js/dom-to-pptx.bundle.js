@@ -63820,6 +63820,9 @@
     'kaiti': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
     'kaiti sc': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
     'stkaiti': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
+    '楷体': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
+    '楷体_gb2312': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
+    '华文楷体': CJK_FONT_FALLBACK_CANDIDATES['cjk-kai'],
     'fangsong': CJK_FONT_FALLBACK_CANDIDATES['cjk-fangsong'],
     'stfangsong': CJK_FONT_FALLBACK_CANDIDATES['cjk-fangsong'],
   };
@@ -64288,7 +64291,7 @@
     const key = normalizeFontFamilyKey(fontFamilyName);
     if (!key || LATIN_DOMINANT_FONT_NAMES.has(key)) return false;
     return (
-      /source han|noto (sans|serif) (cjk|sc)|songti|simsun|stsong|mingliu|pmingliu|yahei|dengxian|pingfang|hiragino sans gb|simhei|jhenghei|kaiti|fangsong|arial unicode|wenquanyi/.test(
+      /source han|noto (sans|serif) (cjk|sc)|宋体|黑体|楷体|仿宋|songti|simsun|stsong|mingliu|pmingliu|yahei|dengxian|pingfang|hiragino sans gb|simhei|jhenghei|kaiti|fangsong|arial unicode|wenquanyi/.test(
         key
       ) || !!CJK_FONT_ALIAS_FALLBACKS[key]
     );
@@ -73189,7 +73192,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-radial-farthest-corner-v153';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-cjk-kaiti-v154';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang='zh-CN'>
+<head>
+<meta charset='UTF-8'>
+<title>Cover</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1280px;height:720px;margin:0;overflow:hidden}
+body{font-family:'Comic Sans MS','Segoe Print','Bradley Hand','Marker Felt','楷体',cursive,sans-serif;background:#ece7df;color:#1a1a1a}
+.canvas{width:1280px;height:720px;position:relative;overflow:hidden;background:radial-gradient(circle at 22% 28%,rgba(26,26,26,0.045) 1.2px,transparent 1.6px),radial-gradient(circle at 78% 72%,rgba(26,26,26,0.035) 1px,transparent 1.4px),radial-gradient(circle at 42% 88%,rgba(26,26,26,0.025) 0.8px,transparent 1.2px),#ece7df;background-size:32px 32px,40px 40px,26px 26px,auto}
+.frame{position:absolute;top:22px;left:22px;right:22px;bottom:22px;border:1.5px solid #1a1a1a;border-radius:8px 2px 10px 3px;z-index:2;pointer-events:none}
+.frame::before{content:'';position:absolute;top:5px;left:5px;right:5px;bottom:5px;border:0.8px solid #1a1a1a;border-radius:6px 1px 8px 2px;opacity:0.35}
+.brand-top{position:absolute;top:50px;left:60px;right:60px;display:flex;justify-content:space-between;align-items:flex-start;z-index:10}
+.brand-left{display:flex;flex-direction:column;gap:6px}
+.brand-tag{display:inline-block;padding:4px 12px;border:1.5px solid #1a1a1a;border-radius:14px 2px 18px 4px;font-size:11px;letter-spacing:2px;background:#f6f1e6}
+.brand-year{font-size:22px;font-weight:700;letter-spacing:1px}
+.brand-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.brand-right .org{font-weight:700;font-size:15px;letter-spacing:1px}
+.brand-right .tagline{font-size:11px;letter-spacing:2px;color:#4a4a4a}
+.title-block{position:absolute;top:200px;left:80px;right:440px;z-index:8}
+.eyebrow{font-size:14px;letter-spacing:4px;color:#5a5a5a;display:inline-block;margin-bottom:20px;position:relative;padding:0 4px}
+.eyebrow::after{content:'';position:absolute;left:0;right:0;bottom:-4px;height:5px;background:rgba(200,80,62,0.35);border-radius:50%;transform:rotate(-1deg)}
+.main-title{font-size:72px;font-weight:800;line-height:1.08;letter-spacing:-1px;position:relative;display:inline-block}
+.squiggle{display:block;margin-top:6px}
+.subtitle{margin-top:30px;font-size:20px;line-height:1.55;max-width:620px;color:#2a2a2a}
+.extra-box{position:absolute;left:80px;bottom:90px;max-width:480px;z-index:8;transform:rotate(-1deg)}
+.note{background:#f6f1e6;border:1.8px solid #1a1a1a;border-radius:4px 16px 4px 14px;padding:16px 22px;font-size:14px;line-height:1.6;box-shadow:5px 6px 0 rgba(26,26,26,0.85);position:relative}
+.note::before{content:'NOTE';position:absolute;top:-9px;left:16px;background:#ece7df;padding:0 7px;font-size:10px;letter-spacing:2px;font-weight:700}
+.doodle-cluster{position:absolute;right:70px;top:180px;width:320px;height:360px;z-index:6}
+.scatter{position:absolute;z-index:7}
+.s1{top:155px;right:48px}
+.s2{bottom:135px;right:410px}
+.footer-bar{position:absolute;left:60px;right:60px;bottom:48px;display:flex;justify-content:space-between;align-items:center;font-size:11px;letter-spacing:2px;z-index:10;color:#3a3a3a}
+.footer-bar .line{flex:1;height:1.5px;margin:0 18px;background:repeating-linear-gradient(90deg,#1a1a1a 0 6px,transparent 6px 12px)}
+</style>
+</head>
+<body>
+<div class='canvas'>
+<div class='frame'></div>
+<div class='brand-top'>
+<div class='brand-left'>
+<span class='brand-tag'>酸奶市场分析与机遇</span>
+<span class='brand-year'>2026</span>
+</div>
+<div class='brand-right'>
+<span class='org'>架构管理团队</span>
+<span class='tagline'></span>
+</div>
+</div>
+<div class='title-block'>
+<span class='eyebrow'>PRESENTATION / 演示文稿</span>
+<h1 class='main-title'>酸奶市场分析与机遇<svg class='squiggle' width='100%' height='14' viewBox='0 0 600 14' preserveAspectRatio='none'><path d='M2,8 Q60,2 120,7 T240,7 T360,6 T480,8 T598,6' stroke='#1a1a1a' stroke-width='2.5' fill='none' stroke-linecap='round'/></svg></h1>
+<p class='subtitle'></p>
+</div>
+<div class='extra-box'>
+<div class='note'>—— 酸奶市场分析与机遇 ——</div>
+</div>
+<svg class='doodle-cluster' viewBox='0 0 320 360' fill='none'>
+<circle cx='160' cy='150' r='110' stroke='#1a1a1a' stroke-width='2' fill='none' opacity='0.85'/>
+<circle cx='162' cy='148' r='108' stroke='#1a1a1a' stroke-width='1' fill='none' opacity='0.35'/>
+<g transform='translate(160,150)'>
+<g stroke='#1a1a1a' stroke-width='2' stroke-linecap='round'>
+<line x1='0' y1='-80' x2='0' y2='-54'/>
+<line x1='0' y1='54' x2='0' y2='80'/>
+<line x1='-80' y1='0' x2='-54' y2='0'/>
+<line x1='54' y1='0' x2='80' y2='0'/>
+<line x1='-57' y1='-57' x2='-39' y2='-39'/>
+<line x1='39' y1='39' x2='57' y2='57'/>
+<line x1='57' y1='-57' x2='39' y2='-39'/>
+<line x1='-39' y1='39' x2='-57' y2='57'/>
+</g>
+<circle cx='0' cy='0' r='32' fill='#1a1a1a'/>
+<text x='0' y='5' text-anchor='middle' fill='#ece7df' font-size='13' font-weight='700' letter-spacing='2'>IDEA</text>
+</g>
+<g transform='translate(50,30)'><path d='M0,-10 L2.5,-2.5 L10,0 L2.5,2.5 L0,10 L-2.5,2.5 L-10,0 L-2.5,-2.5 Z' fill='#1a1a1a'/></g>
+<g transform='translate(280,290)'><path d='M0,0 Q18,-8 36,0 T72,0' stroke='#1a1a1a' stroke-width='2' fill='none' stroke-linecap='round'/><path d='M62,-5 L74,0 L62,5' stroke='#1a1a1a' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></g>
+<g transform='translate(30,280)'><rect x='0' y='0' width='54' height='36' stroke='#1a1a1a' stroke-width='1.5' fill='none'/><line x1='0' y1='9' x2='54' y2='9' stroke='#1a1a1a' stroke-width='0.6'/><line x1='0' y1='18' x2='54' y2='18' stroke='#1a1a1a' stroke-width='0.6'/><line x1='0' y1='27' x2='54' y2='27' stroke='#1a1a1a' stroke-width='0.6'/></g>
+<g fill='#1a1a1a'><circle cx='290' cy='50' r='3'/><circle cx='305' cy='70' r='2'/><circle cx='278' cy='80' r='2.5'/></g>
+</svg>
+<svg class='scatter s1' width='40' height='40' viewBox='0 0 40 40' fill='none'><g transform='translate(20,20)'><path d='M0,-12 L3,-3 L12,0 L3,3 L0,12 L-3,3 L-12,0 L-3,-3 Z' fill='#1a1a1a'/></g></svg>
+<svg class='scatter s2' width='60' height='30' viewBox='0 0 60 30' fill='none'><path d='M2,15 Q15,5 30,15 T58,15' stroke='#1a1a1a' stroke-width='1.5' fill='none' stroke-linecap='round' opacity='0.6'/></svg>
+<div class='footer-bar'>
+<span>架构管理团队</span>
+<span class='line'></span>
+<span> · 2026</span>
+</div>
+</div>
+</body>
+</html>
