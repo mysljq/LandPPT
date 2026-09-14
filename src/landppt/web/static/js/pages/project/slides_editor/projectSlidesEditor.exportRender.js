@@ -418,8 +418,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260914-cjk-kaiti-v154';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-14-cjk-kaiti-v154';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260914-unicode-core-v156';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-14-unicode-core-v156';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

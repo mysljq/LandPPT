@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280, initial-scale=1.0">
+  <title>膳食纤维的核心健康功效</title>
+  <script src="https://cos-szcs-alb.paas.cmbchina.cn/lm1504-uploads-dev-1255000141/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --red: #db0005;
+      --ink: #0a0a0a;
+      --muted: #737373;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 1280px;
+      height: 720px;
+      margin: 0;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    body {
+      font-family: Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: var(--ink);
+    }
+
+    .slide {
+      position: relative;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+      background: #fff url("https://s3gw.cmbchina.com/lt5230-images-prd/TE0xNS4wMw==/89cb028177a84a25ab4ae58e72396d72") center/cover no-repeat;
+    }
+
+    .logo {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 180px;
+      height: 45px;
+      object-fit: contain;
+    }
+
+    .signature {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 21.33px;
+      height: 77.33px;
+      background: #db0005;
+    }
+
+    h1 {
+      position: absolute;
+      top: 28px;
+      left: 52px;
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.15;
+      font-weight: 700;
+    }
+
+    .bar {
+      position: absolute;
+      top: 93.33px;
+      left: 66.67px;
+      width: 1146.67px;
+      height: 57.33px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 9.33px 14.67px;
+      border-radius: 5.33px;
+      background: #f2f2f2;
+    }
+
+    .bar::before {
+      content: "";
+      flex: 0 0 6.67px;
+      height: 38.67px;
+      background: #c2c2c2;
+    }
+
+    .bar-label {
+      color: #1f1f1f;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .suite-stage {
+      position: absolute;
+      top: 155px;
+      left: 123.33px;
+      right: 123.33px;
+      bottom: 80px;
+      z-index: 5;
+      overflow: hidden;
+    }
+
+    .page {
+      position: absolute;
+      right: 40px;
+      bottom: 20px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1;
+    }
+
+    /* 页面特定样式 */
+    .content-wrapper {
+      display: flex;
+      gap: 40px;
+      height: 100%;
+      width: 100%;
+    }
+
+    .left-column {
+      flex: 0 0 45%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+
+    .right-column {
+      flex: 0 0 calc(55% - 40px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .benefit-card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 14px 18px;
+      box-shadow: rgba(0,0,0,0.05) 0 4px 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      transition: transform 0.2s ease;
+    }
+
+    .benefit-card:hover {
+      transform: translateY(-2px);
+    }
+
+    .benefit-icon {
+      flex: 0 0 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #2A9D8F 0%, #264653 100%);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      color: #fff;
+    }
+
+    .benefit-content {
+      flex: 1;
+    }
+
+    .benefit-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1f1f1f;
+      margin: 0 0 4px 0;
+    }
+
+    .benefit-desc {
+      font-size: 13px;
+      color: #64748B;
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .chart-container {
+      width: 100%;
+      height: 380px;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: rgba(0,0,0,0.05) 0 4px 12px;
+      padding: 20px;
+    }
+
+    .section-label {
+      position: absolute;
+      top: 28px;
+      right: 52px;
+      font-size: 14px;
+      color: #737373;
+      font-weight: 400;
+    }
+  </style>
+
+    <style id="anti-overflow-fix">
+      /*
+       * 目标：防止 LLM 生成的 overflow:hidden / text-overflow:ellipsis
+       *       粗暴截断卡片内的正文文字。
+       * 原则：只解锁"叶子级内容容器"的文字截断，
+       *       绝不触碰画布根容器、flex 主轴容器和安全裁切层的 overflow。
+       */
+
+      /* 1. 行内文字元素：确保文字本身不被截断 */
+      p, span, li, td, th, label,
+      h1, h2, h3, h4, h5, h6, a {
+        text-overflow: unset !important;
+        -webkit-line-clamp: unset !important;
+      }
+
+      /* 2. 叶子级内容容器：解除 LLM 可能加的 overflow:hidden
+       *    排除画布骨架（main-content / content-layer / slide-root 等） */
+      [class*="card"] > *,
+      [class*="item"] > p, [class*="item"] > span,
+      [class*="tile"] > *, [class*="panel"] > *,
+      [class*="desc"], [class*="info"] > p {
+        overflow: visible !important;
+        text-overflow: unset !important;
+        -webkit-line-clamp: unset !important;
+      }
+
+      /* 3. 明确保留画布骨架的裁切能力 */
+      .content-layer,
+      [data-content-layer],
+      .main-content,
+      [class*="slide-root"],
+      #canvas,
+      body > div {
+        /* 不覆盖，保持原有 overflow 行为 */
+      }
+    </style>
+    </head>
+
+<body>
+  <section class="slide">
+    <img class="logo" src="https://s3gw.cmbchina.com/lt5230-images-prd/TE0xNS4wMw==/805b2fa5f6834f8c81e1ec1d80902762"
+      alt="">
+    <div class="signature"></div>
+    <h1>膳食纤维的核心健康功效</h1>
+    <div class="bar"><span class="bar-label">系统阐述膳食纤维对人体的五大健康益处</span></div>
+    <main class="suite-stage">
+      <div class="content-wrapper">
+        <div class="left-column">
+          <div class="benefit-card">
+            <div class="benefit-icon">⚡</div>
+            <div class="benefit-content">
+              <h3 class="benefit-title">促进肠道健康</h3>
+              <p class="benefit-desc">增加粪便体积、促进肠道蠕动、缩短排便时间，有效预防便秘和结肠癌</p>
+            </div>
+          </div>
+          <div class="benefit-card">
+            <div class="benefit-icon">🩸</div>
+            <div class="benefit-content">
+              <h3 class="benefit-title">调节血糖水平</h3>
+              <p class="benefit-desc">延缓碳水化合物吸收，降低餐后血糖峰值，对糖尿病患者尤为重要</p>
+            </div>
+          </div>
+          <div class="benefit-card">
+            <div class="benefit-icon">💚</div>
+            <div class="benefit-content">
+              <h3 class="benefit-title">降低胆固醇</h3>
+              <p class="benefit-desc">可溶性纤维结合胆汁酸并排出体外，降低血液 LDL（坏胆固醇）水平</p>
+            </div>
+          </div>
+          <div class="benefit-card">
+            <div class="benefit-icon">⚖️</div>
+            <div class="benefit-content">
+              <h3 class="benefit-title">控制体重</h3>
+              <p class="benefit-desc">增加饱腹感、减少热量摄入，有助于体重管理和减肥</p>
+            </div>
+          </div>
+          <div class="benefit-card">
+            <div class="benefit-icon">🦠</div>
+            <div class="benefit-content">
+              <h3 class="benefit-title">维护肠道菌群</h3>
+              <p class="benefit-desc">作为益生元促进有益菌生长，改善肠道微生态环境</p>
+            </div>
+          </div>
+        </div>
+        <div class="right-column">
+          <div class="chart-container">
+            <canvas data-chart-type="radar"></canvas>
+          </div>
+        </div>
+      </div>
+    </main>
+    <footer class="page">7</footer>
+  </section>
+
+  <script type="application/json" class="chart-data">
+{
+  "labels": ["肠道健康", "血糖调节", "胆固醇降低", "体重控制", "肠道菌群"],
+  "datasets": [
+    {
+      "label": "健康功效评分",
+      "data": [95, 85, 80, 75, 90],
+      "borderColor": "#2A9D8F",
+      "backgroundColor": "rgba(42, 157, 143, 0.25)",
+      "borderWidth": 2,
+      "pointBackgroundColor": "#2A9D8F",
+      "pointBorderColor": "#fff",
+      "pointRadius": 5
+    }
+  ]
+}
+  </script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const charts = document.querySelectorAll('canvas[data-chart-type]');
+      const dataScripts = document.querySelectorAll('script.chart-data');
+
+      charts.forEach((canvas, index) => {
+        if (dataScripts[index]) {
+          const config = JSON.parse(dataScripts[index].textContent);
+          const chartType = canvas.getAttribute('data-chart-type');
+          const ctx = canvas.getContext('2d');
+
+          new Chart(ctx, {
+            type: chartType,
+            data: config,
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              devicePixelRatio: 2,
+              plugins: {
+                title: {
+                  text: '膳食纤维健康功效评估',
+                  display: true,
+                  font: { size: 16, weight: 'bold', family: 'Arial, Microsoft YaHei, PingFang SC' },
+                  color: '#1f1f1f',
+                  padding: { bottom: 20 }
+                },
+                legend: {
+                  position: 'top',
+                  labels: {
+                    font: { family: 'Arial, Microsoft YaHei, PingFang SC', size: 12 },
+                    boxWidth: 12,
+                    padding: 15,
+                    color: '#333'
+                  }
+                }
+              },
+              scales: {
+                r: {
+                  max: 100,
+                  beginAtZero: true,
+                  ticks: {
+                    stepSize: 20,
+                    font: { size: 10 },
+                    color: '#64748B'
+                  },
+                  pointLabels: {
+                    font: { size: 13, weight: 'bold', family: 'Arial, Microsoft YaHei, PingFang SC' },
+                    color: '#1f1f1f'
+                  },
+                  grid: {
+                    color: 'rgba(0, 0, 0, 0.08)'
+                  },
+                  angleLines: {
+                    color: 'rgba(0, 0, 0, 0.08)'
+                  }
+                }
+              }
+            }
+          });
+        }
+      });
+    });
+  </script>
+</body>
+
+</html>

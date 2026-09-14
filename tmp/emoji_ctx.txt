@@ -1,0 +1,12 @@
+--- 0x26a1
+mn">           <div class="benefit-card">             <div class="benefit-icon">⚡</div>             <div class="benefit-content">               <h3 class="benefi
+--- 0x1fa78
+div>           <div class="benefit-card">             <div class="benefit-icon">🩸</div>             <div class="benefit-content">               <h3 class="benefi
+--- 0x1f49a
+div>           <div class="benefit-card">             <div class="benefit-icon">💚</div>             <div class="benefit-content">               <h3 class="benefi
+--- 0x2696
+div>           <div class="benefit-card">             <div class="benefit-icon">⚖️</div>             <div class="benefit-content">               <h3 class="benef
+--- 0xfe0f
+iv>           <div class="benefit-card">             <div class="benefit-icon">⚖️</div>             <div class="benefit-content">               <h3 class="benefi
+--- 0x1f9a0
+div>           <div class="benefit-card">             <div class="benefit-icon">🦠</div>             <div class="benefit-content">               <h3 class="benefi

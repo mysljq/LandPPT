@@ -68125,6 +68125,7 @@
     // FontMetrics.parseMetrics isolates html2canvas's host-document probes from
     // Tailwind/global resets for every pass. Keep the actual slide CSS intact.
     const sourceDoc = node.ownerDocument || document;
+    const style = (sourceDoc.defaultView || window).getComputedStyle(node);
     const rect = node.getBoundingClientRect();
     const widthPx = Math.max(1, Math.ceil(rect.width));
     const heightPx = Math.max(1, Math.ceil(rect.height));
@@ -69998,6 +69999,47 @@
     }
 
     return false;
+  }
+
+  function isUnicodeVisualCharacter(char) {
+    const code = String(char || '').codePointAt(0);
+    if (!Number.isFinite(code)) return false;
+    if (code === 0x200D || code === 0xFE0F || code === 0xFE0E) return true;
+    if (code >= 0x1F000 && code <= 0x1FAFF) return true;
+    if (code >= 0x2600 && code <= 0x27BF) return true;
+    if (code >= 0x2B00 && code <= 0x2BFF) return true;
+    if (code === 0x203C || code === 0x2049 || code === 0x2122 || code === 0x2139) return true;
+    if (code >= 0x2190 && code <= 0x21FF) return true;
+    if (code >= 0x2900 && code <= 0x297F) return true;
+    return false;
+  }
+
+  function isUnicodeVisualRichText(text) {
+    const characters = Array.from(String(text || '').replace(/\s/g, ''));
+    if (!characters.length) return false;
+    const visualCount = characters.filter(isUnicodeVisualCharacter).length;
+    return visualCount > 0 && characters.length - visualCount <=
+      Math.max(1, Math.ceil(characters.length * 0.25));
+  }
+
+  function isUnicodeVisualLeafCandidate(node, style, options = {}) {
+    if (options.rasterizeUnicodeSymbols === false || !node || node.nodeType !== 1) return false;
+    if (['IMG', 'SVG', 'CANVAS', 'VIDEO'].includes(String(node.tagName || '').toUpperCase())) return false;
+    if (node.children && node.children.length > 0) return false;
+    const text = String(node.textContent || '').trim();
+    if (!text || !isUnicodeVisualRichText(text)) return false;
+    if (node.getAttribute) {
+      if (node.getAttribute('data-export-formula') === 'true' ||
+          node.getAttribute('data-export-icon-materialized') === 'true' ||
+          node.getAttribute('data-client-export-snapshot') === 'true' ||
+          node.getAttribute('data-client-export-emoji-snapshot') === 'true') return false;
+      if (node.closest && node.closest('[data-export-fa-rasterized]')) return false;
+    }
+    if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 1 && rect.height > 1) || rect.width > 220 || rect.height > 220) return false;
+    if (/url\s*\(/i.test(String(style.backgroundImage || ''))) return false;
+    return true;
   }
 
   function normalizeRenderableZIndex(zIndexRaw) {
@@ -72095,6 +72137,51 @@
       return { items: [item], job, stopRecursion: true };
     }
 
+    // Emoji and standalone Unicode symbols depend on browser color-font and
+    // variation-selector shaping. PowerPoint commonly substitutes them with a
+    // monochrome glyph or tofu, so preserve these small visual leaves as PNGs
+    // directly in the core exporter instead of requiring an editor-side DOM
+    // replacement pass.
+    if (isUnicodeVisualLeafCandidate(node, style, globalOptions)) {
+      const inheritedRotation = rotation - getRotation(style.transform);
+      const item = {
+        type: 'image',
+        zIndex,
+        domOrder,
+        options: { data: null, x, y, w, h, rotate: inheritedRotation || 0 },
+      };
+      const debugEntry = {
+        tagName: node.tagName,
+        className: (node.getAttribute && node.getAttribute('class')) || '',
+        reasons: ['unicode-symbol-raster'],
+        textLineCount: 0,
+        captured: false,
+      };
+      getRiskFallbackDebug().push(debugEntry);
+      const job = async () => {
+        const captured = await captureDecorativeTextVisual(node, {
+          ...globalOptions,
+          decorativeTextPadding: Number.isFinite(Number(globalOptions.unicodeSymbolPadding))
+            ? Number(globalOptions.unicodeSymbolPadding) : 4,
+          decorativeTextRasterScale: Number.isFinite(Number(globalOptions.unicodeSymbolRasterScale))
+            ? Number(globalOptions.unicodeSymbolRasterScale) : 3,
+        });
+        if (!captured || !captured.data) {
+          item.skip = true;
+          debugEntry.error = 'capture-failed';
+          return;
+        }
+        const padIn = captured.paddingPx * PX_TO_INCH * config.scale;
+        item.options.data = captured.data;
+        item.options.x = x - padIn;
+        item.options.y = y - padIn;
+        item.options.w = w + padIn * 2;
+        item.options.h = h + padIn * 2;
+        debugEntry.captured = true;
+      };
+      return { items: [item], job, stopRecursion: true };
+    }
+
     // --- ASYNC JOB: Icons and Other Elements ---
     if (isIconElement(node)) {
       const item = {
@@ -73192,7 +73279,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-cjk-kaiti-v154';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-unicode-core-v156';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

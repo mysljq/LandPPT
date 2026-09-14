@@ -1,0 +1,6 @@
+0x26a1 U+26A1 count=1
+0x1fa78 U+1FA78 count=1
+0x1f49a U+1F49A count=1
+0x2696 U+2696 count=1
+0xfe0f U+FE0F count=1
+0x1f9a0 U+1F9A0 count=1
