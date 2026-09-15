@@ -3,8 +3,9 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { chromium } = require('playwright');
 const JSZip = require('jszip');
+const sharp = require('sharp');
 
-const VERSION = '2026-09-14-unicode-core-v156';
+const VERSION = '2026-09-15-unicode-color-v157';
 
 async function main() {
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
@@ -13,9 +14,9 @@ async function main() {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
     await page.setContent(`<!doctype html><style>
       #slide{position:relative;width:1280px;height:720px;background:#fff}
-      #emoji{position:absolute;left:100px;top:80px;width:64px;height:64px;
-        display:flex;align-items:center;justify-content:center;font:48px "Segoe UI Emoji"}
-    </style><div id="slide"><span id="emoji">⚡</span></div>`);
+      #emoji{position:absolute;left:100px;top:80px;width:64px;height:64px;color:#fff;background:#4b7bec;
+        border-radius:50%;display:flex;align-items:center;justify-content:center;font:42px "Segoe UI Emoji"}
+    </style><div id="slide"><span id="emoji">🩸</span></div>`);
     await page.addScriptTag({ path: path.resolve(__dirname, '..', 'src/landppt/web/static/js/dom-to-pptx.bundle.js') });
     const result = await page.evaluate(async () => {
       const before = document.querySelector('#emoji');
@@ -39,7 +40,15 @@ async function main() {
     const zip = await JSZip.loadAsync(Buffer.from(result.data, 'base64'));
     const xml = await zip.file('ppt/slides/slide1.xml').async('string');
     assert.ok((xml.match(/<p:pic>/g) || []).length >= 1, 'Unicode symbol should be emitted as a picture');
-    assert.ok(!xml.includes('⚡'), 'Unicode symbol must not also be emitted as editable duplicate text');
+    assert.ok(!xml.includes('🩸'), 'Unicode symbol must not also be emitted as editable duplicate text');
+    const media = Object.values(zip.files).find((entry) => /^ppt\/media\/.*\.png$/i.test(entry.name));
+    assert.ok(media, 'Unicode symbol PNG is missing');
+    const raw = await sharp(await media.async('nodebuffer')).ensureAlpha().raw().toBuffer();
+    let coloredPixels = 0;
+    for (let i = 0; i < raw.length; i += 4) {
+      if (raw[i + 3] > 20 && Math.max(raw[i], raw[i + 1], raw[i + 2]) - Math.min(raw[i], raw[i + 1], raw[i + 2]) > 12) coloredPixels++;
+    }
+    assert.ok(coloredPixels > 50, 'Unicode visual PNG must preserve RGB colors instead of becoming a black matte');
     console.log(`PASS ${VERSION}: Unicode symbol rasterized in core without DOM replacement`);
   } finally {
     await browser.close();

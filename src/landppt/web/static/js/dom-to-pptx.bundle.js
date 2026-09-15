@@ -68150,7 +68150,7 @@
         backgroundColor,
         logging: false,
         scale,
-        foreignObjectRendering: preferBrowserNativeRaster,
+        foreignObjectRendering: preferBrowserNativeRaster || options.preserveColorRaster === true,
         useCORS: true,
         width: widthPx + capturePadding * 2,
         height: heightPx + capturePadding * 2,
@@ -68161,6 +68161,16 @@
       });
 
     try {
+      // Black/white alpha reconstruction intentionally produces a neutral
+      // matte and therefore destroys RGB information from color emoji and
+      // symbol fonts. Unicode visual leaves need the browser's transparent
+      // color raster directly, just like the editor-side implementation did.
+      if (options.preserveColorRaster === true) {
+        const colorCanvas = await renderPass(null);
+        return colorCanvas
+          ? { data: colorCanvas.toDataURL('image/png'), paddingPx: padding }
+          : null;
+      }
       const blackCanvas = await renderPass('#000000');
       const whiteCanvas = await renderPass('#ffffff');
       const alphaCanvas = reconstructAlphaMatte(blackCanvas, whiteCanvas);
@@ -68180,6 +68190,72 @@
     } finally {
       if (previousAttribute === null) node.removeAttribute(attributeName);
       else node.setAttribute(attributeName, previousAttribute);
+    }
+  }
+
+  async function captureUnicodeSymbolVisual(node, options = {}) {
+    if (!node || !node.ownerDocument) return null;
+    const sourceDoc = node.ownerDocument;
+    const sourceWin = sourceDoc.defaultView || window;
+    const rect = node.getBoundingClientRect();
+    const widthPx = Math.max(1, Math.ceil(rect.width));
+    const heightPx = Math.max(1, Math.ceil(rect.height));
+    const padding = Math.max(0, Math.min(16, Math.round(Number(options.unicodeSymbolPadding) || 4)));
+    const scale = Math.max(2, Math.min(4, Number(options.unicodeSymbolRasterScale) || 3));
+    try {
+      const computed = sourceWin.getComputedStyle(node);
+      const clone = node.cloneNode(true);
+      for (let index = 0; index < computed.length; index++) {
+        const property = computed[index];
+        const value = computed.getPropertyValue(property);
+        if (property && value) clone.style.setProperty(property, value, computed.getPropertyPriority(property));
+      }
+      clone.style.setProperty('position', 'relative', 'important');
+      clone.style.setProperty('left', '0', 'important');
+      clone.style.setProperty('top', '0', 'important');
+      clone.style.setProperty('margin', '0', 'important');
+      clone.style.setProperty('transform', 'none', 'important');
+      clone.style.setProperty('width', `${widthPx}px`, 'important');
+      clone.style.setProperty('height', `${heightPx}px`, 'important');
+
+      const wrapper = sourceDoc.createElement('div');
+      wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+      wrapper.style.cssText = `width:${widthPx}px;height:${heightPx}px;margin:0;padding:0;overflow:visible;`;
+      wrapper.appendChild(clone);
+      const fullWidth = widthPx + padding * 2;
+      const fullHeight = heightPx + padding * 2;
+      const svg = sourceDoc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      svg.setAttribute('width', String(fullWidth));
+      svg.setAttribute('height', String(fullHeight));
+      svg.setAttribute('viewBox', `0 0 ${fullWidth} ${fullHeight}`);
+      const foreignObject = sourceDoc.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+      foreignObject.setAttribute('x', String(padding));
+      foreignObject.setAttribute('y', String(padding));
+      foreignObject.setAttribute('width', String(widthPx));
+      foreignObject.setAttribute('height', String(heightPx));
+      foreignObject.appendChild(wrapper);
+      svg.appendChild(foreignObject);
+
+      const image = new sourceWin.Image();
+      const loaded = new Promise((resolve) => {
+        const timer = sourceWin.setTimeout(() => resolve(false), 4000);
+        image.onload = () => { sourceWin.clearTimeout(timer); resolve(true); };
+        image.onerror = () => { sourceWin.clearTimeout(timer); resolve(false); };
+      });
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg))}`;
+      if (!await loaded) return null;
+      const canvas = sourceDoc.createElement('canvas');
+      canvas.width = Math.max(1, Math.ceil(fullWidth * scale));
+      canvas.height = Math.max(1, Math.ceil(fullHeight * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.scale(scale, scale);
+      ctx.drawImage(image, 0, 0, fullWidth, fullHeight);
+      return { data: canvas.toDataURL('image/png'), paddingPx: padding };
+    } catch (error) {
+      console.warn('Unicode symbol browser rasterization failed:', error);
+      return null;
     }
   }
 
@@ -72159,13 +72235,7 @@
       };
       getRiskFallbackDebug().push(debugEntry);
       const job = async () => {
-        const captured = await captureDecorativeTextVisual(node, {
-          ...globalOptions,
-          decorativeTextPadding: Number.isFinite(Number(globalOptions.unicodeSymbolPadding))
-            ? Number(globalOptions.unicodeSymbolPadding) : 4,
-          decorativeTextRasterScale: Number.isFinite(Number(globalOptions.unicodeSymbolRasterScale))
-            ? Number(globalOptions.unicodeSymbolRasterScale) : 3,
-        });
+        const captured = await captureUnicodeSymbolVisual(node, globalOptions);
         if (!captured || !captured.data) {
           item.skip = true;
           debugEntry.error = 'capture-failed';
@@ -73279,7 +73349,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-14-unicode-core-v156';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-15-unicode-color-v157';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
