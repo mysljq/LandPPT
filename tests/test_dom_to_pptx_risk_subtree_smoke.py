@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_risk_subtree_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-15-unicode-color-v157"
-EXPECTED_ASSET_VERSION = "20260915-unicode-color-v157"
+EXPECTED_PATCH_VERSION = "2026-09-15-pages53-58-v160"
+EXPECTED_ASSET_VERSION = "20260915-pages53-58-v160"
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 PRESENTATION_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 

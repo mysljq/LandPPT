@@ -17,10 +17,21 @@ const state = {
     aiGeneratedSuite: null,      // 基于需求/网页生成的套件
     referenceGeneratedSuite: null, // 基于任意参考图片风格生成的套件
     referenceFile: null,
+    manualPart: 'cover',          // 手动创建弹窗当前编辑部分
+    manualDraft: {},              // 手动创建弹窗的五类页面 HTML
 };
 
 const dom = {};
 let suiteNameInputTimeout = null;
+let manualPreviewTimeout = null;
+
+const MANUAL_SUITE_PARTS = {
+    cover: { label: '封面', hint: '建议包含 {{cover_title}}、{{cover_subtitle}} 占位符' },
+    transition: { label: '过渡页', hint: '建议包含 {{transition_title}}、{{transition_subtitle}} 占位符' },
+    catalog: { label: '目录页', hint: '建议包含 {{catalog_title}}、{{catalog_subtitle}} 占位符' },
+    header_footer: { label: '内容页', hint: '请包含 {{page_title}}、{{page_content}} 和页码占位符' },
+    ending: { label: '结尾页', hint: '建议包含 {{ending_title}}、{{ending_subtitle}} 占位符' },
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     cacheDom();
@@ -38,6 +49,20 @@ function cacheDom() {
     dom.prevPageBtn = document.getElementById('prevPageBtn');
     dom.nextPageBtn = document.getElementById('nextPageBtn');
     dom.pageSizeSelect = document.getElementById('pageSizeSelect');
+
+    dom.manualCreateModal = document.getElementById('manualCreateModal');
+    dom.manualSuiteForm = document.getElementById('manualSuiteForm');
+    dom.manualSuiteName = document.getElementById('manualSuiteName');
+    dom.manualSuiteDescription = document.getElementById('manualSuiteDescription');
+    dom.manualSuiteTags = document.getElementById('manualSuiteTags');
+    dom.manualDesignTokens = document.getElementById('manualDesignTokens');
+    dom.manualSuiteHtml = document.getElementById('manualSuiteHtml');
+    dom.manualPartLabel = document.getElementById('manualPartLabel');
+    dom.manualPartHint = document.getElementById('manualPartHint');
+    dom.manualPreviewBox = document.getElementById('manualPreviewBox');
+    dom.manualPreviewFrame = document.getElementById('manualPreviewFrame');
+    dom.manualSuiteStatus = document.getElementById('manualSuiteStatus');
+    dom.saveManualSuiteBtn = document.getElementById('saveManualSuiteBtn');
 
     dom.generateModal = document.getElementById('generateModal');
     dom.genStep1 = document.getElementById('genStep1');
@@ -126,6 +151,15 @@ function bindEvents() {
         loadSuites(1);
     });
 
+    document.getElementById('createSuiteManuallyBtn').addEventListener('click', openManualCreateModal);
+    document.getElementById('closeManualCreateModal').addEventListener('click', closeManualCreateModal);
+    document.getElementById('cancelManualSuiteBtn').addEventListener('click', closeManualCreateModal);
+    dom.manualSuiteForm.addEventListener('submit', saveManualSuite);
+    dom.manualSuiteHtml.addEventListener('input', handleManualHtmlInput);
+    document.querySelectorAll('[data-manual-part]').forEach(btn => {
+        btn.addEventListener('click', () => switchManualPart(btn.dataset.manualPart));
+    });
+
     document.getElementById('generateSuiteFromTemplateBtn').addEventListener('click', openGenerateModal);
     document.getElementById('closeGenerateModal').addEventListener('click', closeGenerateModal);
     document.getElementById('startGenerateBtn').addEventListener('click', startGenerateSuite);
@@ -155,7 +189,7 @@ function bindEvents() {
     document.addEventListener('click', (e) => {
         if (e.target.classList && e.target.classList.contains('modal')
             && e.target !== dom.generateModal && e.target !== dom.aiGenerateModal
-            && e.target !== dom.referenceGenerateModal) {
+            && e.target !== dom.referenceGenerateModal && e.target !== dom.manualCreateModal) {
             e.target.style.display = 'none';
             if (e.target === dom.previewModal) state.previewData = null;
         }
@@ -166,6 +200,7 @@ function bindEvents() {
         if (dom.generateModal && dom.generateModal.style.display !== 'none') closeGenerateModal();
         if (dom.aiGenerateModal && dom.aiGenerateModal.style.display !== 'none') closeAiGenerateModal();
         if (dom.referenceGenerateModal && dom.referenceGenerateModal.style.display !== 'none') closeReferenceGenerateModal();
+        if (dom.manualCreateModal && dom.manualCreateModal.style.display !== 'none') closeManualCreateModal();
         if (dom.previewModal && dom.previewModal.style.display !== 'none') closePreviewModal();
     });
 }
@@ -283,6 +318,139 @@ function changePage(p) {
 function showLoading(show) {
     dom.loading.style.display = show ? 'block' : 'none';
     dom.grid.style.display = show ? 'none' : 'grid';
+}
+
+// ---------------- 手动创建完整套件 ----------------
+
+function emptyManualDraft() {
+    return Object.fromEntries(Object.keys(MANUAL_SUITE_PARTS).map(part => [part, '']));
+}
+
+function openManualCreateModal() {
+    state.manualPart = 'cover';
+    state.manualDraft = emptyManualDraft();
+    dom.manualSuiteForm.reset();
+    setManualStatus('');
+    renderManualPart();
+    updateManualPartStatuses();
+    dom.manualCreateModal.style.display = 'flex';
+    setTimeout(() => dom.manualSuiteName.focus(), 0);
+}
+
+function closeManualCreateModal() {
+    clearTimeout(manualPreviewTimeout);
+    dom.manualCreateModal.style.display = 'none';
+    dom.manualPreviewFrame.srcdoc = '';
+    state.manualDraft = emptyManualDraft();
+}
+
+function switchManualPart(part) {
+    if (!MANUAL_SUITE_PARTS[part] || part === state.manualPart) return;
+    state.manualDraft[state.manualPart] = dom.manualSuiteHtml.value;
+    state.manualPart = part;
+    renderManualPart();
+    updateManualPartStatuses();
+}
+
+function renderManualPart() {
+    const meta = MANUAL_SUITE_PARTS[state.manualPart];
+    dom.manualPartLabel.innerHTML = `${meta.label} HTML <span class="required-mark">*</span>`;
+    dom.manualPartHint.textContent = meta.hint;
+    dom.manualSuiteHtml.value = state.manualDraft[state.manualPart] || '';
+    document.querySelectorAll('[data-manual-part]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.manualPart === state.manualPart);
+    });
+    renderManualPreview();
+}
+
+function handleManualHtmlInput() {
+    state.manualDraft[state.manualPart] = dom.manualSuiteHtml.value;
+    updateManualPartStatuses();
+    clearTimeout(manualPreviewTimeout);
+    manualPreviewTimeout = setTimeout(renderManualPreview, 250);
+}
+
+function updateManualPartStatuses() {
+    document.querySelectorAll('[data-manual-part]').forEach(btn => {
+        const value = btn.dataset.manualPart === state.manualPart
+            ? dom.manualSuiteHtml.value
+            : state.manualDraft[btn.dataset.manualPart];
+        btn.classList.toggle('is-complete', Boolean((value || '').trim()));
+    });
+}
+
+function fillManualPreviewHtml(html) {
+    if (!html.trim()) {
+        return '<!doctype html><html><body style="margin:0;width:1280px;height:720px;display:grid;place-items:center;background:#f8fafc;color:#94a3b8;font:24px sans-serif">输入 HTML 后将在此预览</body></html>';
+    }
+    const samples = {
+        cover_title: '演示文稿标题', cover_subtitle: '一句话说明核心主题', cover_extra: '',
+        transition_title: '章节标题', transition_subtitle: '承上启下的章节说明', transition_extra: '',
+        catalog_title: '目录', catalog_subtitle: 'CONTENTS', catalog_extra: '',
+        ending_title: '感谢聆听', ending_subtitle: 'Thank you', ending_extra: '',
+        page_title: '内容页标题', page_content: '<div style="padding:32px;font:24px sans-serif;color:#475569">正文内容预览区域</div>',
+        current_page_number: '03', total_page_count: '12', chapter_number: '01', chapter_title: '当前章节',
+    };
+    return html.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_, key) => samples[key] ?? '');
+}
+
+function renderManualPreview() {
+    const raw = dom.manualSuiteHtml.value || '';
+    setPreviewDoc(dom.manualPreviewFrame, dom.manualPreviewBox, fillManualPreviewHtml(raw));
+}
+
+function setManualStatus(message, kind = '') {
+    dom.manualSuiteStatus.textContent = message;
+    dom.manualSuiteStatus.className = `manual-suite-status${kind ? ` is-${kind}` : ''}`;
+}
+
+function parseManualTags(value) {
+    return [...new Set(String(value || '').split(/[,，\n]/).map(tag => tag.trim()).filter(Boolean))];
+}
+
+async function saveManualSuite(event) {
+    event.preventDefault();
+    state.manualDraft[state.manualPart] = dom.manualSuiteHtml.value;
+    const name = dom.manualSuiteName.value.trim();
+    if (!name) {
+        setManualStatus('请填写套件名称。', 'error');
+        dom.manualSuiteName.focus();
+        return;
+    }
+    const missing = Object.entries(MANUAL_SUITE_PARTS)
+        .filter(([part]) => !(state.manualDraft[part] || '').trim())
+        .map(([, meta]) => meta.label);
+    if (missing.length) {
+        setManualStatus(`请补全以下页面：${missing.join('、')}。`, 'error');
+        switchManualPart(Object.keys(MANUAL_SUITE_PARTS).find(part => !(state.manualDraft[part] || '').trim()));
+        return;
+    }
+
+    dom.saveManualSuiteBtn.disabled = true;
+    setManualStatus('正在创建套件...');
+    try {
+        await api('/api/template-suites', {
+            method: 'POST',
+            body: JSON.stringify({
+                suite_name: name,
+                description: dom.manualSuiteDescription.value.trim(),
+                cover: state.manualDraft.cover.trim(),
+                transition: state.manualDraft.transition.trim(),
+                catalog: state.manualDraft.catalog.trim(),
+                header_footer: state.manualDraft.header_footer.trim(),
+                ending: state.manualDraft.ending.trim(),
+                design_tokens: dom.manualDesignTokens.value.trim(),
+                tags: parseManualTags(dom.manualSuiteTags.value),
+            }),
+        });
+        setManualStatus('套件创建成功。', 'success');
+        await loadSuites(1);
+        closeManualCreateModal();
+    } catch (error) {
+        setManualStatus(`创建失败：${error.message}`, 'error');
+    } finally {
+        dom.saveManualSuiteBtn.disabled = false;
+    }
 }
 
 // ---------------- 从模板生成 ----------------

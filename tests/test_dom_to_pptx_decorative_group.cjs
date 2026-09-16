@@ -5,7 +5,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { chromium } = require('playwright');
 const JSZip = require('jszip');
 
-const VERSION = '2026-09-15-unicode-color-v157';
+const VERSION = '2026-09-15-pages53-58-v160';
 
 function readPage25() {
   const db = new DatabaseSync(path.join(process.cwd(), 'landppt.db'), { readOnly: true });

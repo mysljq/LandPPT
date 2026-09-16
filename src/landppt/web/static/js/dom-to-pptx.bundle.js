@@ -67292,8 +67292,13 @@
         // visual box, so anchor the corresponding editable parent text to the
         // same box instead of leaving it several pixels above the bitmap.
         const clampDirectLine = Boolean(options.clampDirectLineToBoundary) && parent === boundary;
-        const clampedTop = clampDirectLine
-          ? boundaryRect.top + Math.max(0, boundaryRect.top - rect.top)
+        // Clamp only glyphs which actually overflow above the boundary. The
+        // old unconditional formula reset every direct text node to the
+        // boundary top, collapsing paragraphs containing inline badges and
+        // <br><br> into overlapping PowerPoint text boxes.
+        const directLineOverflowsTop = clampDirectLine && rect.top < boundaryRect.top;
+        const clampedTop = directLineOverflowsTop
+          ? boundaryRect.top + (boundaryRect.top - rect.top)
           : rect.top;
         const clampedBottom = clampDirectLine
           ? clampedTop + Math.min(rect.height, boundaryRect.height)
@@ -67853,7 +67858,16 @@
     if (Number.isFinite(configured)) return Math.max(0, Math.min(96, Math.round(configured)));
     const effects = `${style.boxShadow || ''} ${style.filter || ''}`;
     const numbers = Array.from(effects.matchAll(/(-?\d+(?:\.\d+)?)px/gi)).map((match) => Math.abs(Number(match[1])));
-    return Math.max(12, Math.min(64, Math.ceil((numbers.length ? Math.max(...numbers) : 0) + 8)));
+    const outerShadowExtent = parseCssBoxShadowLayers(style.boxShadow)
+      .filter((layer) => !layer.inset)
+      .reduce((maximum, layer) => Math.max(
+        maximum,
+        Math.max(Math.abs(layer.dx), Math.abs(layer.dy)) + layer.blur * 1.5 + Math.abs(layer.spread) + 8
+      ), 0);
+    return Math.max(12, Math.min(96, Math.ceil(Math.max(
+      numbers.length ? Math.max(...numbers) + 8 : 0,
+      outerShadowExtent
+    ))));
   }
 
   function reconstructAlphaMatte(blackCanvas, whiteCanvas) {
@@ -68255,6 +68269,109 @@
       return { data: canvas.toDataURL('image/png'), paddingPx: padding };
     } catch (error) {
       console.warn('Unicode symbol browser rasterization failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Rasterize only an element's own gradient surface and layered shadows.
+   * Descendants are deliberately omitted, so SVG/icons/text remain separate
+   * editable PPT objects. The padded SVG filter region prevents the outer
+   * shadow from being clipped while inset layers are composited only once.
+   */
+  function generateLayeredGradientShadowSurfaceSvg(width, height, style, layers, opacity, padding) {
+    const gradient = parseNativeLinearGradient(style.backgroundImage);
+    if (!gradient || !Array.isArray(layers) || !layers.length) return null;
+    const cssAngle = (Number(gradient.angle) || 0) + 90;
+    const radians = cssAngle * Math.PI / 180;
+    const dx = Math.sin(radians);
+    const dy = -Math.cos(radians);
+    const x1 = `${(50 - dx * 50).toFixed(3)}%`;
+    const y1 = `${(50 - dy * 50).toFixed(3)}%`;
+    const x2 = `${(50 + dx * 50).toFixed(3)}%`;
+    const y2 = `${(50 + dy * 50).toFixed(3)}%`;
+    const stops = gradient.stops.map((stop) =>
+      `<stop offset="${Math.max(0, Math.min(100, Number(stop.pos) / 1000))}%" stop-color="#${stop.color}" stop-opacity="${Math.max(0, Math.min(1, 1 - Number(stop.transparency || 0) / 100))}"/>`
+    ).join('');
+    const ownerPath = roundedBoxSvgPath(0, 0, width, height, resolveCssCornerRadii(style, width, height));
+    const filterParts = [];
+    const mergeNodes = [];
+    const outerLayers = layers.filter((layer) => !layer.inset);
+    const insetLayers = layers.filter((layer) => layer.inset);
+    outerLayers.forEach((layer, index) => {
+      let input = 'SourceAlpha';
+      if (layer.spread) {
+        filterParts.push(`<feMorphology in="SourceAlpha" operator="${layer.spread > 0 ? 'dilate' : 'erode'}" radius="${Math.abs(layer.spread)}" result="outerSpread${index}"/>`);
+        input = `outerSpread${index}`;
+      }
+      filterParts.push(
+        `<feGaussianBlur in="${input}" stdDeviation="${Math.max(0.01, layer.blur / 2)}" result="outerBlur${index}"/>`,
+        `<feOffset in="outerBlur${index}" dx="${layer.dx}" dy="${layer.dy}" result="outerOffset${index}"/>`,
+        `<feFlood flood-color="#${layer.color}" flood-opacity="${Math.max(0, Math.min(1, layer.opacity))}" result="outerColor${index}"/>`,
+        `<feComposite in="outerColor${index}" in2="outerOffset${index}" operator="in" result="outerShadow${index}"/>`
+      );
+      mergeNodes.push(`<feMergeNode in="outerShadow${index}"/>`);
+    });
+    if (insetLayers.length) {
+      filterParts.push(
+        '<feFlood flood-color="#ffffff" flood-opacity="1" result="insetFlood"/>',
+        '<feComposite in="insetFlood" in2="SourceAlpha" operator="out" result="insetInverseAlpha"/>'
+      );
+    }
+    insetLayers.forEach((layer, index) => {
+      let input = 'insetInverseAlpha';
+      if (layer.spread) {
+        filterParts.push(`<feMorphology in="insetInverseAlpha" operator="${layer.spread > 0 ? 'dilate' : 'erode'}" radius="${Math.abs(layer.spread)}" result="insetSpread${index}"/>`);
+        input = `insetSpread${index}`;
+      }
+      filterParts.push(
+        `<feGaussianBlur in="${input}" stdDeviation="${Math.max(0.01, layer.blur / 2)}" result="insetBlur${index}"/>`,
+        `<feOffset in="insetBlur${index}" dx="${layer.dx}" dy="${layer.dy}" result="insetOffset${index}"/>`,
+        `<feFlood flood-color="#${layer.color}" flood-opacity="${Math.max(0, Math.min(1, layer.opacity))}" result="insetColor${index}"/>`,
+        `<feComposite in="insetColor${index}" in2="insetOffset${index}" operator="in" result="insetColored${index}"/>`,
+        `<feComposite in="insetColored${index}" in2="SourceAlpha" operator="in" result="insetShadow${index}"/>`
+      );
+    });
+    mergeNodes.push('<feMergeNode in="SourceGraphic"/>');
+    insetLayers.forEach((_layer, index) => mergeNodes.push(`<feMergeNode in="insetShadow${index}"/>`));
+    filterParts.push(`<feMerge>${mergeNodes.join('')}</feMerge>`);
+    return encodeSvgDataUri(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width + padding * 2}" height="${height + padding * 2}" viewBox="${-padding} ${-padding} ${width + padding * 2} ${height + padding * 2}">` +
+      `<defs><linearGradient id="surfaceGradient" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" color-interpolation="sRGB">${stops}</linearGradient>` +
+      `<filter id="surfaceEffects" filterUnits="userSpaceOnUse" x="${-padding}" y="${-padding}" width="${width + padding * 2}" height="${height + padding * 2}" color-interpolation-filters="sRGB">${filterParts.join('')}</filter></defs>` +
+      `<path d="${ownerPath}" fill="url(#surfaceGradient)" opacity="${Math.max(0, Math.min(1, opacity))}" filter="url(#surfaceEffects)"/>` +
+      '</svg>'
+    );
+  }
+
+  async function captureLayeredGradientShadowSurface(node, options = {}) {
+    if (!node || !node.ownerDocument) return null;
+    const sourceWin = node.ownerDocument.defaultView || window;
+    const rect = node.getBoundingClientRect();
+    const widthPx = Math.max(1, Math.ceil(node.offsetWidth || rect.width));
+    const heightPx = Math.max(1, Math.ceil(node.offsetHeight || rect.height));
+    const computed = sourceWin.getComputedStyle(node);
+    const padding = estimateRiskCapturePadding(computed, options);
+    const scale = Math.max(2, Math.min(4, Number(options.imageScale) || 3));
+    const effectiveOpacity = Number.isFinite(Number(options.effectiveOpacity))
+      ? Number(options.effectiveOpacity)
+      : 1;
+    try {
+      const layers = parseCssBoxShadowLayers(computed.boxShadow);
+      const svgData = generateLayeredGradientShadowSurfaceSvg(
+        widthPx,
+        heightPx,
+        computed,
+        layers,
+        effectiveOpacity,
+        padding
+      );
+      const data = svgData
+        ? await rasterizeSvgDataUri(svgData, widthPx + padding * 2, heightPx + padding * 2, scale)
+        : null;
+      return data ? { data, paddingPx: padding } : null;
+    } catch (error) {
+      console.warn('Layered gradient shadow surface capture failed:', error);
       return null;
     }
   }
@@ -69274,7 +69391,7 @@
         // before addText(), after all geometry normalization/deduplication,
         // so no later path can discard the correction.
         const hasLargeOutlinedNumeral = Array.isArray(item.textParts) &&
-          item.textParts.some((part) => /^1$/.test(String(part.text || '').trim()) &&
+          item.textParts.some((part) => /^\d{1,3}$/.test(String(part.text || '').trim()) &&
             Number(part.options && part.options.fontSize) > 100 &&
             part.options &&
             (part.options.outline ||
@@ -70830,6 +70947,43 @@
       current = current.parentElement;
     }
     return null;
+  }
+
+  // CSS clips a flush child through the rounded outline of an overflow-hidden
+  // ancestor even when the child itself has square corners. DrawingML shapes
+  // do not inherit that clip, so synthesize only the ancestor corners actually
+  // touched by the child. This keeps header bands editable without a
+  // class-name-specific raster fallback.
+  function getOverflowClippedCornerStyle(node, style, root) {
+    const owner = getRoundedOverflowAncestor(node, root);
+    if (!owner) return style;
+    const nodeRect = node.getBoundingClientRect();
+    const ownerRect = owner.rect;
+    const tolerance = 1.5;
+    const touchesLeft = Math.abs(nodeRect.left - ownerRect.left) <= tolerance;
+    const touchesRight = Math.abs(nodeRect.right - ownerRect.right) <= tolerance;
+    const touchesTop = Math.abs(nodeRect.top - ownerRect.top) <= tolerance;
+    const touchesBottom = Math.abs(nodeRect.bottom - ownerRect.bottom) <= tolerance;
+    if (!(touchesLeft || touchesRight) || !(touchesTop || touchesBottom)) return style;
+
+    const own = resolveCssCornerRadii(style, nodeRect.width, nodeRect.height);
+    const inherited = resolveCssCornerRadii(owner.style, ownerRect.width, ownerRect.height);
+    const useInherited = [
+      touchesTop && touchesLeft,
+      touchesTop && touchesRight,
+      touchesBottom && touchesRight,
+      touchesBottom && touchesLeft,
+    ];
+    const merged = own.map((corner, index) => useInherited[index]
+      ? { rx: Math.max(corner.rx, inherited[index].rx), ry: Math.max(corner.ry, inherited[index].ry) }
+      : corner
+    );
+    return {
+      borderTopLeftRadius: `${merged[0].rx}px ${merged[0].ry}px`,
+      borderTopRightRadius: `${merged[1].rx}px ${merged[1].ry}px`,
+      borderBottomRightRadius: `${merged[2].rx}px ${merged[2].ry}px`,
+      borderBottomLeftRadius: `${merged[3].rx}px ${merged[3].ry}px`,
+    };
   }
 
   function measureFlexPseudoGeometry(node, pseudoSelector, pseudoStyle, geometry, scale) {
@@ -72543,7 +72697,9 @@
     const borderLineOptions = hasUniformBorder
       ? applyOpacityToLineOptions(borderInfo.options, safeOpacity)
       : null;
-    const nativeCornerGeometry = getNativeCssCornerGeometry(style, widthPx, heightPx, PX_TO_INCH * config.scale);
+    const visualCornerStyle = getOverflowClippedCornerStyle(node, style, config.root);
+    const hasInheritedOverflowCorners = visualCornerStyle !== style;
+    const nativeCornerGeometry = getNativeCssCornerGeometry(visualCornerStyle, widthPx, heightPx, PX_TO_INCH * config.scale);
     const uniformBorderGeometry = hasUniformBorder
       ? getNativeUniformBorderGeometry(style, { x, y, w, h, widthPx, heightPx, rotate: rotation }, config.scale)
       : null;
@@ -72551,6 +72707,52 @@
     const shadowStr = style.boxShadow;
     const hasShadow = shadowStr && shadowStr !== 'none';
     const shadowLayers = hasShadow ? parseCssBoxShadowLayers(shadowStr) : [];
+    const hasLayeredGradientShadowSurface =
+      hasAnyGradientBackground &&
+      !hasLeafTextContent &&
+      shadowLayers.some((layer) => !layer.inset) &&
+      shadowLayers.some((layer) => layer.inset);
+    if (hasLayeredGradientShadowSurface) {
+      const paddingPx = estimateRiskCapturePadding(style, globalOptions);
+      const paddingIn = paddingPx * PX_TO_INCH * config.scale;
+      const surfaceItem = {
+        type: 'image',
+        zIndex,
+        domOrder,
+        options: {
+          objectName: `CSS layered gradient shadow surface ${domOrder}`,
+          data: null,
+          x: x - paddingIn,
+          y: y - paddingIn,
+          w: w + paddingIn * 2,
+          h: h + paddingIn * 2,
+          rotate: rotation,
+        },
+      };
+      const debugEntry = {
+        tagName: node.tagName,
+        reasons: ['layered-gradient-shadow-surface'],
+        textLineCount: 0,
+        captured: false,
+        paddingPx,
+      };
+      getRiskFallbackDebug().push(debugEntry);
+      const job = async () => {
+        const captured = await captureLayeredGradientShadowSurface(node, {
+          ...globalOptions,
+          effectiveOpacity: safeOpacity,
+          riskRasterPadding: paddingPx,
+        });
+        if (captured && captured.data) {
+          surfaceItem.options.data = captured.data;
+          debugEntry.captured = true;
+        } else {
+          surfaceItem.skip = true;
+          debugEntry.error = 'layered-gradient-shadow-surface-capture-failed';
+        }
+      };
+      return { items: [surfaceItem], job, stopRecursion: false };
+    }
     const needsLayeredShadowVisual = shadowLayers.length > 1 || shadowLayers.some((layer) => layer.inset);
     const shadowVisual = needsLayeredShadowVisual
       ? generateCssBoxShadowVisuals(widthPx, heightPx, style, shadowLayers, safeOpacity)
@@ -72845,7 +73047,9 @@
       }
     }
 
-    const parsedNativeGradientFill = !textPayload ? parseNativeLinearGradient(backgroundImageValue) : null;
+    const parsedNativeGradientFill = (!textPayload || hasInheritedOverflowCorners) && !isBgClipText
+      ? parseNativeLinearGradient(backgroundImageValue)
+      : null;
     const nativeGradientFill = parsedNativeGradientFill
       ? {
           ...parsedNativeGradientFill,
@@ -72895,6 +73099,27 @@
       );
       if (nativeHardShadowItem) items.push(nativeHardShadowItem);
       items.push({ type: 'shape', zIndex, domOrder, shapeType: nativeShapeType, options: nativeShapeOptions });
+      if (textPayload) {
+        const textGeometry = getTextPayloadGeometry(textPayload, x, y, w, h, rotation);
+        items.push({
+          type: 'text',
+          zIndex: nextRenderableZIndex(zIndex),
+          domOrder: domOrder + 0.05,
+          textParts: textPayload.text,
+          options: {
+            ...textGeometry,
+            fill: { type: 'none' },
+            line: { type: 'none' },
+            align: textPayload.align,
+            valign: textPayload.valign,
+            margin: textPayload.margin,
+            wrap: textPayload.wrap,
+            noWrap: textPayload.noWrap,
+            autoFit: false,
+            fit: textPayload.wrap ? 'none' : undefined,
+          },
+        });
+      }
       // Gradient fills and borders are separate DrawingML layers. Keeping the
       // border on its own shape avoids Office dropping it while serializing the
       // native gradient fill.
@@ -73349,7 +73574,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-15-unicode-color-v157';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-15-pages53-58-v160';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

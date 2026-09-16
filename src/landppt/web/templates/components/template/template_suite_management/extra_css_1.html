@@ -100,6 +100,47 @@
 }
 .completion-header { padding: 12px 16px; background: #f0fdf4; border-radius: 10px; }
 
+/* 手动创建完整套件 */
+.manual-suite-modal { max-width: 1180px; width: 96%; }
+.manual-suite-subtitle { margin: 4px 0 0; color: var(--text-secondary); font-size: 0.8rem; }
+.manual-suite-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.manual-suite-wide { grid-column: 1 / -1; }
+.manual-suite-input {
+    width: 100%; box-sizing: border-box; padding: 9px 12px;
+    border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px;
+    font: inherit; font-size: 0.85rem; color: var(--text-primary); background: #fff;
+}
+.manual-suite-input:focus, #manualSuiteHtml:focus { outline: none; border-color: #111; box-shadow: 0 0 0 3px rgba(0,0,0,0.06); }
+.required-mark { color: #dc2626; }
+.manual-suite-tabs { display: flex; gap: 7px; flex-wrap: wrap; margin: 2px 0 12px; }
+.manual-part-status::after { content: '○'; margin-left: 4px; opacity: 0.55; }
+.suite-tab-btn.is-complete .manual-part-status::after { content: '●'; color: #22c55e; opacity: 1; }
+.manual-suite-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.manual-suite-pane-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 7px; }
+.manual-suite-pane-heading label { font-size: 0.82rem; font-weight: 700; color: var(--text-primary); }
+.manual-suite-pane-heading span { font-size: 0.72rem; color: var(--text-secondary); text-align: right; }
+#manualSuiteHtml {
+    display: block; width: 100%; height: 340px; box-sizing: border-box; resize: vertical;
+    border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px; padding: 12px;
+    font: 12px/1.55 Consolas, Menlo, Monaco, monospace; color: #e2e8f0; background: #0f172a;
+}
+.manual-suite-preview-box {
+    position: relative; width: 100%; aspect-ratio: 16/9; overflow: hidden;
+    border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px; background: #f8fafc;
+}
+.manual-suite-preview-box iframe {
+    position: absolute; top: 0; left: 0; width: 1280px; height: 720px;
+    border: 0; transform-origin: top left; pointer-events: none;
+}
+.manual-suite-advanced { margin-top: 14px; border: 1px solid var(--border-color,#e5e7eb); border-radius: 9px; padding: 9px 12px; }
+.manual-suite-advanced summary { cursor: pointer; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); }
+.manual-suite-advanced .form-group { margin: 10px 0 0; }
+.manual-design-tokens { font-family: Consolas, Menlo, Monaco, monospace; font-size: 0.78rem; }
+.manual-suite-status { min-height: 20px; margin-top: 10px; text-align: center; font-size: 0.8rem; color: var(--text-secondary); }
+.manual-suite-status.is-error { color: #dc2626; }
+.manual-suite-status.is-success { color: #16a34a; }
+.manual-suite-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
 /* ── 模态框（弹窗） ── */
 .modal {
     position: fixed;
@@ -166,4 +207,6 @@
     .modal { padding: 16px; }
     .modal-content { width: 95% !important; margin: 0; }
     .modal-body { padding: 16px; }
+    .manual-suite-meta-grid, .manual-suite-editor-grid { grid-template-columns: 1fr; }
+    #manualSuiteHtml { height: 260px; }
 }

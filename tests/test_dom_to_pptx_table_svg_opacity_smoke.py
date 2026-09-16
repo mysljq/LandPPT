@@ -8,7 +8,7 @@ import pytest
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "dom_to_pptx_table_svg_opacity_smoke.html"
-EXPECTED_PATCH_VERSION = "2026-09-15-unicode-color-v157"
+EXPECTED_PATCH_VERSION = "2026-09-15-pages53-58-v160"
 EDGE_PATH = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
 DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
