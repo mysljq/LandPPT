@@ -346,11 +346,16 @@ class DesignPrompts:
     @staticmethod
     def get_global_visual_constitution_prompt(confirmed_requirements: Dict[str, Any],
                                               template_html: str, total_pages: int,
-                                              first_slide_data: Dict[str, Any] = None) -> str:
+                                              first_slide_data: Dict[str, Any] = None,
+                                              suite_design_context: str = "") -> str:
         """Layer 1: 全局视觉宪法——只定规则，不涉及具体页面。"""
         project_brief = DesignPrompts._build_project_brief(confirmed_requirements)
         template_context = DesignPrompts._build_template_html_context(template_html)
         resource_perf = DesignPrompts._build_resource_performance_context()
+        suite_block = f"""
+**生效套件（最高优先级，覆盖下方所有一般审美推断）**
+{suite_design_context}
+""" if suite_design_context else ""
 
         return f"""请为一套 {total_pages} 页的 PPT 输出"全局视觉宪法"——只定规则，不涉及任何具体页面的布局。
 
@@ -359,6 +364,8 @@ class DesignPrompts:
 
 **参考模板 HTML 原文**
 {template_context}
+
+{suite_block}
 
 {DesignPrompts._build_template_guidance_context()}
 
@@ -572,13 +579,18 @@ color: <页码文字色 #hex，全册普通页统一>
     @staticmethod
     def get_slide_design_guide_prompt(slide_data: Dict[str, Any], confirmed_requirements: Dict[str, Any],
                                       slides_summary: str, page_number: int, total_pages: int,
-                                      template_html: str = "") -> str:
+                                      template_html: str = "",
+                                      suite_design_context: str = "") -> str:
         """单页级创意设计指导。"""
         project_brief = DesignPrompts._build_project_brief(confirmed_requirements)
         slides_summary = slides_summary or "(未提供大纲摘要)"
         images_context = DesignPrompts._build_slide_images_context(slide_data)
         template_context = DesignPrompts._build_template_html_context(template_html)
         resource_perf = DesignPrompts._build_resource_performance_context()
+        suite_block = f"""
+**生效套件（最高优先级，覆盖本页的所有一般审美推断）**
+{suite_design_context}
+""" if suite_design_context else ""
 
         return f"""请为第 {page_number} 页生成"单页创意设计指导"。
 
@@ -597,6 +609,8 @@ color: <页码文字色 #hex，全册普通页统一>
 
 **模板 HTML 原文**
 {template_context}
+
+{suite_block}
 
 {DesignPrompts._build_template_guidance_context()}
 

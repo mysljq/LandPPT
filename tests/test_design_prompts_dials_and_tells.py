@@ -43,6 +43,29 @@ def test_global_constitution_still_forbids_pixel_layout():
     assert "不要给出具体像素布局" in prompt or "具体像素" in prompt
 
 
+def test_suite_context_is_highest_priority_for_creative_guidance_prompts():
+    suite_context = "套件名称：亮红套件\ndesign_tokens（必须遵守）：强调色 #D11A2A；背景 #FFFFFF"
+    constitution_prompt = prompts_module.DesignPrompts.get_global_visual_constitution_prompt(
+        confirmed_requirements={"topic": "demo"},
+        template_html="",
+        total_pages=3,
+        suite_design_context=suite_context,
+    )
+    slide_prompt = prompts_module.DesignPrompts.get_slide_design_guide_prompt(
+        slide_data={"title": "进展"},
+        confirmed_requirements={"topic": "demo"},
+        slides_summary="1. 封面\n2. 进展",
+        page_number=2,
+        total_pages=3,
+        suite_design_context=suite_context,
+    )
+
+    for prompt in (constitution_prompt, slide_prompt):
+        assert "生效套件（最高优先级" in prompt
+        assert "#D11A2A" in prompt
+        assert prompt.index("生效套件（最高优先级") < prompt.index("模板理解与使用方向")
+
+
 def test_fixed_canvas_guardrails_has_height_budget_rule():
     text = prompts_module.DesignPrompts._build_fixed_canvas_html_guardrails()
     assert "高度预算" in text

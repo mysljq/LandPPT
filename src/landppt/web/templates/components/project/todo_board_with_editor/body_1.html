@@ -287,6 +287,10 @@
     <!-- Free Template Wizard Modal -->
     <style>
         /* ---- Free Template Modal ---- */
+        /* Bootstrap 来自 CDN。即使外部样式尚未加载或加载失败，未打开的弹窗也不能
+           退化为普通文档流内容，出现在 PPT 生成进度下方。Bootstrap 打开弹窗时会
+           添加 .show 并覆盖元素的内联 display，因此不影响自由模板流程正常使用。 */
+        .ftm-modal:not(.show) { display: none !important; }
         .ftm-modal .modal-content { border-radius: 16px; overflow: hidden; border: none; box-shadow: 0 24px 80px rgba(0,0,0,.25); }
         .ftm-header { background: linear-gradient(135deg, #111 0%, #1a1a2e 100%); color: #fff; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
         .ftm-header-title { font-weight: 800; font-size: 16px; display: flex; align-items: center; gap: 10px; margin: 0; }
@@ -362,7 +366,7 @@
         .ftm-fullscreen-hint kbd { background: rgba(255,255,255,.2); padding: 2px 6px; border-radius: 4px; }
     </style>
 
-    <div class="modal fade ftm-modal" id="freeTemplateModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade ftm-modal" id="freeTemplateModal" tabindex="-1" aria-hidden="true" style="display:none;">
         <div class="modal-dialog modal-xl modal-dialog-centered">
             <div class="modal-content">
                 <!-- Header -->

@@ -309,6 +309,63 @@ def test_creative_design_service_uses_page_type_briefs_when_per_slide_guidance_d
     assert result == ("STYLE-GENES", "GLOBAL-CONSTITUTION", "PAGE-BRIEF")
 
 
+def test_creative_design_service_passes_effective_suite_to_guidance_layers(tmp_path):
+    from landppt.services.slide.creative_design_service import CreativeDesignService
+
+    class _TemplateSuite:
+        async def get_effective_suite(self, project_id):
+            assert project_id == "proj-suite"
+            return {
+                "suite_name": "亮红套件",
+                "design_tokens": "强调色：#D11A2A；背景：#FFFFFF",
+                "header_footer": "<div class='suite-stage'>{{page_content}}</div>",
+            }
+
+    class _DummyService:
+        def __init__(self):
+            self.user_id = 1
+            self.template_suite = _TemplateSuite()
+            self.cache_dirs = {"style_genes": tmp_path}
+
+        async def _get_user_generation_config(self):
+            return {"enable_per_slide_creative_guidance": True}
+
+    owner = _DummyService()
+    service = CreativeDesignService(owner)
+    captured = {}
+
+    async def fake_style_genes(project_id, template_html, page_number):
+        return "STYLE-GENES"
+
+    async def fake_constitution(*args, **kwargs):
+        captured["constitution"] = kwargs["suite_design_context"]
+        return "GLOBAL-CONSTITUTION"
+
+    async def fake_slide_guide(*args, **kwargs):
+        captured["slide"] = kwargs["suite_design_context"]
+        return "SLIDE-GUIDE"
+
+    service._get_or_extract_style_genes = fake_style_genes
+    service._get_or_generate_global_constitution = fake_constitution
+    service._get_or_generate_slide_creative_guide = fake_slide_guide
+
+    result = asyncio.run(
+        service._get_creative_design_inputs(
+            project_id="proj-suite",
+            template_html="",
+            slide_data={"title": "进展"},
+            page_number=2,
+            total_pages=3,
+            all_slides=[{"title": "封面"}, {"title": "进展"}],
+        )
+    )
+
+    assert result == ("STYLE-GENES", "GLOBAL-CONSTITUTION", "SLIDE-GUIDE")
+    assert "亮红套件" in captured["constitution"]
+    assert "#D11A2A" in captured["constitution"]
+    assert captured["slide"] == captured["constitution"]
+
+
 def test_creative_design_service_persists_slide_creative_guide_cache(tmp_path, monkeypatch):
     from landppt.services.slide.creative_design_service import CreativeDesignService
 

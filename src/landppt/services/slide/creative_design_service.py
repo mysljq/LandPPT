@@ -97,6 +97,35 @@ class CreativeDesignService:
 
         return "\n".join(lines) if lines else "(未提供完整大纲摘要)"
 
+    @staticmethod
+    def _build_suite_design_context(suite: Optional[Dict[str, Any]]) -> str:
+        """Build the authoritative suite context used by creative guidance prompts."""
+        if not suite:
+            return ""
+        suite_name = str(suite.get("suite_name") or suite.get("template_name") or "未命名套件").strip()
+        design_tokens = str(suite.get("design_tokens") or "").strip()
+        header_footer = str(suite.get("header_footer") or "").strip()
+        parts = [f"套件名称：{suite_name}"]
+        if design_tokens:
+            parts.append(f"design_tokens（必须遵守）：\n{design_tokens}")
+        if header_footer:
+            parts.append(
+                "内容页页头/页脚骨架（普通内容页必须继承其视觉语言；仅供读取，不要改写）：\n"
+                + header_footer
+            )
+        return "\n\n".join(parts)
+
+    async def _get_effective_suite_design_context(self, project_id: str) -> str:
+        """Load the project's effective suite for the creative-guidance layers."""
+        if not project_id:
+            return ""
+        try:
+            suite = await self.template_suite.get_effective_suite(project_id)
+            return self._build_suite_design_context(suite)
+        except Exception as exc:
+            logger.warning("获取生效套件创意上下文失败: %s", exc)
+            return ""
+
     async def _generate_slide_with_template(
         self,
         slide_data: Dict[str, Any],
@@ -375,6 +404,7 @@ class CreativeDesignService:
         async_prewarm_remaining_slide_guides: bool = False,
     ) -> str:
         """在生成前预热共享创意缓存，并可把剩余单页指导转为后台异步预热。"""
+        suite_design_context = await self._get_effective_suite_design_context(project_id)
         if not template_html and project_id:
             try:
                 selected_template = await self.get_selected_global_template(project_id)
@@ -398,6 +428,7 @@ class CreativeDesignService:
             template_html=template_html,
             total_pages=total_pages,
             first_slide_data=first_slide,
+            suite_design_context=suite_design_context,
         )
         if enable_per_slide_guidance:
             slides_list = all_slides or ([slide_data] if slide_data else [])
@@ -412,6 +443,7 @@ class CreativeDesignService:
                         confirmed_requirements=confirmed_requirements,
                         all_slides=slides_list,
                         template_html=template_html,
+                        suite_design_context=suite_design_context,
                     )
 
             remaining_start = warmup_count + 1
@@ -423,6 +455,7 @@ class CreativeDesignService:
                     total_pages=total_pages,
                     confirmed_requirements=confirmed_requirements,
                     template_html=template_html,
+                    suite_design_context=suite_design_context,
                 )
             elif len(slides_list) > warmup_count:
                 logger.info(
@@ -453,6 +486,7 @@ class CreativeDesignService:
         total_pages: int,
         confirmed_requirements: Optional[Dict[str, Any]] = None,
         template_html: str = "",
+        suite_design_context: str = "",
     ) -> None:
         """后台异步预热剩余页面的单页创意指导，避免阻塞首批流式输出。"""
         if not project_id or start_page_number > len(slides_list):
@@ -485,6 +519,7 @@ class CreativeDesignService:
                         confirmed_requirements=confirmed_requirements,
                         all_slides=slides_list,
                         template_html=template_html,
+                        suite_design_context=suite_design_context,
                     )
                 logger.info("项目 %s 剩余单页创意指导后台预热完成", project_id)
             except asyncio.CancelledError:
@@ -513,19 +548,23 @@ class CreativeDesignService:
         template_html: str = "",
         total_pages: int = 1,
         first_slide_data: Optional[Dict[str, Any]] = None,
+        suite_design_context: str = "",
     ) -> str:
         """Layer 1: Get or generate global visual constitution, with cache."""
         cache_attr = "_cached_global_constitutions"
         event_attr = "_global_constitution_ready_events"
         default = "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点与页码锚点\n- 首尾页可自由设计"
+        suite_context_hash = hashlib.md5(suite_design_context.encode("utf-8")).hexdigest()[:12]
+        cache_key = f"{project_id}:{suite_context_hash}" if project_id and suite_design_context else project_id
 
         if not project_id:
             return await self._generate_global_constitution(
-                confirmed_requirements, template_html, total_pages, first_slide_data)
+                confirmed_requirements, template_html, total_pages, first_slide_data,
+                suite_design_context=suite_design_context)
 
         # Check in-memory cache
-        if hasattr(self, cache_attr) and project_id in getattr(self, cache_attr, {}):
-            return getattr(self, cache_attr)[project_id]
+        if hasattr(self, cache_attr) and cache_key in getattr(self, cache_attr, {}):
+            return getattr(self, cache_attr)[cache_key]
 
         # Check file cache
         if hasattr(self, "cache_dirs") and self.cache_dirs:
@@ -535,10 +574,11 @@ class CreativeDesignService:
                     with open(cache_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         result = data.get("constitution", "")
-                        if result:
+                        cached_hash = str(data.get("suite_context_hash") or "")
+                        if result and (not suite_design_context or cached_hash == suite_context_hash):
                             if not hasattr(self, cache_attr):
                                 setattr(self, cache_attr, {})
-                            getattr(self, cache_attr)[project_id] = result
+                            getattr(self, cache_attr)[cache_key] = result
                             return result
                 except Exception as exc:
                     logger.warning("读取全局宪法缓存失败: %s", exc)
@@ -548,21 +588,23 @@ class CreativeDesignService:
             setattr(self, event_attr, {})
         events = getattr(self, event_attr)
 
-        if project_id not in events:
+        if cache_key not in events:
             event = asyncio.Event()
-            events[project_id] = event
+            events[cache_key] = event
             try:
                 result = await self._generate_global_constitution(
-                    confirmed_requirements, template_html, total_pages, first_slide_data)
+                    confirmed_requirements, template_html, total_pages, first_slide_data,
+                    suite_design_context=suite_design_context)
                 if not hasattr(self, cache_attr):
                     setattr(self, cache_attr, {})
-                getattr(self, cache_attr)[project_id] = result
+                getattr(self, cache_attr)[cache_key] = result
                 # Save to file
                 if hasattr(self, "cache_dirs") and self.cache_dirs:
                     try:
                         cache_file = self.cache_dirs["style_genes"] / f"{project_id}_global_constitution.json"
                         with open(cache_file, "w", encoding="utf-8") as f:
                             json.dump({"project_id": project_id, "constitution": result,
+                                       "suite_context_hash": suite_context_hash,
                                        "created_at": time.time()}, f, ensure_ascii=False, indent=2)
                     except Exception as exc:
                         logger.warning("保存全局宪法缓存失败: %s", exc)
@@ -571,19 +613,19 @@ class CreativeDesignService:
                 logger.warning("生成全局宪法失败: %s", exc)
                 if not hasattr(self, cache_attr):
                     setattr(self, cache_attr, {})
-                getattr(self, cache_attr)[project_id] = default
+                getattr(self, cache_attr)[cache_key] = default
                 return default
             finally:
                 event.set()
 
         # Wait for another coroutine to finish
-        event = events[project_id]
+        event = events[cache_key]
         if not event.is_set():
             try:
                 await asyncio.wait_for(event.wait(), timeout=600.0)
             except asyncio.TimeoutError:
                 return default
-        return getattr(self, cache_attr, {}).get(project_id, default)
+        return getattr(self, cache_attr, {}).get(cache_key, default)
 
     async def _generate_global_constitution(
         self,
@@ -591,6 +633,7 @@ class CreativeDesignService:
         template_html: str = "",
         total_pages: int = 1,
         first_slide_data: Optional[Dict[str, Any]] = None,
+        suite_design_context: str = "",
     ) -> str:
         """Call LLM to generate global visual constitution."""
         default = "- 使用模板配色和字体体系\n- 普通内容页保持模板标题锚点与页码锚点\n- 首尾页可自由设计"
@@ -600,6 +643,7 @@ class CreativeDesignService:
                 template_html=template_html,
                 total_pages=total_pages,
                 first_slide_data=first_slide_data,
+                suite_design_context=suite_design_context,
             )
             response = await self._text_completion_for_role("creative", prompt=prompt, temperature=0.5)
             result = self._strip_think_tags(response.content.strip())
@@ -730,6 +774,7 @@ class CreativeDesignService:
         confirmed_requirements: Optional[Dict[str, Any]] = None,
         all_slides: Optional[List[Dict[str, Any]]] = None,
         template_html: str = "",
+        suite_design_context: str = "",
     ) -> str:
         """调用 LLM 生成当前页的详细创意指导。"""
         slides_summary = self._build_creative_slides_summary(all_slides)
@@ -740,6 +785,7 @@ class CreativeDesignService:
             page_number=page_number,
             total_pages=total_pages,
             template_html=template_html,
+            suite_design_context=suite_design_context,
         )
         response = await self._text_completion_for_role("creative", prompt=prompt, temperature=0.85)
         return self._strip_think_tags(response.content.strip())
@@ -753,11 +799,17 @@ class CreativeDesignService:
         confirmed_requirements: Optional[Dict[str, Any]] = None,
         all_slides: Optional[List[Dict[str, Any]]] = None,
         template_html: str = "",
+        suite_design_context: str = "",
     ) -> str:
         """Layer 2.5：获取或生成当前页的详细创意指导。"""
         cache_attr = "_cached_slide_creative_guides"
         event_attr = "_slide_creative_guide_ready_events"
-        cache_key = f"{project_id}:{page_number}" if project_id else None
+        suite_context_hash = hashlib.md5(suite_design_context.encode("utf-8")).hexdigest()[:12]
+        cache_key = (
+            f"{project_id}:{page_number}:{suite_context_hash}"
+            if project_id and suite_design_context
+            else (f"{project_id}:{page_number}" if project_id else None)
+        )
         fallback = self._generate_fallback_unified_guide(slide_data, page_number, total_pages)
 
         if not project_id:
@@ -769,6 +821,7 @@ class CreativeDesignService:
                     confirmed_requirements=confirmed_requirements,
                     all_slides=all_slides,
                     template_html=template_html,
+                    suite_design_context=suite_design_context,
                 )
                 return result or fallback
             except Exception as exc:
@@ -785,7 +838,8 @@ class CreativeDesignService:
                     with open(cache_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         guide = data.get("creative_guide", "")
-                        if guide:
+                        cached_hash = str(data.get("suite_context_hash") or "")
+                        if guide and (not suite_design_context or cached_hash == suite_context_hash):
                             if not hasattr(self, cache_attr):
                                 setattr(self, cache_attr, {})
                             getattr(self, cache_attr)[cache_key] = guide
@@ -808,6 +862,7 @@ class CreativeDesignService:
                     confirmed_requirements=confirmed_requirements,
                     all_slides=all_slides,
                     template_html=template_html,
+                    suite_design_context=suite_design_context,
                 )
                 if not guide:
                     guide = fallback
@@ -823,6 +878,7 @@ class CreativeDesignService:
                                     "project_id": project_id,
                                     "page_number": page_number,
                                     "creative_guide": guide,
+                                    "suite_context_hash": suite_context_hash,
                                     "created_at": time.time(),
                                 },
                                 f,
@@ -920,8 +976,11 @@ class CreativeDesignService:
         total_pages: int,
         confirmed_requirements: Optional[Dict[str, Any]] = None,
         all_slides: Optional[List[Dict[str, Any]]] = None,
+        suite_design_context: str = "",
     ) -> tuple[str, str, str]:
         """组装设计基因、全局宪法和当前页指导。"""
+        if not suite_design_context:
+            suite_design_context = await self._get_effective_suite_design_context(project_id)
         style_genes = await self._get_or_extract_style_genes(project_id, template_html, page_number)
 
         first_slide = (all_slides[0] if all_slides else slide_data) or {}
@@ -931,6 +990,7 @@ class CreativeDesignService:
             template_html=template_html,
             total_pages=total_pages,
             first_slide_data=first_slide,
+            suite_design_context=suite_design_context,
         )
 
         generation_config = await self._get_user_generation_config()
@@ -948,6 +1008,7 @@ class CreativeDesignService:
                 confirmed_requirements=confirmed_requirements,
                 all_slides=all_slides,
                 template_html=template_html,
+                suite_design_context=suite_design_context,
             )
         else:
             page_creative_briefs = await self._get_or_generate_page_creative_briefs(
