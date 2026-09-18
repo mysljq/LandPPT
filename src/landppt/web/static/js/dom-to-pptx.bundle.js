@@ -64185,6 +64185,19 @@
       return true;
     }
 
+    // Font metrics can be identical for CJK fallback glyphs, so width
+    // comparison alone may report KaiTi as unavailable even when the browser
+    // can resolve it. The Font Loading API is a stronger signal for installed
+    // local faces and is available in Chromium/Edge export contexts.
+    try {
+      if (doc.fonts && typeof doc.fonts.check === 'function' && doc.fonts.check(`72px "${normalized}"`)) {
+        docCache.set(cacheKey, true);
+        return true;
+      }
+    } catch (_) {
+      // Fall through to the canvas metric probe below.
+    }
+
     const measure = getFontMeasureContext(doc);
     const baseWidths = getBaseFontWidths(doc);
     if (!measure || !baseWidths) {
@@ -64266,6 +64279,13 @@
 
   function inferCjkFontCategory(fontFamilyValue) {
     const rawFamilies = parseFontFamilyList(fontFamilyValue);
+    // Check the generic cursive fallback before name heuristics. A concrete
+    // fallback such as "Comic Sans MS" contains the word `sans`, which would
+    // otherwise incorrectly classify the trailing `cursive` family as CJK
+    // sans-serif and produce Microsoft YaHei in PowerPoint.
+    if (rawFamilies.some((family) => getGenericFontCategory(family) === 'cursive')) {
+      return 'cjk-kai';
+    }
     for (const family of rawFamilies) {
       const key = normalizeFontFamilyKey(family);
       if (!key) continue;
@@ -64279,7 +64299,12 @@
       }
       const genericCategory = getGenericFontCategory(family);
       if (genericCategory === 'serif') return 'cjk-serif';
-      if (genericCategory === 'sans-serif' || genericCategory === 'cursive' || genericCategory === 'fantasy') {
+      // CSS `cursive` is commonly resolved by Chromium/Windows to a KaiTi-like
+      // CJK face. Treating it as sans-serif silently turns Chinese cursive text
+      // into Microsoft YaHei in PowerPoint, even though the live DOM renders
+      // with a calligraphic/Kai style.
+      if (genericCategory === 'cursive') return 'cjk-kai';
+      if (genericCategory === 'sans-serif' || genericCategory === 'fantasy') {
         return 'cjk-sans';
       }
       if (genericCategory === 'monospace') return 'monospace';
@@ -64992,6 +65017,7 @@
       if (!parent) return parts;
 
       const nodeStyle = getNodeWindow(parent).getComputedStyle(parent);
+      const preserveNativeVerticalRun = Boolean(getWritingModePptVert(nodeStyle));
       const rawText = String(node.nodeValue || '');
       const segments = [];
       let segment = '';
@@ -65034,7 +65060,8 @@
         }
         if (rect) {
           const line = Math.round((rect.top + rect.height / 2) * 10) / 10;
-          if (previousLine !== null && Math.abs(line - previousLine) > Math.max(1, rect.height * 0.45)) {
+          if (!preserveNativeVerticalRun && previousLine !== null &&
+              Math.abs(line - previousLine) > Math.max(1, rect.height * 0.45)) {
             flush(true);
             whitespacePending = false;
           } else if (whitespacePending && (segment || trimState.hasRenderableText)) {
@@ -65256,7 +65283,22 @@
   }
 
   function getWritingModeRotation(style) {
-    return style && /^(?:vertical|sideways)-/i.test(String(style.writingMode || '')) ? 90 : 0;
+    const writingMode = String(style && style.writingMode || '').trim().toLowerCase();
+    if (writingMode === 'sideways-lr') return -90;
+    return writingMode === 'sideways-rl' ? 90 : 0;
+  }
+
+  // PowerPoint has a native East-Asian vertical text direction. Use it for
+  // CSS vertical writing modes so CJK glyphs stay upright and flow top-to-
+  // bottom inside the original narrow/tall DOM box. `sideways-*` remains a
+  // rotated horizontal textbox and is handled by getWritingModeRotation().
+  function getWritingModePptVert(style) {
+    const writingMode = String(style && style.writingMode || '').trim().toLowerCase();
+    return /^vertical-(?:rl|lr)$/.test(writingMode) ? 'eaVert' : null;
+  }
+
+  function hasNonHorizontalWritingMode(style) {
+    return Boolean(getWritingModePptVert(style) || getWritingModeRotation(style));
   }
 
   function getTextPayloadGeometry(textPayload, x, y, w, h, baseRotation) {
@@ -67692,6 +67734,9 @@
           elementOpacity
         );
         items.push(...pseudoItems);
+        if (Array.isArray(pseudoItems.jobs) && pseudoItems.jobs.length) {
+          jobs.push(...pseudoItems.jobs);
+        }
       }
     }
     return { items, jobs };
@@ -71048,6 +71093,10 @@
     safeOpacity
   ) {
     const items = [];
+    // URL-backed pseudo elements need an asynchronous image decode just like
+    // regular DOM leaves. Keep jobs on the returned array so existing callers
+    // remain backwards compatible while the render pipeline can await them.
+    items.jobs = [];
     if (!node || !node.ownerDocument || !node.ownerDocument.defaultView) return items;
 
     const win = node.ownerDocument.defaultView;
@@ -71371,6 +71420,49 @@
           });
           continue;
         }
+      }
+
+      // Empty ::before/::after decorations frequently use an inline SVG data
+      // URL (icons, patterns, ornaments). Previously these fell through to
+      // the no-fill/no-border guard and disappeared from the PPT. Rasterize
+      // the URL with the same object-fit, radius and opacity semantics used by
+      // ordinary leaf elements, while preserving the pseudo-element geometry.
+      const pseudoBgUrl = extractFirstUrlFromCssBackgroundImage(pseudoBgImage);
+      if (pseudoBgUrl) {
+        const imageItem = {
+          type: 'image',
+          zIndex: itemBase.zIndex,
+          domOrder: itemBase.domOrder,
+          options: {
+            ...originalPseudoOptions,
+            objectName: `CSS pseudo background ${node.className || node.tagName || 'element'} ${pseudoSelector}`,
+            data: null,
+          },
+        };
+        items.push(imageItem);
+        items.jobs.push(async () => {
+          const pseudoRadii = {
+            tl: parseFloat(pseudoStyle.borderTopLeftRadius) || 0,
+            tr: parseFloat(pseudoStyle.borderTopRightRadius) || 0,
+            br: parseFloat(pseudoStyle.borderBottomRightRadius) || 0,
+            bl: parseFloat(pseudoStyle.borderBottomLeftRadius) || 0,
+          };
+          // The current pseudo decorations are no-repeat SVG layers. For
+          // repeated URLs, the same decoded source still gives a stable,
+          // editable visual fallback instead of dropping the decoration.
+          const processed = await getProcessedImage(
+            pseudoBgUrl,
+            renderedWidth,
+            renderedHeight,
+            pseudoRadii,
+            inferObjectFitFromBackgroundSize(pseudoStyle.backgroundSize),
+            normalizeBackgroundPositionValue(pseudoStyle.backgroundPosition),
+            safeOpacity * pseudoOpacity
+          );
+          if (processed) imageItem.options.data = processed;
+          else imageItem.skip = true;
+        });
+        continue;
       }
 
       if (!hasPseudoFill && !hasPseudoBorder) continue;
@@ -72976,10 +73068,11 @@
           // boxes retain DrawingML wrapping semantics; writing-mode text is
           // intentionally kept unwrapped because its 90° geometry is handled
           // separately.
-          wrap: getWritingModeRotation(style) ? false : !isSingleLineVisualLeaf,
+          wrap: hasNonHorizontalWritingMode(style) ? false : !isSingleLineVisualLeaf,
           noWrap: Boolean(isCompactTag || isSingleLineVisualLeaf),
           widthBuffer: singleLineWidthBuffer,
           writingModeRotation: getWritingModeRotation(style),
+          vert: getWritingModePptVert(style),
         };
         // A parent glyph with an absolutely positioned clipped child (for
         // example `.chap-num` + `.fill`) must share the child's visual top.
@@ -73115,6 +73208,7 @@
             margin: textPayload.margin,
             wrap: textPayload.wrap,
             noWrap: textPayload.noWrap,
+            vert: textPayload.vert || undefined,
             autoFit: false,
             fit: textPayload.wrap ? 'none' : undefined,
           },
@@ -73214,6 +73308,7 @@
             margin: textPayload.margin,
             wrap: textPayload.wrap,
             noWrap: textPayload.noWrap,
+            vert: textPayload.vert || undefined,
             autoFit: false,
             fit: textPayload.wrap ? 'none' : undefined,
           },
@@ -73334,6 +73429,7 @@
             margin: textMargin,
             wrap: textPayload.wrap,
             noWrap: textPayload.noWrap,
+            vert: textPayload.vert || undefined,
             autoFit: false,
             fit: textPayload.wrap ? 'none' : undefined,
           };
@@ -73456,6 +73552,9 @@
     }
 
     const renderJobs = [];
+    if (Array.isArray(pseudoDecorationItems.jobs) && pseudoDecorationItems.jobs.length) {
+      renderJobs.push(...pseudoDecorationItems.jobs);
+    }
     if (nativeLayeredInnerShadowItems.job) renderJobs.push(nativeLayeredInnerShadowItems.job);
     renderJobs.push(...inlineVisualArtifacts.jobs);
     const inlineVisualJob = renderJobs.length
@@ -73574,7 +73673,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-15-pages53-58-v160';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-18-cursive-font-resolution-v165';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

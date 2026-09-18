@@ -461,7 +461,7 @@
 
         function getClientExportBackgroundDebugState() {
             const state = window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ || {
-                version: '2026-09-15-pages53-58-v160',
+                version: '2026-09-18-cursive-font-resolution-v165',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,
@@ -704,7 +704,7 @@
         async function prepareClientExportDynamicResources(doc, options = {}) {
             if (!doc || !doc.body) return;
             window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ = {
-                version: '2026-09-15-pages53-58-v160',
+                version: '2026-09-18-cursive-font-resolution-v165',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,
@@ -745,7 +745,7 @@
                             document.getElementById('slideFrame').contentWindow.document))) ||
                 document;
             window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ = {
-                version: '2026-09-15-pages53-58-v160',
+                version: '2026-09-18-cursive-font-resolution-v165',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,

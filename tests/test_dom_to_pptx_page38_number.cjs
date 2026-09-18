@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
 const JSZip = require('jszip');
 
 const PROJECT = '542faf1c-ba6e-4386-9be1-a79d4cf4cb80';
-const VERSION = '2026-09-15-pages53-58-v160';
+const VERSION = '2026-09-18-cursive-font-resolution-v165';
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
