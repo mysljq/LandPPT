@@ -217,7 +217,10 @@ class SlideGenerationService:
                     yield f"data: {json.dumps(error_data)}\n\n"
                     return
 
-                logger.info(f"Starting PPT generation for project {project_id} with {len(slides)} slides")
+                # The outline is the single source of truth for page count.
+                # Capture it once before any concurrent slide work starts.
+                outline_total_pages = len(slides)
+                logger.info(f"Starting PPT generation for project {project_id} with {outline_total_pages} slides")
 
                 # Mark PPT creation stage as running (important for reconnect/follow-mode streaming)
                 db_manager_status = None
@@ -245,7 +248,7 @@ class SlideGenerationService:
                     if db_manager_status is None:
                         return
 
-                    total_slides = len(slides)
+                    total_slides = outline_total_pages
                     progress_value = 0.0
                     if total_slides > 0:
                         progress_value = min((len(processed_slide_indices) / total_slides) * 100, 99.0)
@@ -466,7 +469,7 @@ class SlideGenerationService:
                             skip_data = {
                                 'type': 'slide_skipped',
                                 'current': idx + 1,
-                                'total': len(slides),
+                                'total': outline_total_pages,
                                 'message': skip_message,
                                 'slide_data': existing_slide
                             }
@@ -491,7 +494,7 @@ class SlideGenerationService:
                                 slide_data=slides[0],
                                 confirmed_requirements=confirmed_requirements,
                                 all_slides=slides,
-                                total_pages=len(slides),
+                                total_pages=outline_total_pages,
                                 prewarm_slide_guides=0,
                                 async_prewarm_remaining_slide_guides=True,
                             )
@@ -506,7 +509,7 @@ class SlideGenerationService:
                                 progress_data = {
                                     'type': 'progress',
                                     'current': idx + 1,
-                                    'total': len(slides),
+                                    'total': outline_total_pages,
                                     'message': f'正在生成第{idx+1}页：{slide.get("title", "")}...'
                                 }
                                 yield f"data: {json.dumps(progress_data)}\n\n"
@@ -516,7 +519,7 @@ class SlideGenerationService:
                                 try:
                                     html_content = await self._generate_single_slide_html_with_prompts(
                                         slide, confirmed_requirements, system_prompt,
-                                        idx + 1, len(slides), slides, project.slides_data, project_id
+                                        idx + 1, outline_total_pages, slides, project.slides_data, project_id
                                     )
                                     return idx, slide, html_content, None
                                 except Exception as e:
@@ -574,16 +577,16 @@ class SlideGenerationService:
                                     progress_data = {
                                         'type': 'progress',
                                         'current': idx + 1,
-                                        'total': len(slides),
+                                        'total': outline_total_pages,
                                         'message': f'正在生成第{idx+1}页：{slide_title}...'
                                     }
                                     yield f"data: {json.dumps(progress_data)}\n\n"
-                                    logger.info(f"Generating slide {idx+1}/{len(slides)}: {slide_title}")
+                                    logger.info(f"Generating slide {idx+1}/{outline_total_pages}: {slide_title}")
 
                                     # 生成HTML
                                     html_content = await self._generate_single_slide_html_with_prompts(
                                         slide, confirmed_requirements, system_prompt,
-                                        idx + 1, len(slides), slides, project.slides_data, project_id
+                                        idx + 1, outline_total_pages, slides, project.slides_data, project_id
                                     )
 
                                     # 创建幻灯片数据

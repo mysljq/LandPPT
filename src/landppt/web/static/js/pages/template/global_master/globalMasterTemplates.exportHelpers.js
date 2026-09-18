@@ -252,13 +252,16 @@ function replaceTemplatePlaceholders(htmlTemplate, variables) {
 
 function renderTemplateSampleHtml(htmlTemplate, sampleSlide, pageNumber, totalPages) {
     const source = ensureHtmlDocument(htmlTemplate);
+    const totalText = String(totalPages ?? '');
+    const width = totalText.replace(/^[-+]/, '').length;
+    const currentText = String(pageNumber ?? '').padStart(width, '0');
     return replaceTemplatePlaceholders(source, {
         page_title: sampleSlide.pageTitle || sampleSlide.mainHeading || '模板示例',
         main_heading: sampleSlide.mainHeading || sampleSlide.pageTitle || '模板示例',
         subtitle: sampleSlide.subtitle || '',
         page_content: sampleSlide.pageContent || '',
-        current_page_number: pageNumber,
-        total_page_count: totalPages
+        current_page_number: currentText,
+        total_page_count: totalText
     });
 }
 

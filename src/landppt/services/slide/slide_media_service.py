@@ -43,6 +43,21 @@ if TYPE_CHECKING:
 class SlideMediaService:
     """Extracted logic from SlideHtmlService."""
 
+    @staticmethod
+    def _format_page_slots(page_number: int, total_pages: int) -> tuple[str, str]:
+        """Return legacy page-number slots with a consistent current-page width.
+
+        Historical templates intentionally use the two independent slots
+        ``current_page_number`` and ``total_page_count`` (sometimes with
+        different separators/spacing).  Keep that contract: only pad the
+        current page, based on the outline's total-page width, and leave the
+        total page count as a plain number.
+        """
+        current = int(page_number)
+        total = int(total_pages)
+        width = len(str(abs(total)))
+        return str(current).zfill(width), str(total)
+
     def __init__(self, service: 'SlideHtmlService'):
         self._service = service
 
@@ -524,11 +539,14 @@ class SlideMediaService:
         slide_data = slide_data or {}
         title = str(slide_data.get("title") or "").strip() or f"第{page_number}页"
         body = SlideMediaService._build_deterministic_page_content(slide_data, page_number)
+        current_page_number, total_page_count = SlideMediaService._format_page_slots(
+            page_number, total_pages
+        )
         mapping = {
             "page_title": title,
             "page_content": body,
-            "current_page_number": str(page_number),
-            "total_page_count": str(total_pages),
+            "current_page_number": current_page_number,
+            "total_page_count": total_page_count,
             "chapter_number": str((slide_data or {}).get("chapter") or ""),
             "chapter_indicator": chapter_indicator_html,
         }
