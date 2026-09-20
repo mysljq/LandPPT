@@ -418,8 +418,8 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20260918-cursive-font-resolution-v165';
-        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-18-cursive-font-resolution-v165';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20260918-pages61-62-layout-v166';
+        const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-18-pages61-62-layout-v166';
         let domToPptxReloadPromise = null;
 
         function isDomToPptxPatchedInstance(instance) {

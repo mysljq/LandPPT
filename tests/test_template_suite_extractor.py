@@ -1892,6 +1892,24 @@ def test_extract_suite_skeleton_marker_supports_single_quote_class():
     assert SlideMediaService._extract_suite_skeleton_marker("<div class='hf-canvas'>") == "hf-canvas"
 
 
+def test_page_number_slots_are_prefilled_without_changing_template_spacing():
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = "<footer>{{ current_page_number }} / {{ total_page_count }}|{{current_page_number}}/{{total_page_count}}</footer>"
+    out = SlideMediaService._fill_page_number_slots(html, 5, 16)
+
+    assert out == "<footer>05 / 16|05/16</footer>"
+
+
+def test_page_number_slot_prefill_leaves_literal_page_text_untouched():
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    html = "<footer>5/16 {{ current_page_number }}/{{ total_page_count }}</footer>"
+    out = SlideMediaService._fill_page_number_slots(html, 5, 16)
+
+    assert out == "<footer>5/16 05/16</footer>"
+
+
 def test_replace_remaining_content_slots_fills_resident_tokens():
     """C1：内容页 LLM 输出残留的 {{page_title}}/{{page_content}}/页码槽位
     必须被确定性替换为本页真实内容。"""

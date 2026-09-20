@@ -58,6 +58,48 @@ class SlideMediaService:
         width = len(str(abs(total)))
         return str(current).zfill(width), str(total)
 
+    @staticmethod
+    def _fill_page_number_slots(
+        html: str, page_number: int, total_pages: int
+    ) -> str:
+        """Fill the two legacy page slots before a template reaches the LLM.
+
+        This deliberately only replaces placeholder tokens. Historical
+        templates keep their own separators/spacing, and literal page text is
+        left untouched by design.
+        """
+        if not html:
+            return html
+        current, total = SlideMediaService._format_page_slots(
+            page_number, total_pages
+        )
+        values = {
+            "current_page_number": current,
+            "total_page_count": total,
+        }
+
+        def _sub(match: re.Match) -> str:
+            name = match.group(1).strip()
+            return values.get(name, match.group(0))
+
+        return re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", _sub, html)
+
+    @staticmethod
+    def _fill_suite_page_number_slots(
+        suite: Dict[str, Any], page_number: int, total_pages: int
+    ) -> Dict[str, Any]:
+        """Return a shallow suite copy with page slots prefilled everywhere."""
+        if not suite:
+            return suite
+        filled = dict(suite)
+        for key in ("cover", "transition", "catalog", "ending", "header_footer"):
+            value = filled.get(key)
+            if isinstance(value, str):
+                filled[key] = SlideMediaService._fill_page_number_slots(
+                    value, page_number, total_pages
+                )
+        return filled
+
     def __init__(self, service: 'SlideHtmlService'):
         self._service = service
 
@@ -112,6 +154,11 @@ class SlideMediaService:
                     logger.warning(f'获取模板套件失败，按现状生成: {e}')
                     suite = None
                 if suite:
+                    # Prefill legacy page slots before any suite HTML is sent
+                    # to the LLM. Keep template-owned separators and spaces.
+                    suite = self._fill_suite_page_number_slots(
+                        suite, page_number, total_pages
+                    )
                     if page_type == "catalog" and str(suite.get("catalog") or "").strip():
                         suite_constraint = self._build_catalog_suite_constraint(suite)
                         suite_skeleton_marker = self._extract_suite_skeleton_marker(
@@ -144,6 +191,12 @@ class SlideMediaService:
                         logger.warning(f'获取全局母版失败，使用默认生成方式: {e}')
 
             if selected_template:
+                selected_template = dict(selected_template)
+                selected_template["html_template"] = self._fill_page_number_slots(
+                    str(selected_template.get("html_template") or ""),
+                    page_number,
+                    total_pages,
+                )
                 return await self._generate_slide_with_template(slide_data, selected_template, page_number, total_pages, confirmed_requirements, all_slides=all_slides, project_id=project_id, content_suite_constraint=suite_constraint)
             template_html = selected_template.get('html_template', '') if selected_template else ''
             await self._ensure_slide_images_context(slide_data, confirmed_requirements, page_number, total_pages, template_html)

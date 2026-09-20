@@ -71147,7 +71147,17 @@
         !!pseudoContent &&
         !/^(?:absolute|fixed)$/.test(pseudoPosition) &&
         /^(?:inline|inline-block|inline-flex)$/.test(pseudoDisplay);
-      const contentRects = isInlineFlowPseudo ? getNodeContentRangeRects(node) : [];
+      // Empty block ::before/::after decorations still participate in normal
+      // flow. Their computed `top` is `auto`, so treating them as positioned
+      // at zero puts an ::after rule above the owner's text. Use the live text
+      // Range as the flow anchor for these pseudo boxes as well.
+      const isBlockFlowPseudo =
+        !pseudoContent &&
+        pseudoPosition === 'static' &&
+        /^(?:block|list-item|flow-root)$/.test(pseudoDisplay);
+      const contentRects = (isInlineFlowPseudo || isBlockFlowPseudo)
+        ? getNodeContentRangeRects(node)
+        : [];
       const anchorContentRect =
         pseudoSelector === '::before'
           ? contentRects[0] || null
@@ -71155,6 +71165,7 @@
       const nodeRect = anchorContentRect ? node.getBoundingClientRect() : null;
       const pseudoMarginLeft = parseFloat(pseudoStyle.marginLeft) || 0;
       const pseudoMarginRight = parseFloat(pseudoStyle.marginRight) || 0;
+      const pseudoMarginTop = parseFloat(pseudoStyle.marginTop) || 0;
       let pseudoWidth = resolvePseudoLength(pseudoStyle.width, positioningWidth);
       let pseudoHeight = resolvePseudoLength(pseudoStyle.height, positioningHeight);
       if (flexPseudoGeometry) {
@@ -71186,6 +71197,15 @@
             anchorContentRect.left - nodeRect.left - pseudoMarginRight - renderedWidth;
         } else {
           leftPx = anchorContentRect.right - nodeRect.left + pseudoMarginLeft;
+        }
+      } else if (isBlockFlowPseudo && nodeRect) {
+        const textAlign = String(baseStyle.textAlign || pseudoStyle.textAlign || '').toLowerCase();
+        if (/^(?:center)$/.test(textAlign)) {
+          leftPx = (geometry.widthPx - renderedWidth) / 2;
+        } else if (/^(?:right|end)$/.test(textAlign)) {
+          leftPx = geometry.widthPx - renderedWidth;
+        } else {
+          leftPx = pseudoMarginLeft;
         }
       } else if (!Number.isFinite(leftPx)) {
         if (Number.isFinite(rightValue)) {
@@ -71223,6 +71243,12 @@
           // content rect's lower edge; this is still more faithful than the
           // previous zero-offset fallback.
           topPx = anchorTop + anchorContentRect.height - renderedHeight;
+        }
+      } else if (isBlockFlowPseudo && anchorContentRect && nodeRect) {
+        if (pseudoSelector === '::after') {
+          topPx = anchorContentRect.bottom - nodeRect.top + pseudoMarginTop;
+        } else {
+          topPx = anchorContentRect.top - nodeRect.top - renderedHeight - pseudoMarginTop;
         }
       } else if (!Number.isFinite(topPx)) {
         if (Number.isFinite(bottomValue)) {
@@ -72992,6 +73018,17 @@
         let align = style.textAlign || 'left';
         if (align === 'start') align = 'left';
         if (align === 'end') align = 'right';
+        // Grid containers can center their anonymous text item through
+        // justify-items/place-items even when text-align remains `start`.
+        // Map that browser layout decision to the paragraph alignment used by
+        // DrawingML so centered message/cover text stays centered in PPT.
+        if (
+          style.display === 'grid' &&
+          (String(style.justifyItems || '').toLowerCase() === 'center' ||
+            String(style.placeItems || '').toLowerCase().split(/\s+/).includes('center'))
+        ) {
+          align = 'center';
+        }
         let valign = 'top';
         if (style.alignItems === 'center') valign = 'middle';
         // Compact tags are often flex rows with a decorative pseudo-element
@@ -73673,7 +73710,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-18-cursive-font-resolution-v165';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-18-pages61-62-layout-v166';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;
