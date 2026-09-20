@@ -809,6 +809,27 @@ def test_build_catalog_suite_constraint():
     assert SlideMediaService._build_catalog_suite_constraint({}) == ""
 
 
+def test_catalog_legacy_numbering_is_reindexed_when_items_are_cloned():
+    """历史模板克隆条目时，编号/章节标签不能继续复制最后一个样例值。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    assert SlideMediaService._catalog_number_prefix("一、", 5) == "六、"
+    assert SlideMediaService._catalog_number_prefix("01.", 5) == "06."
+    assert SlideMediaService._catalog_number_prefix("1、", 1, "cn") == "二、"
+    assert SlideMediaService._catalog_chapter_label("CHAPTER FIVE", 5) == "CHAPTER SIX"
+    assert SlideMediaService._strip_catalog_leading_number("五、低代码方向") == "低代码方向"
+
+
+def test_catalog_inline_number_prefix_is_kept_for_old_plain_text_items():
+    """没有独立编号节点的旧模板（如 ``1、标题``）仍保留编号前缀。"""
+    from landppt.services.slide.slide_media_service import SlideMediaService
+
+    _, _, _, prefix, _ = SlideMediaService._catalog_text_targets(
+        __import__("bs4").BeautifulSoup('<p class="primary">1、示例章节</p>', "html.parser").p
+    )
+    assert prefix == "1、"
+
+
 def test_catalog_page_uses_reference_not_template_fill():
     """目录页生成：套件目录作为设计参考交给 LLM（注入 prompt），
     而不走 _try_fill_suite_slide 模板填充路径。"""

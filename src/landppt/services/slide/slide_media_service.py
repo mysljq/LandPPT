@@ -131,8 +131,8 @@ class SlideMediaService:
                         all_slides = refreshed
                 except Exception as _ce:
                     logger.warning(f"刷新章节号失败，按原值生成: {_ce}")
-            # 套件优先：封面/过渡页用套件模板填充槽位；内容页注入页头页脚强约束；
-            # 目录页不直接模板填充，改为让 LLM 参考套件里的目录页设计生成完整目录页。
+            # 套件优先：封面/过渡页用套件模板填充槽位；目录页锁定套件外壳，
+            # 仅让 LLM 生成章节内容岛；内容页注入页头页脚强约束。
             # get_effective_suite 优先用项目显式选择的全局套件库套件，否则回退到项目内生成套件。
             # 有有效套件的项目不再拉取/使用任何全局模板（模板仅作为生成套件的可选来源）。
             from ..template.template_suite_renderer import TemplateSuiteRenderer as _TSR
@@ -160,11 +160,18 @@ class SlideMediaService:
                         suite, page_number, total_pages
                     )
                     if page_type == "catalog" and str(suite.get("catalog") or "").strip():
+                        # 目录页使用“锁定模板外壳 + LLM 章节内容岛”。历史套件没有
+                        # data-* 占位符也没关系，渲染器会从重复条目节点推断可编辑区域。
+                        catalog_html = await self._generate_catalog_suite_slide(
+                            suite, slide_data, page_number, total_pages, system_prompt
+                        )
+                        if catalog_html:
+                            return catalog_html
                         suite_constraint = self._build_catalog_suite_constraint(suite)
                         suite_skeleton_marker = self._extract_suite_skeleton_marker(
                             str(suite.get("catalog") or "")
                         )
-                        # 目录页：只参考套件目录设计，忽略母版模板
+                        # 识别失败时保留旧流程作为兼容兜底
                     else:
                         filled = await self._try_fill_suite_slide(
                             suite, slide_data, page_number, total_pages, system_prompt
@@ -277,6 +284,296 @@ class SlideMediaService:
     # ------------------------------------------------------------------
     # 模板套件辅助
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _catalog_repeated_item_group(html: str):
+        """Find the repeated chapter-item group in old catalog templates.
+
+        Older suites predate explicit catalog slots.  They nevertheless almost
+        always contain 4-7 sibling nodes with the same tag/class signature.
+        This deliberately returns the original BeautifulSoup nodes so the
+        caller can patch only that region and keep the rest of the template
+        byte-for-byte equivalent (apart from parser serialization).
+        """
+        try:
+            from bs4 import BeautifulSoup
+        except Exception:
+            return None, []
+        soup = BeautifulSoup(html or "", "html.parser")
+        best = None
+        for parent in soup.find_all(True):
+            children = [c for c in parent.find_all(recursive=False) if getattr(c, "name", None)]
+            groups = {}
+            for child in children:
+                classes = tuple(sorted(child.get("class") or []))
+                sig = (child.name, classes)
+                groups.setdefault(sig, []).append(child)
+            for (tag, classes), items in groups.items():
+                if len(items) < 2:
+                    continue
+                tokens = " ".join(classes).lower()
+                score = len(items) * 10
+                if any(k in tokens for k in ("item", "row", "entry", "card", "toc", "catalog", "cat")):
+                    score += 100
+                if any(k in tokens for k in ("particle", "dot", "deco", "line", "glow", "leaf")):
+                    score -= 80
+                # Prefer the most specific repeated group, not body/html wrappers.
+                score += min(len(classes), 4)
+                if best is None or score > best[0]:
+                    best = (score, parent, items)
+        if not best:
+            return soup, []
+        return soup, best[2]
+
+    @staticmethod
+    def _catalog_text_targets(item):
+        """Return likely title/description text nodes without touching decoration."""
+        nodes = []
+        number_candidates = []
+        for node in item.find_all(string=True):
+            parent = getattr(node, "parent", None)
+            if not parent or parent.name in ("style", "script"):
+                continue
+            text = str(node).strip()
+            if not text:
+                continue
+            classes = " ".join(parent.get("class") or []).lower()
+            if any(k in classes for k in ("num", "page", "arrow", "icon", "dot", "line", "decor")):
+                if "num" in classes or re.fullmatch(r"(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?", text):
+                    number_candidates.append((node, classes, text))
+                continue
+            nodes.append((node, classes, text))
+        primary = [n for n in nodes if any(k in n[1] for k in ("title", "name", "chapter", "label", "text"))]
+        secondary = [n for n in nodes if any(k in n[1] for k in ("desc", "sub", "summary", "meta", "en"))]
+        if not primary:
+            primary = [n for n in nodes if not re.fullmatch(r"[0-9一二三四五六七八九十百.、/ -]+", n[2])]
+        number_node = number_candidates[0][0] if number_candidates else next(
+            (n[0] for n in nodes if re.fullmatch(r"(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?", n[2])),
+            None,
+        )
+        # Some legacy templates put the number and title in one text node,
+        # e.g. <p class="primary">1、第一章</p>.  Preserve that prefix while
+        # replacing only the chapter title.
+        number_prefix = None
+        for n in (primary or nodes):
+            match = re.match(r"^((?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?\s*)", n[2])
+            if match and number_node is None:
+                number_prefix = match.group(1)
+                break
+        chapter_node = next(
+            (
+                n[0]
+                for n in nodes
+                if any(
+                    token == "ch"
+                    or token.endswith("-ch")
+                    or "chapter" in token
+                    or token in ("eyebrow", "tag")
+                    for token in n[1].split()
+                )
+            ),
+            None,
+        )
+        return (
+            primary[0][0] if primary else (nodes[0][0] if nodes else None),
+            secondary[0][0] if secondary else None,
+            number_node,
+            number_prefix,
+            chapter_node,
+        )
+
+    @staticmethod
+    def _catalog_chapter_label(existing: str, index: int) -> str:
+        """Preserve a template's chapter-label language while fixing its index."""
+        ordinal = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN"]
+        if re.search(r"\bchapter\b", existing or "", re.I):
+            word = ordinal[index] if index < len(ordinal) else str(index + 1)
+            return f"CHAPTER {word}"
+        if re.search(r"第.*章", existing or ""):
+            cn = "一二三四五六七八九十"
+            return f"第{cn[index] if index < len(cn) else index + 1}章"
+        return existing
+
+    @staticmethod
+    def _catalog_number_prefix(prefix: str, index: int, preferred_style: Optional[str] = None) -> str:
+        """Re-index a legacy inline prefix such as ``一、`` or ``01.``."""
+        if not prefix:
+            return ""
+        match = re.match(r"^([0-9]+|[一二三四五六七八九十百]+)(.*)$", prefix.strip())
+        if not match:
+            return prefix
+        token, suffix = match.groups()
+        if preferred_style == "cn":
+            numerals = "一二三四五六七八九十"
+            value = numerals[index] if index < len(numerals) else str(index + 1)
+        elif preferred_style == "arabic":
+            value = str(index + 1).zfill(len(token)) if token.isdigit() and len(token) > 1 else str(index + 1)
+        elif token.isdigit():
+            value = str(index + 1).zfill(len(token)) if len(token) > 1 else str(index + 1)
+        else:
+            numerals = "一二三四五六七八九十"
+            value = numerals[index] if index < len(numerals) else str(index + 1)
+        return value + suffix
+
+    @staticmethod
+    def _strip_catalog_leading_number(text: str) -> str:
+        """Avoid duplicating numbering when an LLM/fallback echoes ``一、``."""
+        return re.sub(
+            r"^\s*(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）:\s-]+",
+            "",
+            str(text or "").strip(),
+        ).strip()
+
+    async def _generate_catalog_suite_slide(
+        self, suite: Dict[str, Any], slide_data: Dict[str, Any],
+        page_number: int, total_pages: int, system_prompt: str,
+    ) -> Optional[str]:
+        """Generate only catalog copy and merge it into an immutable suite shell.
+
+        This is intentionally separate from the full-slide LLM path.  It keeps
+        legacy suites (which have no explicit placeholders) safe by discovering
+        their repeated item group and changing text nodes only.
+        """
+        catalog = str((suite or {}).get("catalog") or "").strip()
+        if not catalog:
+            return None
+        # Resolve legacy title/subtitle slots before locating item nodes.  This
+        # does not alter any CSS or structure and keeps old suites compatible.
+        from html import escape as _html_escape
+        title = str(slide_data.get("title") or f"第{page_number}页").strip()
+        points_for_slot = slide_data.get("content_points") or slide_data.get("content") or []
+        if isinstance(points_for_slot, list):
+            subtitle = str(points_for_slot[0]).strip() if points_for_slot else ""
+        else:
+            subtitle = str(points_for_slot).strip()
+        catalog = re.sub(r"\{\{\s*catalog_title\s*\}\}", _html_escape(title), catalog, flags=re.I)
+        catalog = re.sub(r"\{\{\s*catalog_subtitle\s*\}\}", _html_escape(subtitle), catalog, flags=re.I)
+        catalog = re.sub(r"\{\{\s*catalog_extra\s*\}\}", "", catalog, flags=re.I)
+        soup, items = self._catalog_repeated_item_group(catalog)
+        if not items:
+            logger.warning("目录页未识别到历史套件条目区域，保留旧生成流程")
+            return None
+        points = slide_data.get("content_points") or slide_data.get("content") or []
+        if isinstance(points, str):
+            points = [p.strip() for p in points.splitlines() if p.strip()]
+        points = [str(p).strip() for p in points if str(p).strip()] if isinstance(points, list) else []
+        if not points:
+            points = [str(slide_data.get("title") or f"第{page_number}页")]
+
+        # Ask the model for concise copy only.  The count/length contract is
+        # what prevents the content island from overflowing its fixed shell.
+        payload = None
+        prompt = (
+            "你只负责生成目录页章节文案，不得生成或修改 HTML/CSS。\n"
+            f"页面固定为 1280x720，模板已有 {len(items)} 个目录条目槽位；本次有 {len(points)} 个章节。\n"
+            "请输出 JSON：{\"items\":[{\"title\":\"...\",\"description\":\"...\"}]}。\n"
+            "每个 title 最多 14 个中文字符，description 最多 22 个中文字符；"
+            "优先保留章节核心含义，禁止输出 markdown、HTML、style、class 或解释。\n"
+            f"真实章节：{json.dumps(points, ensure_ascii=False)}"
+        )
+        try:
+            response = await self._text_completion_for_role(
+                "slide_generation", prompt=prompt, system_prompt=system_prompt,
+                temperature=max(0.1, min(float(ai_config.temperature), 0.5)), max_tokens=1200,
+            )
+            raw = self._strip_think_tags((response.content or "").strip())
+            payload = json.loads(self._extract_json_object(raw))
+        except Exception as exc:
+            logger.warning("目录章节文案生成失败，使用原始章节标题: %s", exc)
+            # Compatibility for lightweight/fake service facades used by older
+            # integrations and tests.  Production services expose the AI role
+            # method through the facade, so they never re-enter full-page LLM
+            # generation here.
+            if not hasattr(self._service, "_text_completion_for_role"):
+                legacy = getattr(self._service, "_generate_html_with_retry", None)
+                if callable(legacy):
+                    try:
+                        return await legacy(
+                            self._build_catalog_suite_constraint({"catalog": catalog}),
+                            system_prompt, slide_data, page_number, total_pages,
+                            max_retries=2,
+                        )
+                    except Exception:
+                        pass
+        generated = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(generated, list) or not generated:
+            generated = [{"title": p[:14], "description": ""} for p in points]
+        generated = [x for x in generated if isinstance(x, dict)]
+        if not generated:
+            return None
+        # The outline remains the source of truth for chapter count; the model
+        # may compress copy, but must not silently drop or invent chapters.
+        generated = generated[:len(points)]
+        while len(generated) < len(points):
+            idx = len(generated)
+            generated.append({"title": points[idx][:14], "description": ""})
+
+        parent = items[0].parent
+        native_capacity = len(items)
+        inline_number_style = None
+        for point in points:
+            match = re.match(r"^\s*([0-9]{1,3}|[一二三四五六七八九十百]+)[、.．)）]?", point)
+            if match:
+                inline_number_style = "cn" if not match.group(1).isdigit() else "arabic"
+                break
+        # More chapters than the legacy capacity: clone the native item, then
+        # apply a scoped density transform.  The shell and its CSS remain intact.
+        for idx in range(len(generated) - len(items)):
+            clone = items[-1].__copy__()
+            parent.append(clone)
+            items.append(clone)
+        for idx, item in enumerate(items):
+            if idx >= len(generated):
+                style = item.get("style", "")
+                item["style"] = (style.rstrip(";") + ";display:none !important") if style else "display:none !important"
+                continue
+            title_node, desc_node, number_node, number_prefix, chapter_node = self._catalog_text_targets(item)
+            data = generated[idx]
+            title = self._strip_catalog_leading_number(
+                str(data.get("title") or points[min(idx, len(points)-1)])
+            )[:20]
+            desc = str(data.get("description") or "")[:32]
+            if title_node is not None:
+                # If the legacy template has no separate number element, keep
+                # its original prefix style (1、/一、/01) and re-index it.
+                title_node.replace_with(
+                    self._catalog_number_prefix(number_prefix, idx, inline_number_style) + title
+                )
+            if desc_node is not None:
+                desc_node.replace_with(desc)
+            if number_node is not None:
+                number_node.replace_with(f"{idx + 1:02d}")
+            if chapter_node is not None and chapter_node is not title_node:
+                chapter_node.replace_with(
+                    self._catalog_chapter_label(str(chapter_node).strip(), idx)
+                )
+        density = None
+        if len(generated) > native_capacity:
+            density = max(0.68, min(1.0, (native_capacity / max(len(generated), 1)) ** 0.5))
+        # Mark only the inferred editable parent; this is also useful for
+        # downstream overflow measurement and does not affect existing styles.
+        parent["data-catalog-editable"] = "1"
+        rendered = str(soup)
+        # Use the same real-browser overflow probe as ordinary slides.  If a
+        # legacy template has unusually tight rows, add one scoped transform to
+        # the editable island only; the page shell is never resized or moved.
+        try:
+            overflow = await self._measure_overflow(rendered, page_number)
+            overflow_px = int((overflow or {}).get("overflow_px", 0))
+            local = (overflow or {}).get("overflows") or []
+            local_px = max([int(x.get("item_h", 0)) - int(x.get("box_h", 0)) for x in local] or [0])
+            if overflow_px > 0 or local_px > 0:
+                density = min(density or 1.0, max(0.68, 1.0 - min(0.28, max(overflow_px, local_px) / 720)))
+        except Exception as exc:
+            logger.debug("目录内容区溢出测量跳过: %s", exc)
+        if density is not None and density < 0.999:
+            marker = soup.new_tag("style", id="catalog-density-adaptation")
+            marker.string = (
+                f'[data-catalog-editable="1"]{{transform:scale({density:.3f}) !important;'
+                "transform-origin:center center;}}"
+            )
+            (soup.head or soup).append(marker)
+        return str(soup)
 
     @staticmethod
     def _extract_suite_skeleton_marker(header_footer: str) -> str:
