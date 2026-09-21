@@ -63086,6 +63086,14 @@
   function parseClipPolygonCoordinate(value, axisSize) {
     const token = String(value || '').trim().toLowerCase();
     if (!token) return null;
+    const calc = token.match(/^calc\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:%|px)?)\s*([+-])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(px|%)\s*\)$/i);
+    if (calc) {
+      const baseRaw = calc[1];
+      const base = baseRaw.endsWith('%') ? parseFloat(baseRaw) / 100 * axisSize : parseFloat(baseRaw);
+      const offsetRaw = parseFloat(calc[3]);
+      const offset = calc[4] === '%' ? offsetRaw / 100 * axisSize : offsetRaw;
+      if (Number.isFinite(base) && Number.isFinite(offset)) return calc[2] === '+' ? base + offset : base - offset;
+    }
     if (token.endsWith('%')) {
       const percent = parseFloat(token);
       return Number.isFinite(percent) ? (percent / 100) * axisSize : null;
@@ -63098,6 +63106,24 @@
     return Number.isFinite(numeric) ? numeric : null;
   }
 
+  function splitTopLevelWhitespace(value) {
+    const tokens = [];
+    let current = '';
+    let depth = 0;
+    for (const character of String(value || '').trim()) {
+      if (character === '(') depth += 1;
+      else if (character === ')') depth = Math.max(0, depth - 1);
+      if (/\s/.test(character) && depth === 0) {
+        if (current) tokens.push(current);
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current) tokens.push(current);
+    return tokens;
+  }
+
   /** Native closed paths for CSS polygons whose coordinates are fully representable. */
   function getNativeClipPolygonPoints(clipPath, width, height, pxScale) {
     const match = String(clipPath || '').trim().match(/^polygon\s*\((.*)\)$/i);
@@ -63108,16 +63134,14 @@
     // Unsupported units, fill rules and out-of-box vertices keep the visual
     // fallback. Never partially parse calc()/path() into a different polygon.
     const coordinate = (value, size) => {
-      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|%)?$/i.test(value)) return null;
-      const number = parseFloat(value);
-      if (!/(?:px|%)$/i.test(value) && number !== 0) return null;
-      const result = value.endsWith('%') ? number * size / 100 : number;
+      const result = parseClipPolygonCoordinate(value, size);
+      if (!Number.isFinite(result)) return null;
       return result >= 0 && result <= size ? result * pxScale : null;
     };
     if (parts.length < 3) return null;
     const points = [];
     for (const part of parts) {
-      const pair = part.trim().split(/\s+/);
+      const pair = splitTopLevelWhitespace(part);
       if (pair.length !== 2) return null;
       const x = coordinate(pair[0], width), y = coordinate(pair[1], height);
       if (x === null || y === null) return null;
@@ -63135,7 +63159,7 @@
 
     const points = [];
     for (const part of parts) {
-      const coordinates = part.trim().split(/\s+/).filter(Boolean);
+      const coordinates = splitTopLevelWhitespace(part);
       if (coordinates.length !== 2) return null;
       const x = parseClipPolygonCoordinate(coordinates[0], width);
       const y = parseClipPolygonCoordinate(coordinates[1], height);
@@ -63213,6 +63237,28 @@
     const opacityMultiplier = Number.isFinite(opacityValue)
       ? Math.max(0, Math.min(1, opacityValue))
       : 1;
+    const uniform = sides && sides.top && ['right', 'bottom', 'left'].every((name) => {
+      const side = sides[name];
+      return side && side.style === sides.top.style && side.width === sides.top.width &&
+        side.color === sides.top.color && Math.abs(side.opacity - sides.top.opacity) < 0.0001;
+    });
+    if (uniform && radius >= Math.min(w, h) / 2 - 0.5) {
+      const side = sides.top;
+      const alpha = Math.max(0, Math.min(1, side.opacity * opacityMultiplier));
+      const ellipse = (offset, strokeWidth, dash = '', cap = 'butt') =>
+        `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${Math.max(0, w / 2 - offset)}" ry="${Math.max(0, h / 2 - offset)}" fill="none" stroke="#${side.color}" stroke-opacity="${alpha}" stroke-width="${strokeWidth}"${dash ? ` stroke-dasharray="${dash}"` : ''} stroke-linecap="${cap}"/>`;
+      let rings = '';
+      if (side.style === 'double' && side.width >= 2) {
+        rings = ellipse(side.width / 6, side.width / 3) + ellipse(side.width * 5 / 6, side.width / 3);
+      } else if (side.style === 'dashed') {
+        rings = ellipse(side.width / 2, side.width, `${side.width * 3} ${side.width * 3}`);
+      } else if (side.style === 'dotted') {
+        rings = ellipse(side.width / 2, side.width, `0.01 ${side.width * 2}`, 'round');
+      } else {
+        rings = ellipse(side.width / 2, side.width);
+      }
+      return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${rings}</svg>`);
+    }
     radius = radius / 2; // Adjust for SVG rendering
     const clipId = 'clip_' + Math.random().toString(36).substr(2, 9);
     let borderRects = '';
@@ -63426,6 +63472,28 @@
     const before = measure('::before');
     const after = measure('::after');
     return direction === 'row-reverse' ? [after, before] : [before, after];
+  }
+
+  // Inline pseudo-elements occupy real inline layout space even when the
+  // owner is not a flex container. Keep the editable text paragraph inset by
+  // the same measured width so a leading marker/rule cannot overlap it.
+  function getInlinePseudoInsets(node, style, scale) {
+    if (!node || !node.ownerDocument || String(style.display || '').includes('flex')) return [0, 0];
+    const measure = (selector) => {
+      let pseudo;
+      try { pseudo = node.ownerDocument.defaultView.getComputedStyle(node, selector); }
+      catch (_) { return 0; }
+      if (!pseudo || pseudo.display === 'none' || pseudo.visibility === 'hidden') return 0;
+      if (/^(?:absolute|fixed)$/.test(String(pseudo.position || '').toLowerCase())) return 0;
+      if (!/^(?:inline|inline-block|inline-flex)$/.test(String(pseudo.display || '').toLowerCase())) return 0;
+      const width = parseFloat(pseudo.width);
+      if (!Number.isFinite(width) || width <= 0) return 0;
+      const extras = (parseFloat(pseudo.paddingLeft) || 0) + (parseFloat(pseudo.paddingRight) || 0) +
+        (parseFloat(pseudo.borderLeftWidth) || 0) + (parseFloat(pseudo.borderRightWidth) || 0);
+      const box = String(pseudo.boxSizing || '').toLowerCase() === 'border-box' ? width : width + extras;
+      return (box + (parseFloat(pseudo.marginLeft) || 0) + (parseFloat(pseudo.marginRight) || 0)) * 0.75 * scale;
+    };
+    return [measure('::before'), measure('::after')];
   }
 
   /** Counts browser-laid-out text lines, grouping multiple inline Range rects by baseline. */
@@ -64162,6 +64230,47 @@
     return baseWidths;
   }
 
+  // `document.fonts.check()` reports whether a CSS font declaration can be
+  // parsed, not necessarily whether the named local face exists. Likewise,
+  // width-only probes are prone to false positives when missing CJK glyphs are
+  // silently substituted. Compare a rendered pixel fingerprint against the
+  // generic fallback instead: an unavailable family should paint exactly the
+  // same glyph mask as its fallback family.
+  function hasDistinctCanvasFontFingerprint(fontFamilyName, genericFamily, fontContext, sampleText) {
+    const doc = getFontContextDocument(fontContext);
+    const measure = getFontMeasureContext(doc);
+    if (!measure || !measure.context || !sampleText) return null;
+    const canvas = measure.context.canvas;
+    if (!canvas || typeof measure.context.getImageData !== 'function') return null;
+    const ctx = measure.context;
+    const width = canvas.width || 384;
+    const height = canvas.height || 112;
+    const render = (family) => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.font = `72px ${family}`;
+      ctx.fillStyle = '#000';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(sampleText, 4, 82);
+      return ctx.getImageData(0, 0, width, height).data;
+    };
+    try {
+      const candidate = render(`"${String(fontFamilyName).replace(/["\\]/g, '')}", ${genericFamily}`);
+      const fallback = render(genericFamily);
+      let different = 0;
+      let total = 0;
+      for (let index = 3; index < candidate.length; index += 4) {
+        const delta = Math.abs(candidate[index] - fallback[index]);
+        if (delta > 8) different += delta;
+        total += 255;
+      }
+      // A tiny anti-aliasing difference is not enough evidence. Real font
+      // substitution changes a meaningful portion of the glyph mask.
+      return total > 0 && different / total > 0.0025;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function isFontFamilyLikelyAvailable(fontFamilyName, fontContext) {
     const normalized = String(fontFamilyName || '').trim();
     if (!normalized || isGenericCssFontFamily(normalized)) return false;
@@ -64185,19 +64294,6 @@
       return true;
     }
 
-    // Font metrics can be identical for CJK fallback glyphs, so width
-    // comparison alone may report KaiTi as unavailable even when the browser
-    // can resolve it. The Font Loading API is a stronger signal for installed
-    // local faces and is available in Chromium/Edge export contexts.
-    try {
-      if (doc.fonts && typeof doc.fonts.check === 'function' && doc.fonts.check(`72px "${normalized}"`)) {
-        docCache.set(cacheKey, true);
-        return true;
-      }
-    } catch (_) {
-      // Fall through to the canvas metric probe below.
-    }
-
     const measure = getFontMeasureContext(doc);
     const baseWidths = getBaseFontWidths(doc);
     if (!measure || !baseWidths) {
@@ -64205,8 +64301,15 @@
       return true;
     }
 
+    const fingerprintSample = 'mmmmmmmmmmlli中文测试12345';
     let isAvailable = false;
     for (const baseFont of ['monospace', 'sans-serif', 'serif']) {
+      const fingerprint = hasDistinctCanvasFontFingerprint(normalized, baseFont, doc, fingerprintSample);
+      if (fingerprint === true) {
+        isAvailable = true;
+        break;
+      }
+      if (fingerprint === false) continue;
       measure.context.font = `72px "${normalized}", ${baseFont}`;
       const width = measure.context.measureText(measure.sampleText).width;
       if (Math.abs(width - baseWidths[baseFont]) > 0.1) {
@@ -64255,8 +64358,15 @@
       baseWidths[baseFont] = measure.context.measureText(sampleText).width;
     }
 
+    const fingerprintSample = 'mmmmmmmmmmlliWWWWWW12345';
     let isAvailable = false;
     for (const baseFont of ['monospace', 'sans-serif', 'serif']) {
+      const fingerprint = hasDistinctCanvasFontFingerprint(normalized, baseFont, doc, fingerprintSample);
+      if (fingerprint === true) {
+        isAvailable = true;
+        break;
+      }
+      if (fingerprint === false) continue;
       measure.context.font = `72px "${normalized}", ${baseFont}`;
       const width = measure.context.measureText(sampleText).width;
       if (Math.abs(width - baseWidths[baseFont]) > 0.1) {
@@ -65016,9 +65126,9 @@
       const parent = node.parentElement || rootContainer;
       if (!parent) return parts;
 
-      const nodeStyle = getNodeWindow(parent).getComputedStyle(parent);
-      const preserveNativeVerticalRun = Boolean(getWritingModePptVert(nodeStyle));
       const rawText = String(node.nodeValue || '');
+      const nodeStyle = getNodeWindow(parent).getComputedStyle(parent);
+      const preserveNativeVerticalRun = Boolean(getWritingModePptVert(nodeStyle, rawText));
       const segments = [];
       let segment = '';
       let previousLine = null;
@@ -65265,6 +65375,12 @@
     if (matrix2d) {
       const values = matrix2d[1].split(',').map(Number);
       if (values.length >= 6 && values.every((value) => Number.isFinite(value))) {
+        // A CSS rotate(180deg) serializes as matrix(-1,0,0,-1,...).
+        // Its negative diagonal is rotation, not two independent mirrors;
+        // reporting both flips would reverse the text direction a second
+        // time after the cumulative rotation has already been exported.
+        const determinant = values[0] * values[3] - values[1] * values[2];
+        if (determinant >= 0) return { flipH: false, flipV: false };
         return { flipH: values[0] < 0, flipV: values[3] < 0 };
       }
     }
@@ -65276,6 +65392,8 @@
     if (matrix3d) {
       const values = matrix3d[1].split(',').map(Number);
       if (values.length >= 16 && values.every((value) => Number.isFinite(value))) {
+        const determinant2d = values[0] * values[5] - values[1] * values[4];
+        if (determinant2d >= 0) return { flipH: false, flipV: false };
         return { flipH: values[0] < 0, flipV: values[5] < 0 };
       }
     }
@@ -65292,9 +65410,26 @@
   // CSS vertical writing modes so CJK glyphs stay upright and flow top-to-
   // bottom inside the original narrow/tall DOM box. `sideways-*` remains a
   // rotated horizontal textbox and is handled by getWritingModeRotation().
-  function getWritingModePptVert(style) {
+  function hasCjkText(value) {
+    return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(String(value || ''));
+  }
+
+  function getWritingModePptVert(style, text = '') {
     const writingMode = String(style && style.writingMode || '').trim().toLowerCase();
-    return /^vertical-(?:rl|lr)$/.test(writingMode) ? 'eaVert' : null;
+    // PowerPoint's eaVert is intended for CJK glyphs.  On Latin runs it
+    // applies a different glyph orientation than CSS vertical-rl/lr, so keep
+    // those runs as rotated horizontal text instead.
+    return /^vertical-(?:rl|lr)$/.test(writingMode) && (!text || hasCjkText(text)) ? 'eaVert' : null;
+  }
+
+  function getWritingModeTextRotation(style, text = '') {
+    const writingMode = String(style && style.writingMode || '').trim().toLowerCase();
+    if (!/^vertical-(?:rl|lr)$/.test(writingMode) || hasCjkText(text)) return 0;
+    // DrawingML's positive rotation direction is the inverse of the visual
+    // inline direction produced by CSS vertical writing.  In particular,
+    // vertical-rl + rotate(180deg) must read bottom-to-top with the glyph
+    // baseline on the right, which resolves to a 90deg PPT rotation.
+    return writingMode === 'vertical-rl' ? 90 : -90;
   }
 
   function hasNonHorizontalWritingMode(style) {
@@ -66740,14 +66875,18 @@
     const vertical = angle === 0 || angle === 180, length = vertical ? height : width;
     const stops = [];
     for (const part of parts) {
-      const stop = part.trim().match(/^(.*?)\s+(-?[\d.]+)(px|%)(?:\s+(-?[\d.]+)(px|%))?$/i);
+      const stop = part.trim().match(/^(.*?)\s+(-?[\d.]+)(px|%)?(?:\s+(-?[\d.]+)(px|%)?)?$/i);
       if (!stop) return null;
       const color = parseColor(stop[1]);
       if (!color.hex && color.opacity !== 0) return null;
-      const position = (number, unit) => Number(number) * (unit === '%' ? length / 100 : 1);
+      const position = (number, unit) => {
+        if (!unit && Number(number) !== 0) return NaN;
+        return Number(number) * (unit === '%' ? length / 100 : 1);
+      };
       stops.push({ ...color, pos: position(stop[2], stop[3]) });
       if (stop[4] !== undefined) stops.push({ ...color, pos: position(stop[4], stop[5]) });
     }
+    if (stops.some((stop) => !Number.isFinite(stop.pos))) return null;
     if (stops.length < 2) return null;
     const first = stops[0].pos, period = stops[stops.length - 1].pos - first;
     if (!(period > 0) || length / period * stops.length > 1024) return null;
@@ -66768,6 +66907,16 @@
       }
     }
     return bands;
+  }
+
+  function generateRepeatingStripeSVG(width, height, bands, opacityMultiplier = 1) {
+    if (!Array.isArray(bands) || !bands.length || !isRenderableSvgSize(width, height)) return null;
+    const alpha = Math.max(0, Math.min(1, Number(opacityMultiplier) || 0));
+    const rects = bands.map((band) => band.vertical
+      ? `<rect x="0" y="${band.start}" width="${width}" height="${band.end - band.start}" fill="#${band.color}" fill-opacity="${band.opacity * alpha}"/>`
+      : `<rect x="${band.start}" y="0" width="${band.end - band.start}" height="${height}" fill="#${band.color}" fill-opacity="${band.opacity * alpha}"/>`
+    ).join('');
+    return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${rects}</svg>`);
   }
 
   function parseNativeLinearGradient(bgString) {
@@ -68387,6 +68536,136 @@
       `<path d="${ownerPath}" fill="url(#surfaceGradient)" opacity="${Math.max(0, Math.min(1, opacity))}" filter="url(#surfaceEffects)"/>` +
       '</svg>'
     );
+  }
+
+  // Preserve CSS background-size/background-position when a pseudo-element
+  // uses several gradient layers (for example the L-shaped card corners).
+  // The single-gradient path above intentionally paints a full rectangle;
+  // this path emits each layer at its own CSS-sized viewport instead.
+  function generateLayeredGradientSVG(w, h, backgroundImage, backgroundSize, backgroundPosition, opacityMultiplier = 1) {
+    const layers = splitTopLevelCommaParts(String(backgroundImage || '')).filter((layer) => /(?:linear|radial|conic)-gradient\s*\(/i.test(layer));
+    if (layers.length < 2) return null;
+    const sizes = splitTopLevelCommaParts(String(backgroundSize || 'auto'));
+    const positions = splitTopLevelCommaParts(String(backgroundPosition || '0% 0%'));
+    const resolveAxis = (token, available, full) => {
+      const value = String(token || '').trim().toLowerCase();
+      if (value.endsWith('%')) return Math.max(0, Math.min(full, parseFloat(value) / 100 * available));
+      const px = parseFloat(value);
+      return Number.isFinite(px) ? Math.max(0, Math.min(full, px * PX_TO_INCH / PX_TO_INCH)) : 0;
+    };
+    const axisPosition = (token, free, axis) => {
+      const value = String(token || '').trim().toLowerCase();
+      if (value === 'center') return free / 2;
+      if (axis === 'x' && value === 'right' || axis === 'y' && value === 'bottom') return free;
+      if (value.endsWith('%')) return free * (parseFloat(value) / 100);
+      const px = parseFloat(value);
+      return Number.isFinite(px) ? px : 0;
+    };
+    const defs = [], rects = [];
+    layers.forEach((layer, index) => {
+      const sizeTokens = String(sizes[index] || sizes[0] || 'auto').trim().split(/\s+/);
+      const layerW = sizeTokens[0] && sizeTokens[0] !== 'auto' ? resolveAxis(sizeTokens[0], w, w) : w;
+      const layerH = sizeTokens[1] && sizeTokens[1] !== 'auto' ? resolveAxis(sizeTokens[1], h, h) : w === h ? h : h;
+      const posTokens = String(positions[index] || positions[0] || '0% 0%').trim().split(/\s+/);
+      const px = axisPosition(posTokens[0], w - layerW, 'x');
+      const py = axisPosition(posTokens[1] || posTokens[0], h - layerH, 'y');
+      const data = generateGradientSVG(layerW, layerH, layer, 0, null, opacityMultiplier);
+      if (!data) return;
+      try {
+        const comma = data.indexOf(',');
+        const source = data.slice(0, comma).includes(';base64')
+          ? decodeURIComponent(escape(atob(data.slice(comma + 1))))
+          : decodeURIComponent(data.slice(comma + 1));
+        const gradient = source.match(/<linearGradient[\s\S]*?<\/linearGradient>/i);
+        const rect = source.match(/<rect\b[^>]*>/i);
+        if (!gradient || !rect) return;
+        const id = `layerGrad${index}`;
+        defs.push(gradient[0].replace(/id="grad"/i, `id="${id}"`));
+        const opacityMatch = rect[0].match(/\bopacity="([^"]+)"/i);
+        const layerOpacity = opacityMatch ? ` opacity="${opacityMatch[1]}"` : '';
+        // Rebuild geometry from CSS background-size/position. Do not copy the
+        // source rect's x/y/width/height attributes, which would create
+        // duplicate SVG attributes and make the generated image invalid.
+        rects.push(`<rect x="${px}" y="${py}" width="${layerW}" height="${layerH}" fill="url(#${id})"${layerOpacity}/>`);
+      } catch (_) {}
+    });
+    if (!rects.length) return null;
+    return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs>${defs.join('')}</defs>${rects.join('')}</svg>`);
+  }
+
+  function generateRepeatingRadialPatternSVG(w, h, backgroundImage, backgroundSize, opacityMultiplier = 1) {
+    try {
+      const raw = String(backgroundImage || '').trim();
+      const match = raw.match(/radial-gradient\((.*)\)/i);
+      if (!match) return null;
+      const parts = splitTopLevelCommaParts(match[1]);
+      if (parts.length < 2) return null;
+      const stopParts = parts.slice(0).filter((part) => !/^(?:circle|ellipse|at\b)/i.test(String(part).trim()));
+      const first = String(stopParts[0] || '').trim().match(/^(.*?)(?:\s+([\d.]+)px)?$/i);
+      const second = String(stopParts[1] || '').trim().match(/^(.*?)(?:\s+([\d.]+)px)?$/i);
+      if (!first || !second) return null;
+      const firstColor = parseColor(first[1]);
+      const secondColor = parseColor(second[1]);
+      if (!firstColor.hex) return null;
+      const firstRadius = Number(first[2]) || 0;
+      const secondRadius = Number(second[2]) || Math.max(firstRadius + 0.2, firstRadius * 1.2);
+      const sizeTokens = String(backgroundSize || '').trim().split(/\s+/).map((value) => parseFloat(value));
+      const tileW = Number.isFinite(sizeTokens[0]) && sizeTokens[0] > 0 ? sizeTokens[0] : Math.max(secondRadius * 2, 1);
+      const tileH = Number.isFinite(sizeTokens[1]) && sizeTokens[1] > 0 ? sizeTokens[1] : tileW;
+      // SVG radial-gradient percentages are relative to the gradient radius
+      // (half the tile), while CSS dot stops are absolute pixels. Convert the
+      // CSS radii against the actual tile radius; using first/secondRadius
+      // here makes the solid dot occupy most of the tile.
+      const tileRadius = Math.max(0.5, Math.min(tileW, tileH) / 2);
+      const firstOffset = Math.max(0, Math.min(100, (firstRadius / tileRadius) * 100));
+      const secondOffset = Math.max(firstOffset, Math.min(100, (secondRadius / tileRadius) * 100));
+      const transparentColor = secondColor.hex || firstColor.hex;
+      const transparentOpacity = Number.isFinite(secondColor.opacity) ? secondColor.opacity : 0;
+      const alpha = Math.max(0, Math.min(1, Number(opacityMultiplier) || 0));
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><radialGradient id="dot" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#${firstColor.hex}" stop-opacity="${firstColor.opacity * alpha}"/><stop offset="${firstOffset}%" stop-color="#${firstColor.hex}" stop-opacity="${firstColor.opacity * alpha}"/><stop offset="${secondOffset}%" stop-color="#${transparentColor}" stop-opacity="${transparentOpacity * alpha}"/><stop offset="100%" stop-color="#${transparentColor}" stop-opacity="${transparentOpacity * alpha}"/></radialGradient><pattern id="dots" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse"><rect width="${tileW}" height="${tileH}" fill="url(#dot)"/></pattern></defs><rect width="${w}" height="${h}" fill="url(#dots)"/></svg>`;
+      return encodeSvgDataUri(svg);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function generateRepeatingConicGradientSVG(w, h, backgroundImage, opacityMultiplier = 1, borderRadius = 0) {
+    try {
+      const match = String(backgroundImage || '').match(/repeating-conic-gradient\((.*)\)/i);
+      if (!match) return null;
+      const parts = splitTopLevelCommaParts(match[1]);
+      if (parts.length < 2) return null;
+      const stop = (value) => {
+        const m = String(value).trim().match(/^(.*?)(?:\s+(-?[\d.]+)deg)?$/i);
+        return m ? { color: parseColor(m[1]), angle: Number(m[2]) || 0 } : null;
+      };
+      const first = stop(parts[0]);
+      const second = stop(parts[1]);
+      const periodStop = stop(parts[parts.length - 1]);
+      if (!first || !second || !periodStop || !first.color.hex) return null;
+      const start = first.angle;
+      const stripeEnd = Math.max(start, second.angle);
+      const period = Math.max(stripeEnd - start, periodStop.angle - start, 1);
+      const cx = w / 2, cy = h / 2, radius = Math.sqrt(w * w + h * h);
+      const point = (angle) => {
+        const rad = (angle - 90) * Math.PI / 180;
+        return [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)];
+      };
+      const paths = [];
+      const alpha = Math.max(0, Math.min(1, Number(opacityMultiplier) || 0));
+      for (let angle = start; angle < start + 360; angle += period) {
+        const a = point(angle), b = point(Math.min(angle + stripeEnd - start, start + 360));
+        paths.push(`<path d="M ${cx} ${cy} L ${a[0]} ${a[1]} A ${radius} ${radius} 0 0 1 ${b[0]} ${b[1]} Z" fill="#${first.color.hex}" fill-opacity="${first.color.opacity * alpha}"/>`);
+      }
+      const clipRadius = Math.max(0, Math.min(Math.min(w, h) / 2, Number(borderRadius) || 0));
+      const clip = clipRadius > 0
+        ? `<defs><clipPath id="roundedConic"><rect width="${w}" height="${h}" rx="${clipRadius}" ry="${clipRadius}"/></clipPath></defs><g clip-path="url(#roundedConic)">`
+        : '';
+      const close = clipRadius > 0 ? '</g>' : '';
+      return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${clip}${paths.join('')}${close}</svg>`);
+    } catch (_) {
+      return null;
+    }
   }
 
   async function captureLayeredGradientShadowSurface(node, options = {}) {
@@ -70885,7 +71164,8 @@
       outerWidth: width, outerHeight: height,
       width: Math.max(0, width - borderLeft - (parseFloat(style.borderRightWidth) || 0)),
       height: Math.max(0, height - borderTop - (parseFloat(style.borderBottomWidth) || 0)),
-      borderLeft, borderTop, rotation: geometry.rotation - relativeRotation };
+      borderLeft, borderTop, rotation: geometry.rotation - relativeRotation,
+      ownerIsContainingBlock: block === node };
   }
 
   function roundedBoxSvgPath(left, top, width, height, corners) {
@@ -71144,7 +71424,6 @@
       const measuredText = pseudoContent ? measurePseudoTextBox(win, pseudoStyle, pseudoContent) : null;
       const pseudoDisplay = String(pseudoStyle.display || '').toLowerCase();
       const isInlineFlowPseudo =
-        !!pseudoContent &&
         !/^(?:absolute|fixed)$/.test(pseudoPosition) &&
         /^(?:inline|inline-block|inline-flex)$/.test(pseudoDisplay);
       // Empty block ::before/::after decorations still participate in normal
@@ -71271,6 +71550,19 @@
       let positionedY = geometry.y + topPx * pxToInchScale;
       let positionedRotation = geometry.rotation;
       if (positioningBox) {
+        if (positioningBox.ownerIsContainingBlock) {
+          // When the owner itself establishes the containing block (the common
+          // case for absolute decorative canvases such as concentric rings),
+          // the pseudo inset is already expressed in the owner's local box.
+          // Re-projecting through the owner's client rect can introduce a
+          // second origin offset after slide scaling.
+          // Absolute insets are measured from the owner's padding box. The
+          // exported geometry starts at the outer border box, so include the
+          // border inset before rotating both circles around the same center.
+          positionedX = geometry.x + (positioningBox.borderLeft + leftPx) * pxToInchScale;
+          positionedY = geometry.y + (positioningBox.borderTop + topPx) * pxToInchScale;
+          positionedRotation = geometry.rotation;
+        } else {
         // The local inset must rotate around the containing block, not around
         // the narrow strip's own center. Otherwise rotated cards shift markers.
         const boxWidth = positioningBox.outerWidth || positioningBox.width;
@@ -71281,6 +71573,7 @@
         positionedX = positioningBox.x + (boxWidth / 2 + dx * Math.cos(angle) - dy * Math.sin(angle) - renderedWidth / 2) * pxToInchScale;
         positionedY = positioningBox.y + (boxHeight / 2 + dx * Math.sin(angle) + dy * Math.cos(angle) - renderedHeight / 2) * pxToInchScale;
         positionedRotation = positioningBox.rotation;
+        }
       }
 
       const itemBase = {
@@ -71302,8 +71595,17 @@
           rotate: flexPseudoGeometry.rotate,
         });
       }
+      const pseudoCornerGeometry = getNativeCssCornerGeometry(
+        pseudoStyle, renderedWidth, renderedHeight, pxToInchScale
+      );
+      const pseudoShapeType = pseudoCornerGeometry.shapeType;
       const originalPseudoOptions = { ...itemBase.options };
-      const clippedPseudoOptions = clipPseudoOptionsToOwner(itemBase.options, node, {
+      const ownerOverflowValue = `${baseStyle.overflowX || baseStyle.overflow || ''} ${baseStyle.overflowY || baseStyle.overflow || ''}`.toLowerCase();
+      const preserveEllipseViewport =
+        pseudoShapeType === 'ellipse' && !/\b(hidden|clip|auto|scroll)\b/.test(ownerOverflowValue);
+      const clippedPseudoOptions = preserveEllipseViewport
+        ? originalPseudoOptions
+        : clipPseudoOptionsToOwner(itemBase.options, node, {
         ...geometry,
         root: geometry.root || node.ownerDocument.body,
         rootX: geometry.rootX ?? 0,
@@ -71315,7 +71617,7 @@
       if (clippedPseudoOptions) itemBase.options = clippedPseudoOptions;
 
       const ownerOverflow = `${baseStyle.overflowX || baseStyle.overflow || ''} ${baseStyle.overflowY || baseStyle.overflow || ''}`.toLowerCase();
-      if (/\b(hidden|clip|auto|scroll)\b/.test(ownerOverflow)) {
+      if (/\b(hidden|clip|auto|scroll)\b/.test(ownerOverflow) && !preserveEllipseViewport) {
         const left = Math.max(itemBase.options.x, geometry.x);
         const top = Math.max(itemBase.options.y, geometry.y);
         const right = Math.min(itemBase.options.x + itemBase.options.w, geometry.x + geometry.w);
@@ -71324,10 +71626,6 @@
           itemBase.options = { ...itemBase.options, x: left, y: top, w: right - left, h: bottom - top };
         }
       }
-      const pseudoCornerGeometry = getNativeCssCornerGeometry(
-        pseudoStyle, renderedWidth, renderedHeight, pxToInchScale
-      );
-      const pseudoShapeType = pseudoCornerGeometry.shapeType;
       Object.assign(itemBase.options, pseudoCornerGeometry.options);
       const pseudoBg = parseColor(pseudoStyle.backgroundColor);
       const pseudoBgImageValue = String(pseudoStyle.backgroundImage || '').trim();
@@ -71396,6 +71694,31 @@
       }
 
       const pseudoBgImage = pseudoBgImageValue;
+      const pseudoStripeBands = /repeating-linear-gradient\s*\(/i.test(pseudoBgImage)
+        ? parseNativeRepeatingStripes(pseudoBgImage, renderedWidth, renderedHeight)
+        : null;
+      if (pseudoStripeBands) {
+        const stripeData = generateRepeatingStripeSVG(
+          renderedWidth,
+          renderedHeight,
+          pseudoStripeBands,
+          safeOpacity * pseudoOpacity
+        );
+        if (stripeData) {
+          const clippedData = clipPseudoSvgToOwner(
+            stripeData, baseStyle, geometry, originalPseudoOptions, scale, 1
+          );
+          items.push({
+            type: 'image',
+            zIndex: itemBase.zIndex,
+            domOrder: itemBase.domOrder,
+            options: clippedData
+              ? { ...originalPseudoOptions, data: clippedData, objectName: `CSS pseudo repeating stripes ${domOrder}` }
+              : { ...itemBase.options, data: stripeData, objectName: `CSS pseudo repeating stripes ${domOrder}` },
+          });
+          continue;
+        }
+      }
       if (/repeating-linear-gradient\s*\(/i.test(pseudoBgImage) && (renderedWidth <= 2.5 || renderedHeight <= 2.5)) {
         const dashColor = parseColor(getGradientFallbackColor(pseudoBgImage));
         if (dashColor.hex && dashColor.opacity > 0) {
@@ -71424,14 +71747,21 @@
       }
       if (pseudoBgImage && pseudoBgImage !== 'none' && pseudoBgImage.includes('gradient(')) {
         const pseudoRadius = parseFloat(pseudoStyle.borderRadius) || 0;
-        const gradientData = generateGradientSVG(
-          renderedWidth,
-          renderedHeight,
-          pseudoBgImage,
-          pseudoRadius,
-          null,
-          safeOpacity * pseudoOpacity
-        );
+        const gradientLayers = splitTopLevelCommaParts(pseudoBgImage).filter((layer) => /(?:linear|radial|conic)-gradient\s*\(/i.test(layer));
+        const gradientData = gradientLayers.length > 1
+          ? generateLayeredGradientSVG(
+            renderedWidth, renderedHeight, pseudoBgImage,
+            pseudoStyle.backgroundSize, pseudoStyle.backgroundPosition,
+            safeOpacity * pseudoOpacity
+          )
+          : generateGradientSVG(
+            renderedWidth,
+            renderedHeight,
+            pseudoBgImage,
+            pseudoRadius,
+            null,
+            safeOpacity * pseudoOpacity
+          );
         if (gradientData) {
           const clippedData = clipPseudoSvgToOwner(
             gradientData, baseStyle, geometry, originalPseudoOptions, scale, 1
@@ -71949,7 +72279,25 @@
         node.children.length > 0 &&
         risk.reasons.length === 1 &&
         risk.reasons[0] === 'backdrop-filter';
-      if (risk.risky && !backgroundOnlyRisk && !preserveBackdropContainerChildren) {
+      const hasRenderablePseudoDecoration = ['::before', '::after'].some((selector) => {
+        try {
+          const pseudo = getNodeWindow(node).getComputedStyle(node, selector);
+          if (!pseudo || pseudo.display === 'none' || pseudo.visibility === 'hidden') return false;
+          if (['none', 'normal'].includes(String(pseudo.content))) return false;
+          return isNonTrivialCssValue(pseudo.backgroundImage) ||
+            parseColor(pseudo.backgroundColor).hex || parseFloat(pseudo.borderWidth) > 0;
+        } catch (_) { return false; }
+      });
+      // Rotated decorations that cross the slide edge can still be expressed
+      // as native/gradient layers. Do not flatten them before their generated
+      // ::before/::after visuals have been collected.
+      const preserveNativePseudoDecoratedLeaf =
+        node.children.length === 0 &&
+        !String(node.textContent || '').trim() &&
+        hasRenderablePseudoDecoration &&
+        risk.reasons.length === 1 &&
+        risk.reasons[0] === 'transformed-clipping';
+      if (risk.risky && !backgroundOnlyRisk && !preserveBackdropContainerChildren && !preserveNativePseudoDecoratedLeaf) {
         const isolatedClipAncestor =
           risk.reasons.length === 1 &&
           risk.reasons[0] === 'transformed-clipping' &&
@@ -72620,7 +72968,7 @@
 
     if (hasPartialBorderRadius && tempBg.hex && !isTxt && !hasContent &&
         getBorderInfo(style, config.scale).type !== 'composite') {
-      const shapeSvg = generateCustomShapeSVG(widthPx, heightPx, tempBg.hex, tempBg.opacity, {
+      const shapeSvg = generateCustomShapeSVG(widthPx, heightPx, tempBg.hex, tempBg.opacity * safeOpacity, {
         tl: parseFloat(style.borderTopLeftRadius) || 0,
         tr: parseFloat(style.borderTopRightRadius) || 0,
         br: parseFloat(style.borderBottomRightRadius) || 0,
@@ -72674,7 +73022,7 @@
     const hasGradient = !isBgClipText && backgroundImageValue.includes('linear-gradient');
     const hasAnyGradientBackground =
       !isBgClipText &&
-      /\b(?:linear|radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(
+      /\b(?:linear|radial|conic|repeating-linear|repeating-radial|repeating-conic)-gradient\s*\(/i.test(
         backgroundImageValue
       );
     const hasUrlBackgroundImage = !isBgClipText && /\burl\s*\(/i.test(backgroundImageValue);
@@ -72692,7 +73040,7 @@
       !hasLeafTextContent &&
       !hasLeafChildren &&
       (gradientLayerCount > 1 ||
-        /\b(?:radial|conic|repeating-linear|repeating-radial)-gradient\s*\(/i.test(backgroundImageValue) ||
+        /\b(?:radial|conic|repeating-linear|repeating-radial|repeating-conic)-gradient\s*\(/i.test(backgroundImageValue) ||
         hasMaskImage);
     const isComplexContainerGradientBackground =
       hasAnyGradientBackground &&
@@ -72703,7 +73051,8 @@
       hasUrlBackgroundImage && !hasLeafTextContent && !hasLeafChildren;
 
     const stripeBands = !hasLeafTextContent && !hasLeafChildren && !hasMaskImage &&
-      !isNonTrivialCssValue(style.boxShadow) && getBorderInfo(style, config.scale).type === 'none' &&
+      !isNonTrivialCssValue(style.boxShadow) &&
+      ['none', 'uniform', 'composite'].includes(getBorderInfo(style, config.scale).type) &&
       (!style.backgroundSize || style.backgroundSize === 'auto') &&
       (!style.backgroundPosition || style.backgroundPosition === '0% 0%') &&
       ['TopLeft', 'TopRight', 'BottomLeft', 'BottomRight'].every((corner) => parseFloat(style[`border${corner}Radius`]) === 0)
@@ -72726,6 +73075,52 @@
             w: bandW, h: bandH, rotate: rotation, line: { type: 'none' },
             fill: { color: band.color, transparency: (1 - band.opacity * safeOpacity) * 100 } } });
       });
+      const stripeBorderInfo = getBorderInfo(style, config.scale);
+      if (stripeBorderInfo.type === 'uniform' && stripeBorderInfo.options) {
+        const stripeBorderGeometry = getNativeUniformBorderGeometry(
+          style,
+          { x, y, w, h, widthPx, heightPx, rotate: rotation },
+          config.scale
+        );
+        stripeItems.push({
+          type: 'shape',
+          shapeType: stripeBorderGeometry.shapeType,
+          zIndex,
+          domOrder: domOrder + 0.02,
+          options: {
+            ...stripeBorderGeometry.options,
+            fill: { type: 'none' },
+            line: applyOpacityToLineOptions(stripeBorderInfo.options, safeOpacity),
+          },
+        });
+      } else if (stripeBorderInfo.type === 'composite') {
+        const compositeItems = createNativeCompositeBorderItems(
+          style,
+          stripeBorderInfo.sides,
+          { x, y, w, h, widthPx, heightPx, rotate: rotation },
+          config.scale,
+          zIndex,
+          domOrder + 0.02,
+          safeOpacity
+        );
+        if (compositeItems !== null) {
+          stripeItems.push(...compositeItems);
+        } else {
+          const borderData = generateCompositeBorderSVG(
+            widthPx,
+            heightPx,
+            borderRadiusValue,
+            stripeBorderInfo.sides,
+            safeOpacity
+          );
+          if (borderData) stripeItems.push({
+            type: 'image',
+            zIndex,
+            domOrder: domOrder + 0.02,
+            options: { x, y, w, h, rotate: rotation, data: borderData },
+          });
+        }
+      }
       return {
         items: stripeItems,
         // Repeating CSS stripes are emitted as several native rectangles. Mark
@@ -72734,6 +73129,57 @@
         semanticGroupName: getPptxGroupName(node, true),
         stopRecursion: true,
       };
+    }
+
+    // Repeating radial dot mats are empty visual leaves. html2canvas can
+    // occasionally omit these transparent-only backgrounds, so preserve the
+    // browser pattern directly as an SVG pattern instead of relying solely on
+    // a raster capture.
+    if (
+      !hasLeafTextContent &&
+      !hasLeafChildren &&
+      /radial-gradient\s*\(/i.test(backgroundImageValue) &&
+      String(style.backgroundRepeat || '').toLowerCase() !== 'no-repeat'
+    ) {
+      const dotPatternData = generateRepeatingRadialPatternSVG(
+        widthPx,
+        heightPx,
+        backgroundImageValue,
+        style.backgroundSize,
+        safeOpacity
+      );
+      if (dotPatternData) {
+        return {
+          items: [{
+            type: 'image',
+            zIndex,
+            domOrder,
+            options: { x, y, w, h, rotate: rotation, data: dotPatternData, objectName: `CSS radial pattern ${domOrder}` },
+          }],
+          stopRecursion: true,
+        };
+      }
+    }
+
+    if (!hasLeafTextContent && !hasLeafChildren && /repeating-conic-gradient\s*\(/i.test(backgroundImageValue)) {
+      const conicRadii = resolveCssCornerRadii(style, widthPx, heightPx);
+      const conicRadius = conicRadii.length && conicRadii.every((corner) =>
+        Math.abs(corner.rx - conicRadii[0].rx) < 0.5 && Math.abs(corner.ry - conicRadii[0].ry) < 0.5
+      ) ? conicRadii[0].rx : 0;
+      const conicData = generateRepeatingConicGradientSVG(
+        widthPx,
+        heightPx,
+        backgroundImageValue,
+        safeOpacity,
+        conicRadius
+      );
+      if (conicData) {
+        return {
+          items: [{ type: 'image', zIndex, domOrder,
+            options: { x, y, w, h, rotate: rotation, data: conicData, objectName: `CSS repeating conic gradient ${domOrder}` } }],
+          stopRecursion: true,
+        };
+      }
     }
 
     if (isComplexLeafGradientBackground) {
@@ -72745,11 +73191,21 @@
       };
 
       const job = async () => {
-        const rasterData = await elementToCanvasImage(node, widthPx, heightPx, {
+        let rasterData = await elementToCanvasImage(node, widthPx, heightPx, {
           padding: 0,
           scale: 2,
           foreignObjectRendering: true,
         });
+        // Conic/repeating gradients positioned partly outside the slide can be
+        // skipped by foreignObjectRendering. Retry with the normal html2canvas
+        // renderer before dropping the otherwise visible decorative layer.
+        if (!rasterData) {
+          rasterData = await elementToCanvasImage(node, widthPx, heightPx, {
+            padding: 0,
+            scale: 2,
+            foreignObjectRendering: false,
+          });
+        }
         if (rasterData) item.options.data = rasterData;
         else item.skip = true;
       };
@@ -73009,11 +73465,26 @@
       : [];
 
     if (isText && !preserveInlineVisualSurfaces) {
-      const textParts = finalizeInlineTextParts(
+      let textParts = finalizeInlineTextParts(
         collectInlineTextParts(node, config.scale, safeOpacity, node)
       );
 
       if (textParts.length > 0) {
+        // CSS vertical writing lays Latin glyphs out as one browser line per
+        // character. Those Range line boundaries describe visual placement,
+        // not author-requested paragraph breaks. Keep the editable PPT text
+        // in one paragraph so a rotated textbox renders the word continuously.
+        const verticalLatinText =
+          /^vertical-(?:rl|lr)$/.test(String(style.writingMode || '').trim().toLowerCase()) &&
+          !hasCjkText(textParts.map((part) => part.text || '').join(''));
+        if (verticalLatinText) {
+          textParts = textParts
+            .filter((part) => typeof part.text === 'string' && part.text.length > 0)
+            .map((part) => ({
+              ...part,
+              options: part.options ? { ...part.options, breakLine: false } : part.options,
+            }));
+        }
         const browserLineCount = getBrowserTextVisualLineCount(node);
         let align = style.textAlign || 'left';
         if (align === 'start') align = 'left';
@@ -73068,6 +73539,9 @@
         const flexPseudoInsets = getFlexPseudoInsets(node, style, config.scale);
         margin[0] += flexPseudoInsets[0];
         margin[1] += flexPseudoInsets[1];
+        const inlinePseudoInsets = getInlinePseudoInsets(node, style, config.scale);
+        margin[0] += inlinePseudoInsets[0];
+        margin[1] += inlinePseudoInsets[1];
         // Centering controls glyph placement inside the CSS content box; it
         // must not erase the element's padding. Keeping the insets is also
         // important after shapes are wrapped in a DrawingML group, because
@@ -73108,8 +73582,9 @@
           wrap: hasNonHorizontalWritingMode(style) ? false : !isSingleLineVisualLeaf,
           noWrap: Boolean(isCompactTag || isSingleLineVisualLeaf),
           widthBuffer: singleLineWidthBuffer,
-          writingModeRotation: getWritingModeRotation(style),
-          vert: getWritingModePptVert(style),
+          writingModeRotation: getWritingModeRotation(style) +
+            getWritingModeTextRotation(style, textParts.map((part) => part.text || '').join('')),
+          vert: getWritingModePptVert(style, textParts.map((part) => part.text || '').join('')),
         };
         // A parent glyph with an absolutely positioned clipped child (for
         // example `.chap-num` + `.fill`) must share the child's visual top.
@@ -73539,7 +74014,9 @@
         const borderSvgData = generateCompositeBorderSVG(
           widthPx,
           heightPx,
-          borderRadiusValue,
+          nativeCornerGeometry.shapeType === 'ellipse'
+            ? Math.min(widthPx, heightPx) / 2
+            : borderRadiusValue,
           borderInfo.sides,
           safeOpacity
         );
@@ -73710,7 +74187,7 @@
     return parts;
   }
 
-  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-18-pages61-62-layout-v166';
+  var LANDPPT_DOM_TO_PPTX_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
   exports.exportToPptx = exportToPptx;
   exports.setIconRules = setIconRules;
   exports.getIconRules = getIconRules;

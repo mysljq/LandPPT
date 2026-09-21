@@ -62,7 +62,7 @@ async function main() {
       return { data: btoa(binary), version: domToPptx.__landpptPatchVersion };
     });
 
-    assert.equal(result.version, '2026-09-18-pages61-62-layout-v166');
+    assert.equal(result.version, '2026-09-21-pages75-76-stripes-v180');
     const zip = await JSZip.loadAsync(Buffer.from(result.data, 'base64'));
     const slideName = Object.keys(zip.files).find((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
     const xml = await zip.file(slideName).async('string');

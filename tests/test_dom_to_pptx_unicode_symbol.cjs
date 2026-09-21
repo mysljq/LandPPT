@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
 const JSZip = require('jszip');
 const sharp = require('sharp');
 
-const VERSION = '2026-09-18-pages61-62-layout-v166';
+const VERSION = '2026-09-21-pages75-76-stripes-v180';
 
 async function main() {
   const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
