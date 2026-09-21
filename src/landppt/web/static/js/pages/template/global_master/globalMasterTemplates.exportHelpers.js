@@ -1,7 +1,7 @@
 let domToPptxLoadPromise = null;
 const DOM_TO_PPTX_BUNDLE_PATH = '/static/js/dom-to-pptx.bundle.js';
-const DOM_TO_PPTX_BUNDLE_VERSION = '20260918-pages61-62-layout-v166';
-const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-18-pages61-62-layout-v166';
+const DOM_TO_PPTX_BUNDLE_VERSION = '20260921-pages75-76-stripes-v180';
+const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));

@@ -461,7 +461,7 @@
 
         function getClientExportBackgroundDebugState() {
             const state = window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ || {
-                version: '2026-09-18-pages61-62-layout-v166',
+                version: '2026-09-21-pages75-76-stripes-v180',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,
@@ -704,7 +704,7 @@
         async function prepareClientExportDynamicResources(doc, options = {}) {
             if (!doc || !doc.body) return;
             window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ = {
-                version: '2026-09-18-pages61-62-layout-v166',
+                version: '2026-09-21-pages75-76-stripes-v180',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,
@@ -745,7 +745,7 @@
                             document.getElementById('slideFrame').contentWindow.document))) ||
                 document;
             window.__LANDPPT_PPTX_BG_EXPORT_DEBUG__ = {
-                version: '2026-09-18-pages61-62-layout-v166',
+                version: '2026-09-21-pages75-76-stripes-v180',
                 startedAt: new Date().toISOString(),
                 candidates: 0,
                 materialized: 0,
