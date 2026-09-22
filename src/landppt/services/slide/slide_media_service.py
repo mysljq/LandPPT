@@ -329,6 +329,7 @@ class SlideMediaService:
     def _catalog_text_targets(item):
         """Return likely title/description text nodes without touching decoration."""
         nodes = []
+        number_candidates = []
         for node in item.find_all(string=True):
             parent = getattr(node, "parent", None)
             if not parent or parent.name in ("style", "script"):
@@ -338,14 +339,85 @@ class SlideMediaService:
                 continue
             classes = " ".join(parent.get("class") or []).lower()
             if any(k in classes for k in ("num", "page", "arrow", "icon", "dot", "line", "decor")):
+                if "num" in classes or re.fullmatch(r"(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?", text):
+                    number_candidates.append((node, classes, text))
                 continue
             nodes.append((node, classes, text))
         primary = [n for n in nodes if any(k in n[1] for k in ("title", "name", "chapter", "label", "text"))]
         secondary = [n for n in nodes if any(k in n[1] for k in ("desc", "sub", "summary", "meta", "en"))]
         if not primary:
             primary = [n for n in nodes if not re.fullmatch(r"[0-9一二三四五六七八九十百.、/ -]+", n[2])]
-        return (primary[0][0] if primary else (nodes[0][0] if nodes else None),
-                secondary[0][0] if secondary else None)
+        number_node = number_candidates[0][0] if number_candidates else next(
+            (n[0] for n in nodes if re.fullmatch(r"(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?", n[2])),
+            None,
+        )
+        # Some legacy templates put the number and title in one text node,
+        # e.g. <p class="primary">1、第一章</p>.  Preserve that prefix while
+        # replacing only the chapter title.
+        number_prefix = None
+        for n in (primary or nodes):
+            match = re.match(r"^((?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）]?\s*)", n[2])
+            if match and number_node is None:
+                number_prefix = match.group(1)
+                break
+        chapter_node = next(
+            (
+                n[0]
+                for n in nodes
+                if any(
+                    token == "ch"
+                    or token.endswith("-ch")
+                    or "chapter" in token
+                    or token in ("eyebrow", "tag")
+                    for token in n[1].split()
+                )
+            ),
+            None,
+        )
+        return (
+            primary[0][0] if primary else (nodes[0][0] if nodes else None),
+            secondary[0][0] if secondary else None,
+            number_node,
+            number_prefix,
+            chapter_node,
+        )
+
+    @staticmethod
+    def _catalog_chapter_label(existing: str, index: int) -> str:
+        """Preserve a template's chapter-label language while fixing its index."""
+        ordinal = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN"]
+        if re.search(r"\bchapter\b", existing or "", re.I):
+            word = ordinal[index] if index < len(ordinal) else str(index + 1)
+            return f"CHAPTER {word}"
+        if re.search(r"第.*章", existing or ""):
+            cn = "一二三四五六七八九十"
+            return f"第{cn[index] if index < len(cn) else index + 1}章"
+        return existing
+
+    @staticmethod
+    def _catalog_number_prefix(prefix: str, index: int) -> str:
+        """Re-index a legacy inline prefix such as ``一、`` or ``01.``."""
+        if not prefix:
+            return ""
+        match = re.match(r"^([0-9]+|[一二三四五六七八九十百]+)(.*)$", prefix.strip())
+        if not match:
+            return prefix
+        token, suffix = match.groups()
+        if token.isdigit():
+            value = str(index + 1).zfill(len(token)) if len(token) > 1 else str(index + 1)
+        else:
+            numerals = "一二三四五六七八九十"
+            value = numerals[index] if index < len(numerals) else str(index + 1)
+        return value + suffix
+
+    @staticmethod
+    def _strip_catalog_leading_number(text: str) -> str:
+        """Avoid duplicating numbering when an LLM/fallback echoes ``一、``."""
+        return re.sub(
+            r"^\s*(?:\d{1,3}|[一二三四五六七八九十百]+)[、.．)）:\s-]+",
+            "",
+            str(text or "").strip(),
+        ).strip()
 
     async def _generate_catalog_suite_slide(
         self, suite: Dict[str, Any], slide_data: Dict[str, Any],
@@ -444,14 +516,24 @@ class SlideMediaService:
                 style = item.get("style", "")
                 item["style"] = (style.rstrip(";") + ";display:none !important") if style else "display:none !important"
                 continue
-            title_node, desc_node = self._catalog_text_targets(item)
+            title_node, desc_node, number_node, number_prefix, chapter_node = self._catalog_text_targets(item)
             data = generated[idx]
-            title = str(data.get("title") or points[min(idx, len(points)-1)])[:20]
+            title = self._strip_catalog_leading_number(
+                str(data.get("title") or points[min(idx, len(points)-1)])
+            )[:20]
             desc = str(data.get("description") or "")[:32]
             if title_node is not None:
-                title_node.replace_with(title)
+                # If the legacy template has no separate number element, keep
+                # its original prefix style (1、/一、/01) and re-index it.
+                title_node.replace_with(self._catalog_number_prefix(number_prefix, idx) + title)
             if desc_node is not None:
                 desc_node.replace_with(desc)
+            if number_node is not None:
+                number_node.replace_with(f"{idx + 1:02d}")
+            if chapter_node is not None and chapter_node is not title_node:
+                chapter_node.replace_with(
+                    self._catalog_chapter_label(str(chapter_node).strip(), idx)
+                )
         density = None
         if len(generated) > native_capacity:
             density = max(0.68, min(1.0, (native_capacity / max(len(generated), 1)) ** 0.5))
