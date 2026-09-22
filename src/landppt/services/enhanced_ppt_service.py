@@ -379,6 +379,10 @@ class EnhancedPPTService(PPTService):
     async def clear_cancel_slides_generation(self, project_id: str) -> bool:
         return await self.slide_authoring.clear_cancel_slides_generation(project_id)
 
+    async def _is_slides_generation_cancelled(self, project_id: str, cache=None) -> bool:
+        """Expose the cooperative cancellation check to slide generation."""
+        return await self.slide_authoring._is_slides_generation_cancelled(project_id, cache)
+
     async def generate_slides_streaming(self, project_id: str):
         async for item in self.slide_authoring.generate_slides_streaming(project_id):
             yield item

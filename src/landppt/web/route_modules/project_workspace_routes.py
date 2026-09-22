@@ -146,7 +146,16 @@ async def web_project_todo_board(
             if use_integrated_editor
             else "pages/project/todo_board.html"
         )
-        template_context = {"request": request, "todo_board": todo_board}
+        ppt_creation_status = next(
+            (stage.status for stage in (todo_board.stages or [])
+             if getattr(stage, "id", None) == "ppt_creation"),
+            None,
+        )
+        template_context = {
+            "request": request,
+            "todo_board": todo_board,
+            "ppt_creation_status": ppt_creation_status,
+        }
         if project:
             template_context["project"] = project
 

@@ -6,7 +6,10 @@
 
         // 连接管理相关变量
         let reconnectAttempts = 0;
-        let maxReconnectAttempts = 5;
+        // SSE can be interrupted while the background generator is still
+        // running (proxy timeout, worker handoff, or a transient DB read
+        // failure). Give the follow-mode stream enough time to reconnect.
+        let maxReconnectAttempts = 20;
         let reconnectDelay = 1000; // 初始重连延迟1秒
         let maxReconnectDelay = 30000; // 最大重连延迟30秒
         let connectionTimeout = null;
@@ -843,7 +846,7 @@
             });
         }
 
-        async function startGeneration() {
+        async function startGeneration(manualStart = true) {
             if (startGenerationInProgress) {
                 return;
             }
@@ -867,6 +870,12 @@
                 isManualStop = false;
                 currentlyGeneratingPages.clear();
                 lastKnownTotalSlides = null;
+
+                // Only an explicit user start/resume may clear a persisted stop
+                // request.  Auto-start must respect a previously cancelled task.
+                if (manualStart) {
+                    await fetch('/api/projects/{{ todo_board.task_id }}/slides/clear-cancel', { method: 'POST' });
+                }
 
                 // Free template pre-flight: generate/preview/confirm first
                 try {
@@ -1082,30 +1091,44 @@
                 }
             };
 
-            eventSource.onerror = function (event) {
+            eventSource.onerror = async function (event) {
                 console.error('Stream error:', event);
-                console.error('EventSource readyState:', eventSource.readyState);
-                console.error('EventSource url:', eventSource.url);
+                const failedSource = eventSource;
+                console.error('EventSource readyState:', failedSource && failedSource.readyState);
+                console.error('EventSource url:', failedSource && failedSource.url);
 
                 clearTimeout(connectionTimeout);
                 stopHeartbeat();
 
-                // Check if this is a normal completion or an actual error
-                if (eventSource.readyState === EventSource.CLOSED) {
-                    if (!isManualStop) {
-                        console.log('Stream closed, attempting to reconnect...');
-                        updateConnectionStatus('disconnected', '连接已断开，尝试重连...');
-                        attemptReconnect();
-                    } else {
-                        console.log('Stream closed manually');
-                        updateConnectionStatus('stopped', '已停止连接');
-                    }
+                if (isManualStop || isPaused) {
+                    updateConnectionStatus('stopped', '已停止连接');
                     return;
                 }
 
-                // 连接错误，尝试重连
-                updateConnectionStatus('error', '连接错误，尝试重连...');
-                eventSource.close();
+                // Closing the SSE transport does not mean generation failed:
+                // generation is intentionally running in the background.
+                // Check the persisted stage before deciding whether to show a
+                // terminal error, then reconnect in follow mode.
+                if (failedSource && failedSource.readyState !== EventSource.CLOSED) {
+                    failedSource.close();
+                }
+                eventSource = null;
+                updateConnectionStatus('reconnecting', '连接暂时中断，正在恢复进度...');
+
+                try {
+                    const response = await fetch(`/api/projects/${projectId}/generation-status`, { cache: 'no-store' });
+                    const status = response.ok ? await response.json() : null;
+                    if (status && ['failed', 'cancelled'].includes(status.stage_status)) {
+                        handleStreamData({
+                            type: 'error',
+                            message: status.stage_status === 'cancelled' ? '生成已停止' : '生成失败，请稍后重试',
+                        });
+                        return;
+                    }
+                } catch (statusError) {
+                    console.warn('无法读取生成状态，将继续重连流式连接:', statusError);
+                }
+
                 attemptReconnect();
             };
         }
@@ -1344,6 +1367,49 @@
             }
         }
 
+        async function handleServerStreamError(data) {
+            // A stale error event can be emitted by one SSE follower while the
+            // actual background task (possibly on another worker) is still
+            // running.  Confirm the persisted stage before stopping the UI.
+            try {
+                const response = await fetch(`/api/projects/${projectId}/generation-status`, { cache: 'no-store' });
+                const status = response.ok ? await response.json() : null;
+                if (status && status.stage_status === 'running') {
+                    isManualStop = false;
+                    updateConnectionStatus('reconnecting', '后台仍在生成，正在恢复进度...');
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                    reconnectAttempts = 0;
+                    attemptReconnect();
+                    return;
+                }
+                if (!status || !['failed', 'cancelled'].includes(status.stage_status)) {
+                    isManualStop = false;
+                    updateConnectionStatus('reconnecting', '正在确认后台生成状态...');
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                    attemptReconnect();
+                    return;
+                }
+            } catch (statusError) {
+                console.warn('无法确认生成错误状态:', statusError);
+                isManualStop = false;
+                updateConnectionStatus('reconnecting', '暂时无法确认生成状态，正在重连...');
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+                attemptReconnect();
+                return;
+            }
+
+            handleStreamData({ ...data, _confirmed: true });
+        }
+
         function handleStreamData(data) {
             const statusMessage = document.getElementById('statusMessage');
             const progressBar = document.getElementById('generationProgress');
@@ -1446,6 +1512,10 @@
                     break;
 
                 case 'error':
+                    if (!data._confirmed) {
+                        handleServerStreamError(data);
+                        break;
+                    }
                     currentlyGeneratingPages.clear();
                     updateStatus(data.message, 'error');
 
@@ -1945,6 +2015,7 @@
         const projectSlidesData = {{ (project.slides_data | tojson | safe) if project and project.slides_data else '[]' }};
         const projectOutline = {{ (project.outline | tojson | safe) if project and project.outline else 'null' }};
         const projectStatus = '{{ project.status if project else "draft" }}';
+        const pptCreationStatus = '{{ ppt_creation_status or "" }}';
 
         if (!lastKnownTotalSlides) {
             if (projectOutline && projectOutline.slides && projectOutline.slides.length > 0) {
@@ -2045,12 +2116,16 @@
             const autoStartParam = urlParams.get('auto_start') === 'true';
 
             // 检查是否需要自动开始或继续生成
-            const shouldAutoStart = autoStartParam || (projectSlidesData && projectSlidesData.length > 0 && !isCompleted);
+            const shouldAutoStart =
+                (autoStartParam || (projectSlidesData && projectSlidesData.length > 0 && !isCompleted)) &&
+                pptCreationStatus !== 'cancelled';
 
             if (shouldAutoStart) {
                 setTimeout(() => {
-                    startGeneration();
+                    startGeneration(false);
                 }, 500);
+            } else {
+                ensureIdleStartButtonVisible();
             }
         }
 

@@ -526,10 +526,25 @@ class SlideGenerationService:
                                     return idx, slide, None, e
 
                             # 创建所有并行任务
-                            tasks = [generate_with_metadata(idx, slide) for idx, slide in slides_to_generate]
+                            tasks = [asyncio.create_task(generate_with_metadata(idx, slide)) for idx, slide in slides_to_generate]
 
                             # 流式处理完成的任务 - 一旦某页生成完成，立即展示和添加
                             for coro in asyncio.as_completed(tasks):
+                                if await self._is_slides_generation_cancelled(project_id, cache=cache):
+                                    for task in tasks:
+                                        if not task.done():
+                                            task.cancel()
+                                    await asyncio.gather(*tasks, return_exceptions=True)
+                                    cancel_message = "已收到停止请求，已停止生成。"
+                                    if db_manager_status is None:
+                                        from ..db_project_manager import DatabaseProjectManager
+                                        db_manager_status = DatabaseProjectManager()
+                                    await db_manager_status.update_stage_status(
+                                        project_id, "ppt_creation", "cancelled", None,
+                                        {"message": cancel_message, "cancelled_at": time.time()},
+                                    )
+                                    yield f"data: {json.dumps({'type': 'error', 'message': cancel_message})}\n\n"
+                                    return
                                 idx, slide, html_content, error = await coro
                                 try:
                                     if error:
@@ -572,6 +587,22 @@ class SlideGenerationService:
                             # 顺序生成（未启用并行或只有一页）
                             for idx, slide in slides_to_generate:
                                 try:
+                                    # Check again immediately before starting an
+                                    # expensive per-slide request.  The batch-level
+                                    # check above is not enough when cancellation
+                                    # arrives while a previous slide is running.
+                                    if await self._is_slides_generation_cancelled(project_id, cache=cache):
+                                        cancel_message = "已收到停止请求，已停止生成。"
+                                        if db_manager_status is None:
+                                            from ..db_project_manager import DatabaseProjectManager
+                                            db_manager_status = DatabaseProjectManager()
+                                        await db_manager_status.update_stage_status(
+                                            project_id, "ppt_creation", "cancelled", None,
+                                            {"message": cancel_message, "cancelled_at": time.time()},
+                                        )
+                                        yield f"data: {json.dumps({'type': 'error', 'message': cancel_message})}\n\n"
+                                        return
+
                                     # 发送进度更新
                                     slide_title = slide.get('title', '')
                                     progress_data = {
@@ -588,6 +619,20 @@ class SlideGenerationService:
                                         slide, confirmed_requirements, system_prompt,
                                         idx + 1, outline_total_pages, slides, project.slides_data, project_id
                                     )
+
+                                    # Do not persist a slide that completed after the
+                                    # user pressed Stop; leave the task resumable.
+                                    if await self._is_slides_generation_cancelled(project_id, cache=cache):
+                                        cancel_message = "已收到停止请求，已停止生成。"
+                                        if db_manager_status is None:
+                                            from ..db_project_manager import DatabaseProjectManager
+                                            db_manager_status = DatabaseProjectManager()
+                                        await db_manager_status.update_stage_status(
+                                            project_id, "ppt_creation", "cancelled", None,
+                                            {"message": cancel_message, "cancelled_at": time.time()},
+                                        )
+                                        yield f"data: {json.dumps({'type': 'error', 'message': cancel_message})}\n\n"
+                                        return
 
                                     # 创建幻灯片数据
                                     slide_data = {

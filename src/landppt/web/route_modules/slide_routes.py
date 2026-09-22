@@ -657,6 +657,17 @@ async def cancel_slides_generation(
     try:
         user_ppt_service = get_ppt_service_for_user(user.id)
         await user_ppt_service.request_cancel_slides_generation(project_id)
+        # Persist the stop state as well as setting the in-process/distributed
+        # flag.  This makes cancellation reliable when the SSE request and the
+        # generator are handled by different workers or cache is unavailable.
+        from ...services.db_project_manager import DatabaseProjectManager
+        await DatabaseProjectManager().update_stage_status(
+            project_id,
+            "ppt_creation",
+            "cancelled",
+            None,
+            {"message": "已收到停止请求，已停止生成。", "cancelled_at": time.time()},
+        )
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}

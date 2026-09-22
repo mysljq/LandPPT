@@ -126,6 +126,20 @@ class SlideStreamingService:
                     await cache.delete(self._slides_generation_cancel_key(project_id))
             except Exception as e:
                 logger.warning(f"Failed to clear cancel flag for {project_id}: {e}")
+            # Cancellation is also persisted in the TODO stage so other workers
+            # can observe it. Reset that state when the user explicitly resumes;
+            # otherwise the new background task would immediately stop again.
+            try:
+                from ..db_project_manager import DatabaseProjectManager
+                await DatabaseProjectManager().update_stage_status(
+                    project_id,
+                    "ppt_creation",
+                    "pending",
+                    0.0,
+                    {"resume_requested_at": time.time()},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to reset persisted cancel state for {project_id}: {e}")
             return True
 
     async def _is_slides_generation_cancelled(self, project_id: str, cache=None) -> bool:
@@ -136,10 +150,21 @@ class SlideStreamingService:
                     from ..cache_service import get_cache_service
                     cache = await get_cache_service()
                 if cache and cache.is_connected:
-                    return bool(await cache.get(self._slides_generation_cancel_key(project_id)))
+                    if bool(await cache.get(self._slides_generation_cancel_key(project_id))):
+                        return True
             except Exception:
-                return self._slides_generation_cancel_flags.get(project_id, False)
-            return False
+                # Continue to the database fallback below when cache access is
+                # unavailable; the persisted cancellation state is authoritative.
+                pass
+            # Cache may be unavailable in a multi-worker deployment.  Fall back
+            # to the persisted stage state so a stop request still reaches the
+            # background generator.
+            try:
+                from ..db_project_manager import DatabaseProjectManager
+                stage = await DatabaseProjectManager().get_stage_status(project_id, "ppt_creation")
+                return bool(stage and stage.get("status") == "cancelled")
+            except Exception:
+                return False
 
     async def _renew_valkey_lock(self, cache, lock_key: str, ttl: int):
             """Best-effort: refresh Valkey lock TTL while generation is running."""
@@ -151,8 +176,50 @@ class SlideStreamingService:
                 except Exception:
                     pass
 
+    async def _has_distributed_generation_lock(self, project_id: str) -> bool:
+            """Return whether another worker still owns this project's generation lock."""
+            try:
+                from ..cache_service import get_cache_service
+                cache = await get_cache_service()
+                if cache and cache.is_connected:
+                    return bool(await cache._client.exists(f"ppt_generation_lock:{project_id}"))
+            except Exception:
+                pass
+            # Check the cross-process file lock used by SQLite/memory-cache
+            # deployments. A failed non-blocking acquire means another worker
+            # is actively generating this project.
+            lock_file = None
+            try:
+                import os
+                import tempfile
+                from pathlib import Path
+                digest = __import__("hashlib").sha256(project_id.encode("utf-8")).hexdigest()
+                lock_path = Path(tempfile.gettempdir()) / "landppt" / f"ppt-generation-{digest}.lock"
+                lock_file = open(lock_path, "a+b")
+                if lock_file.seek(0, 2) == 0:
+                    lock_file.write(b"0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                return False
+            except (BlockingIOError, OSError):
+                return True
+            finally:
+                if lock_file is not None:
+                    try:
+                        lock_file.close()
+                    except Exception:
+                        pass
+
     async def _try_acquire_slides_generation_lock(self, project_id: str) -> dict:
-            """Try to acquire a cross-worker lock; fall back to DB advisory lock, then local lock."""
+            """Try to acquire a cross-worker lock with safe local fallbacks."""
             import hashlib
 
             lock_ttl = 600  # seconds
@@ -196,7 +263,39 @@ class SlideStreamingService:
             except Exception as e:
                 logger.warning(f"DB advisory lock acquisition failed, falling back: {e}")
 
-            # Last resort: local in-process lock (single worker only)
+            # SQLite deployments commonly run without Valkey and cannot use
+            # PostgreSQL advisory locks. Use an OS file lock so separate
+            # Uvicorn workers still coordinate generation on the same host.
+            lock_file = None
+            try:
+                import os
+                import tempfile
+                from pathlib import Path
+
+                lock_dir = Path(tempfile.gettempdir()) / "landppt"
+                lock_dir.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+                lock_path = lock_dir / f"ppt-generation-{digest}.lock"
+                lock_file = open(lock_path, "a+b")
+                if lock_file.seek(0, 2) == 0:
+                    lock_file.write(b"0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return {"acquired": True, "kind": "file", "file_handle": lock_file}
+            except (BlockingIOError, OSError):
+                try:
+                    lock_file.close()
+                except Exception:
+                    pass
+                return {"acquired": False, "kind": "file"}
+
+            # Last resort: local in-process lock.
             if project_id not in self._slide_generation_locks:
                 self._slide_generation_locks[project_id] = asyncio.Lock()
             local_lock = self._slide_generation_locks[project_id]
@@ -227,6 +326,24 @@ class SlideStreamingService:
                         await conn.close()
                     except Exception:
                         pass
+            elif kind == "file":
+                lock_file = lock_info.get("file_handle")
+                if lock_file is not None:
+                    try:
+                        import os
+                        if os.name == "nt":
+                            import msvcrt
+                            lock_file.seek(0)
+                            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    except Exception:
+                        pass
+                    try:
+                        lock_file.close()
+                    except Exception:
+                        pass
 
     async def _background_generate_slides(self, project_id: str, lock_info: dict):
             """Run slide generation in background and ensure lock TTL/release."""
@@ -235,7 +352,17 @@ class SlideStreamingService:
 
             try:
                 self._active_slide_generations[project_id] = True
-                self._slides_generation_cancel_flags[project_id] = False
+
+                # Do not clear the cancellation flag here.  The cancel endpoint can
+                # race with task creation; clearing it at startup loses a user's
+                # stop request and lets the background generator run to completion.
+                # A new/manual resume explicitly clears the flag through the
+                # clear-cancel endpoint before reconnecting.
+
+                # A stop may arrive between lock acquisition and task startup.
+                # Honor it before changing the persisted stage back to running.
+                if await self._is_slides_generation_cancelled(project_id, cache=lock_info.get("cache")):
+                    return
 
                 # Mark stage as running early to avoid "cancelled" race on resume/reconnect.
                 try:
@@ -253,11 +380,6 @@ class SlideStreamingService:
                     pass
 
                 cache = lock_info.get("cache")
-                if cache and getattr(cache, "is_connected", False):
-                    try:
-                        await cache.delete(self._slides_generation_cancel_key(project_id))
-                    except Exception:
-                        pass
 
                 if lock_info.get("kind") == "valkey" and cache and getattr(cache, "is_connected", False):
                     renew_task = asyncio.create_task(
@@ -327,7 +449,16 @@ class SlideStreamingService:
                 try:
                     stage = await db_manager.get_stage_status(project_id, "ppt_creation")
                     # Give newly-started generation a short grace period to flip stage to running.
-                    if stage and stage.get("status") in ("failed", "cancelled") and (time.time() - started_at) > 5:
+                    active_task = self._slides_generation_tasks.get(project_id)
+                    generation_task_active = active_task is not None and not active_task.done()
+                    distributed_task_active = await self._has_distributed_generation_lock(project_id)
+                    if (
+                        stage
+                        and stage.get("status") in ("failed", "cancelled")
+                        and not generation_task_active
+                        and not distributed_task_active
+                        and (time.time() - started_at) > 5
+                    ):
                         default_message = "生成已停止" if stage.get("status") == "cancelled" else "生成失败"
                         message = default_message
                         result = stage.get("result")

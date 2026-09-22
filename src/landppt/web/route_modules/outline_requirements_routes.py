@@ -49,11 +49,18 @@ async def web_project_todo_editor(
         has_outline = bool(project and isinstance(project.outline, dict) and project.outline.get("slides"))
         template_name = "pages/project/todo_board_with_editor.html" if has_outline else "pages/project/todo_board.html"
 
+        ppt_creation_status = next(
+            (stage.status for stage in (project.todo_board.stages or [])
+             if getattr(stage, "id", None) == "ppt_creation"),
+            None,
+        )
+
         return templates.TemplateResponse(template_name, {
             "request": request,
             "todo_board": project.todo_board,
             "project": project,
-            "auto_start": auto_start
+            "auto_start": auto_start,
+            "ppt_creation_status": ppt_creation_status,
         })
 
     except Exception as e:
