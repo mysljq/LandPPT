@@ -103,6 +103,13 @@ class PPTGenerationRequest(BaseModel):
     content_analysis_depth: str = Field("standard", description="Content analysis depth: 'fast', 'standard', 'deep'")
 
 
+class ConstrainedOutlineTaskRequest(BaseModel):
+    """Optional overrides for the first-stage constrained outline task."""
+
+    requirements: Optional[str] = Field(None, description="Optional additional page-level requirements")
+    description: Optional[str] = Field(None, description="Optional additional description")
+
+
 class PPTOutline(BaseModel):
     title: str
     slides: List[Dict[str, Any]]

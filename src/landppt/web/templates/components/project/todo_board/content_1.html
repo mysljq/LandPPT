@@ -215,6 +215,21 @@
             <button type="submit" id="confirm-requirements-btn" class="btn btn-primary requirements-submit-btn">
                 开始生成大纲
             </button>
+            <button type="button" id="confirm-constrained-requirements-btn"
+                class="btn requirements-submit-btn"
+                style="margin-left: 10px; background: #111; color: #fff; border: 1px solid #111;"
+                title="识别‘第几页包含什么’等明确要求，并在生成后自动校验">
+                <i class="fas fa-shield-alt"></i> 约束增强生成
+            </button>
+            <button type="button" id="confirm-smart-requirements-btn"
+                class="btn requirements-submit-btn"
+                style="margin-left: 10px; background: #2563eb; color: #fff; border: 1px solid #2563eb;"
+                title="由大模型判断使用严格约束生成还是原始生成">
+                <i class="fas fa-wand-magic-sparkles"></i> 智能选择生成方案
+            </button>
+            <small style="display: block; margin-top: 10px; color: var(--text-secondary);">
+                适合已在需求中明确指定每页内容或总页数的情况
+            </small>
         </div>
     </form>
 </div>

@@ -5,11 +5,16 @@ Outline generation routes extracted from the outline router.
 from __future__ import annotations
 
 import time
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from ...api.models import FileOutlineGenerationRequest, PPTGenerationRequest
+from ...api.models import (
+    ConstrainedOutlineTaskRequest,
+    FileOutlineGenerationRequest,
+    PPTGenerationRequest,
+)
 from ...auth.middleware import get_current_user_required
 from ...database.models import User
 from .outline_support import (
@@ -27,6 +32,362 @@ from .support import (
 )
 
 router = APIRouter()
+
+
+@router.post("/projects/{project_id}/classify-outline-generation-mode")
+async def classify_outline_generation_mode(
+    project_id: str,
+    user: User = Depends(get_current_user_required),
+):
+    """Choose the new strict workflow or the untouched legacy workflow."""
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.confirmed_requirements:
+        return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
+    confirmed = project.confirmed_requirements or {}
+    text = "\n".join(
+        value for value in [
+            confirmed.get("requirements", project.requirements),
+            confirmed.get("description", ""),
+            confirmed.get("topic", project.topic),
+        ] if value
+    )
+    from ...services.outline.constrained_outline_generation_service import (
+        ConstrainedOutlineGenerationService,
+    )
+    decision = await ConstrainedOutlineGenerationService(
+        get_ppt_service_for_user(user.id)
+    ).classify_generation_mode(text)
+    return {"status": "success", **decision}
+
+
+@router.post("/projects/{project_id}/generate-outline-constrained")
+async def create_constrained_outline_generation_task(
+    project_id: str,
+    request: ConstrainedOutlineTaskRequest | None = None,
+    user: User = Depends(get_current_user_required),
+):
+    """Create a first-stage constrained outline generation task.
+
+    This is intentionally a separate entrypoint.  The legacy outline routes
+    are not changed and continue to use their original generation workflow.
+    Poll the returned ``polling_endpoint`` using the shared background-task
+    status endpoint.
+    """
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.confirmed_requirements:
+        return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
+
+    user_ppt_service = get_ppt_service_for_user(user.id)
+    _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
+    outline_provider_name = outline_settings.get("provider")
+    has_credits, required, balance = await check_credits_for_operation(
+        user.id, "outline_generation", 1, provider_name=outline_provider_name
+    )
+    if not has_credits:
+        return {
+            "status": "error",
+            "error": f"积分不足，大纲生成需要 {required} 积分，当前余额 {balance} 积分",
+        }
+
+    confirmed = dict(project.confirmed_requirements or {})
+    override = request or ConstrainedOutlineTaskRequest()
+    base_requirements = confirmed.get("requirements", project.requirements) or ""
+    requirements = base_requirements
+    if override.requirements:
+        requirements = (
+            f"{base_requirements}\n\n【本次约束增强生成的额外要求】\n{override.requirements}"
+            if base_requirements
+            else override.requirements
+        )
+    base_description = confirmed.get("description") or ""
+    description = base_description
+    if override.description:
+        description = f"{base_description}\n{override.description}".strip()
+    page_count_settings = confirmed.get("page_count_settings", {})
+    language = "zh"
+    network_mode = False
+    if isinstance(project.project_metadata, dict):
+        language = project.project_metadata.get("language", "zh")
+        network_mode = bool(project.project_metadata.get("network_mode", False))
+
+    project_request = PPTGenerationRequest(
+        scenario=confirmed.get("scenario", project.scenario),
+        topic=confirmed.get("topic", project.topic),
+        requirements=requirements,
+        language=language,
+        network_mode=network_mode,
+        target_audience=confirmed.get("target_audience", "普通大众"),
+        ppt_style=confirmed.get("ppt_style", "general"),
+        custom_style_prompt=confirmed.get("custom_style_prompt"),
+        include_transition_pages=bool(confirmed.get("include_transition_pages", False)),
+        description=description,
+    )
+
+    from ...services.background_tasks import get_task_manager
+    from ...services.outline.constrained_outline_generation_service import (
+        ConstrainedOutlineGenerationService,
+    )
+
+    task_manager = get_task_manager()
+    existing_task = await task_manager.find_active_task_async(
+        "constrained_outline_generation",
+        {"project_id": project_id, "user_id": user.id},
+    )
+    if existing_task:
+        existing_operation_id = (existing_task.metadata or {}).get("generation_request_id")
+        polling_endpoint = f"/projects/{project_id}/generate-outline-constrained/tasks/{existing_task.task_id}"
+        if existing_operation_id:
+            polling_endpoint += f"?generation_request_id={existing_operation_id}"
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "already_processing",
+                "task_id": existing_task.task_id,
+                "generation_entrypoint": "constrained-stage1",
+                "generation_request_id": existing_operation_id,
+                "polling_endpoint": polling_endpoint,
+                "message": "当前项目已有约束增强大纲任务正在执行",
+            },
+        )
+
+    generation_request_id = str(uuid.uuid4())
+
+    async def _run_constrained_generation():
+        constrained_service = ConstrainedOutlineGenerationService(user_ppt_service)
+        outline = await constrained_service.generate(
+            project_id,
+            project_request,
+            page_count_settings,
+            generation_request_id=generation_request_id,
+        )
+        await consume_credits_for_operation(
+            user.id,
+            "outline_generation",
+            1,
+            description=f"约束增强大纲生成: {project.topic}",
+            reference_id=project_id,
+            provider_name=outline_provider_name,
+        )
+        return {
+            "success": True,
+            "outline": outline,
+            "generation_entrypoint": "constrained-stage1",
+        }
+
+    task_id = task_manager.submit_task(
+        "constrained_outline_generation",
+        _run_constrained_generation,
+        metadata={
+            "project_id": project_id,
+            "user_id": user.id,
+            "generation_entrypoint": "constrained-stage1",
+            "generation_request_id": generation_request_id,
+        },
+    )
+    return {
+        "status": "accepted",
+        "task_id": task_id,
+        "generation_request_id": generation_request_id,
+        "generation_entrypoint": "constrained-stage1",
+        "polling_endpoint": (
+            f"/projects/{project_id}/generate-outline-constrained/tasks/{task_id}"
+            f"?generation_request_id={generation_request_id}"
+        ),
+        "message": "约束增强大纲生成任务已创建",
+    }
+
+
+@router.post("/projects/{project_id}/generate-outline-smart")
+async def create_smart_outline_generation_task(
+    project_id: str,
+    request: ConstrainedOutlineTaskRequest | None = None,
+    user: User = Depends(get_current_user_required),
+):
+    """Create one task whose mode selection and generation run on the backend."""
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.confirmed_requirements:
+        return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
+
+    user_ppt_service = get_ppt_service_for_user(user.id)
+    _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
+    outline_provider_name = outline_settings.get("provider")
+    has_credits, required, balance = await check_credits_for_operation(
+        user.id, "outline_generation", 1, provider_name=outline_provider_name
+    )
+    if not has_credits:
+        return {"status": "error", "error": f"积分不足，大纲生成需要 {required} 积分，当前余额 {balance} 积分"}
+
+    confirmed = dict(project.confirmed_requirements or {})
+    override = request or ConstrainedOutlineTaskRequest()
+    base_requirements = confirmed.get("requirements", project.requirements) or ""
+    requirements = base_requirements
+    if override.requirements:
+        requirements = f"{base_requirements}\n\n【本次智能生成的额外要求】\n{override.requirements}" if base_requirements else override.requirements
+    description = confirmed.get("description") or ""
+    if override.description:
+        description = f"{description}\n{override.description}".strip()
+    page_count_settings = confirmed.get("page_count_settings", {})
+    project_metadata = project.project_metadata if isinstance(project.project_metadata, dict) else {}
+    project_request = PPTGenerationRequest(
+        scenario=confirmed.get("scenario", project.scenario),
+        topic=confirmed.get("topic", project.topic),
+        requirements=requirements,
+        language=project_metadata.get("language", "zh"),
+        network_mode=bool(project_metadata.get("network_mode", False)),
+        target_audience=confirmed.get("target_audience", "普通大众"),
+        ppt_style=confirmed.get("ppt_style", "general"),
+        custom_style_prompt=confirmed.get("custom_style_prompt"),
+        include_transition_pages=bool(confirmed.get("include_transition_pages", False)),
+        description=description,
+    )
+
+    from ...services.background_tasks import get_task_manager
+    from ...services.outline.constrained_outline_generation_service import ConstrainedOutlineGenerationService
+
+    task_manager = get_task_manager()
+    existing_task = await task_manager.find_active_task_async(
+        "smart_outline_generation", {"project_id": project_id, "user_id": user.id}
+    )
+    if existing_task:
+        operation_id = (existing_task.metadata or {}).get("generation_request_id")
+        polling_endpoint = f"/projects/{project_id}/generate-outline-constrained/tasks/{existing_task.task_id}"
+        if operation_id:
+            polling_endpoint += f"?generation_request_id={operation_id}"
+        return JSONResponse(status_code=409, content={
+            "status": "already_processing", "task_id": existing_task.task_id,
+            "generation_request_id": operation_id, "polling_endpoint": polling_endpoint,
+            "message": "当前项目已有智能大纲任务正在执行",
+        })
+
+    generation_request_id = str(uuid.uuid4())
+
+    async def _run_smart_generation():
+        constrained_service = ConstrainedOutlineGenerationService(user_ppt_service)
+        source_text = "\n".join(value for value in [project_request.topic, project_request.requirements, project_request.description] if value)
+        decision = await constrained_service.classify_generation_mode(source_text)
+        selected_mode = decision.get("mode", "original")
+        if selected_mode == "strict":
+            outline_data = await constrained_service.generate(
+                project_id, project_request, page_count_settings,
+                generation_request_id=generation_request_id,
+            )
+        else:
+            outline = await user_ppt_service.generate_outline(project_request, page_count_settings)
+            outline_data = {
+                "title": outline.title,
+                "slides": outline.slides,
+                "metadata": dict(outline.metadata or {}),
+            }
+            outline_data["metadata"].update({
+                "generation_entrypoint": "smart-original",
+                "generation_request_id": generation_request_id,
+                "selected_generation_mode": "original",
+            })
+            await user_ppt_service._update_outline_generation_stage(project_id, outline_data)
+        outline_data.setdefault("metadata", {})["selected_generation_mode"] = selected_mode
+        await consume_credits_for_operation(
+            user.id, "outline_generation", 1,
+            description=f"智能大纲生成: {project.topic}",
+            reference_id=project_id,
+            provider_name=outline_provider_name,
+        )
+        return {
+            "success": True,
+            "outline": outline_data,
+            "generation_entrypoint": f"smart-{selected_mode}",
+            "selected_generation_mode": selected_mode,
+            "mode_reason": decision.get("reason", ""),
+        }
+
+    task_id = task_manager.submit_task(
+        "smart_outline_generation", _run_smart_generation,
+        metadata={
+            "project_id": project_id, "user_id": user.id,
+            "generation_entrypoint": "smart",
+            "generation_request_id": generation_request_id,
+        },
+    )
+    return {
+        "status": "accepted", "task_id": task_id,
+        "generation_request_id": generation_request_id,
+        "generation_entrypoint": "smart",
+        "polling_endpoint": f"/projects/{project_id}/generate-outline-constrained/tasks/{task_id}?generation_request_id={generation_request_id}",
+        "message": "智能大纲生成任务已创建",
+    }
+
+
+@router.get("/projects/{project_id}/generate-outline-constrained/tasks/{task_id}")
+async def get_constrained_outline_generation_task(
+    project_id: str,
+    task_id: str,
+    generation_request_id: str | None = None,
+    user: User = Depends(get_current_user_required),
+):
+    """Return task state, recovering completion from the persisted outline.
+
+    Background-task memory is process-local when Valkey is unavailable.  This
+    project-scoped endpoint therefore uses the persisted request id as the
+    source of truth when polling lands on another worker.
+    """
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from ...services.background_tasks import get_task_manager
+
+    task = await get_task_manager().get_task_async(task_id)
+    if task is not None:
+        metadata = task.metadata if isinstance(task.metadata, dict) else {}
+        if metadata.get("project_id") != project_id or metadata.get("user_id") != user.id:
+            raise HTTPException(status_code=404, detail="Task not found")
+        response = {
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "status": task.status.value,
+            "progress": task.progress,
+            "metadata": metadata,
+        }
+        if task.status.value == "completed" and task.result:
+            response["result"] = task.result
+        elif task.status.value == "failed":
+            response["error"] = task.error
+        return response
+
+    outline = project.outline if isinstance(project.outline, dict) else None
+    outline_metadata = outline.get("metadata", {}) if outline else {}
+    if (
+        generation_request_id
+        and isinstance(outline_metadata, dict)
+        and outline_metadata.get("generation_request_id") == generation_request_id
+        and isinstance(outline.get("slides"), list)
+    ):
+        return {
+            "task_id": task_id,
+            "task_type": "constrained_outline_generation",
+            "status": "completed",
+            "progress": 100.0,
+            "result": {
+                "success": True,
+                "outline": outline,
+                "generation_entrypoint": outline_metadata.get("generation_entrypoint", "constrained-stage1"),
+            },
+            "recovered_from_project": True,
+        }
+
+    return {
+        "task_id": task_id,
+        "task_type": "constrained_outline_generation",
+        "status": "running",
+        "progress": 0.0,
+        "message": "任务正在执行，等待生成结果同步",
+        "task_state_source": "project_fallback",
+    }
 
 
 @router.get("/projects/{project_id}/outline-stream")

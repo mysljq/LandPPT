@@ -42,6 +42,7 @@ error.txt
 
 # Runtime artifacts
 canvas/
+llm_traces/
 
 # Local test artifacts (do NOT ignore source code)
 *.pdf

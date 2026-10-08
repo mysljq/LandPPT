@@ -662,11 +662,41 @@
 
         const requirementsForm = document.getElementById('requirements-form');
         if (requirementsForm) {
+            const constrainedConfirmBtn = document.getElementById('confirm-constrained-requirements-btn');
+            const smartConfirmBtn = document.getElementById('confirm-smart-requirements-btn');
+            if (constrainedConfirmBtn) {
+                constrainedConfirmBtn.addEventListener('click', function () {
+                    requirementsForm.dataset.generationMode = 'constrained';
+                    if (typeof requirementsForm.requestSubmit === 'function') {
+                        requirementsForm.requestSubmit();
+                    } else {
+                        requirementsForm.dispatchEvent(new Event('submit', { cancelable: true }));
+                    }
+                });
+            }
+            if (smartConfirmBtn) {
+                smartConfirmBtn.addEventListener('click', function () {
+                    requirementsForm.dataset.generationMode = 'smart';
+                    if (typeof requirementsForm.requestSubmit === 'function') {
+                        requirementsForm.requestSubmit();
+                    } else {
+                        requirementsForm.dispatchEvent(new Event('submit', { cancelable: true }));
+                    }
+                });
+            }
+
             requirementsForm.addEventListener('submit', async function (e) {
                 e.preventDefault();
 
                 const confirmBtn = document.getElementById('confirm-requirements-btn');
+                const constrainedBtn = document.getElementById('confirm-constrained-requirements-btn');
+                const smartBtn = document.getElementById('confirm-smart-requirements-btn');
                 const originalBtnHtml = confirmBtn ? confirmBtn.innerHTML : '';
+                const originalConstrainedBtnHtml = constrainedBtn ? constrainedBtn.innerHTML : '';
+                const generationMode = requirementsForm.dataset.generationMode === 'constrained'
+                    ? 'constrained'
+                    : (requirementsForm.dataset.generationMode === 'smart' ? 'smart' : 'legacy');
+                delete requirementsForm.dataset.generationMode;
                 const selectedSourceInput = document.querySelector('input[name="content_source"]:checked');
                 const selectedSource = selectedSourceInput ? selectedSourceInput.value : 'manual';
                 const fileInput = document.getElementById('file_upload_todo');
@@ -701,6 +731,14 @@
                     confirmBtn.disabled = true;
                     confirmBtn.innerHTML = '处理中...';
                 }
+                if (constrainedBtn) {
+                    constrainedBtn.disabled = true;
+                    constrainedBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 处理中...';
+                }
+                if (smartBtn) {
+                    smartBtn.disabled = true;
+                    smartBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 判断中...';
+                }
 
                 const requirementsSection = document.getElementById('requirements-section');
                 if (requirementsSection) {
@@ -726,7 +764,13 @@
                         outlineGenerationStarted = false;
 
                         setTimeout(() => {
-                            startOutlineGenerationNew();
+                            if (generationMode === 'smart') {
+                                startSmartOutlineGeneration();
+                            } else if (generationMode === 'constrained') {
+                                startConstrainedOutlineGeneration();
+                            } else {
+                                startOutlineGenerationNew();
+                            }
                         }, 1000);
                     } else {
                         console.error('Requirements confirmation failed:', result.message);
@@ -741,6 +785,14 @@
                             confirmBtn.disabled = false;
                             confirmBtn.innerHTML = originalBtnHtml;
                         }
+                        if (constrainedBtn) {
+                            constrainedBtn.disabled = false;
+                            constrainedBtn.innerHTML = originalConstrainedBtnHtml;
+                        }
+                        if (smartBtn) {
+                            smartBtn.disabled = false;
+                            smartBtn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> 智能选择生成方案';
+                        }
                     }
                 } catch (error) {
                     console.error('Error confirming requirements:', error);
@@ -753,6 +805,14 @@
                     if (confirmBtn) {
                         confirmBtn.disabled = false;
                         confirmBtn.innerHTML = originalBtnHtml;
+                    }
+                    if (constrainedBtn) {
+                        constrainedBtn.disabled = false;
+                        constrainedBtn.innerHTML = originalConstrainedBtnHtml;
+                    }
+                    if (smartBtn) {
+                        smartBtn.disabled = false;
+                        smartBtn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> 智能选择生成方案';
                     }
                 }
             });
@@ -823,6 +883,9 @@
                         <div id="outline-actions" style="display: none;">
                             <button onclick="regenerateOutlineNew()" class="btn btn-sm btn-outline-warning" style="margin-right: 8px;">
                                 <i class="fas fa-sync"></i> 重新生成大纲
+                            </button>
+                            <button onclick="startConstrainedOutlineGeneration()" class="btn btn-sm" style="margin-right: 8px; background: #111; color: #fff; border: 1px solid #111;" title="按页面级硬性要求生成并校验">
+                                <i class="fas fa-shield-alt"></i> 约束增强生成
                             </button>
                             <button onclick="editOutlineNew()" class="btn btn-sm btn-outline-primary" style="margin-right: 8px;">
                                 <i class="fas fa-edit"></i> 编辑大纲
@@ -1124,6 +1187,129 @@
 
     // ** FIX START **
     // Moved startOutlineGenerationNew function to the global scope
+
+    async function startSmartOutlineGeneration() {
+        // The backend owns mode selection and the complete generation flow.
+        await startConstrainedOutlineGeneration('/projects/' + currentProjectId + '/generate-outline-smart');
+    }
+
+    async function startConstrainedOutlineGeneration(generationEndpoint = '/projects/' + currentProjectId + '/generate-outline-constrained') {
+        console.log('[CONSTRAINED] Starting first-stage constrained outline generation');
+
+        if (outlineGenerationStarted) {
+            console.log('[CONSTRAINED] Outline generation already started, skipping...');
+            return;
+        }
+
+        const contentDiv = document.getElementById('outline-content-display');
+        if (!contentDiv) {
+            showOutlineGenerationError('大纲内容区域未准备好，请刷新页面后重试', 'startConstrainedOutlineGeneration');
+            return;
+        }
+
+        outlineGenerationStarted = true;
+        lastOutlineErrorMessage = '';
+        lastOutlineErrorRetryHandler = 'startConstrainedOutlineGeneration';
+        showOutlineSection();
+
+        const actionsDiv = document.getElementById('outline-actions');
+        if (actionsDiv) actionsDiv.style.display = 'none';
+        hideStartPPTButton();
+        if (currentViewNew === 'outline') toggleOutlineViewDuringRegeneration(true);
+
+        const outlineGeneratingDiv = document.getElementById('outline-generating-new');
+        if (outlineGeneratingDiv) {
+            outlineGeneratingDiv.style.cssText = 'position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: white; display: block !important; z-index: 9999; overflow-y: auto;';
+            setTimeout(() => startBrainAnimation('outline-view'), 100);
+        }
+
+        let placeholderDiv = document.getElementById('outline-placeholder');
+        if (!placeholderDiv) {
+            placeholderDiv = document.createElement('div');
+            placeholderDiv.id = 'outline-placeholder';
+            contentDiv.appendChild(placeholderDiv);
+        }
+        placeholderDiv.className = 'loading-container';
+        placeholderDiv.style.display = 'block';
+        placeholderDiv.innerHTML = getOutlineLoadingMarkup({
+            brainId: 'loading-brain-constrained',
+            title: '约束增强生成中',
+            subtitle: '正在识别页面要求并校验生成结果',
+            tips: '系统会重点检查“第几页包含什么”和总页数等明确要求。'
+        });
+        setOutlineLoadingState(true);
+        startBrainAnimation('constrained');
+
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        const setTaskMessage = (message) => {
+            const status = document.getElementById('outline-status');
+            if (status) {
+                status.textContent = message || '约束增强生成中';
+                status.style.display = 'inline';
+            }
+            const overlayStep = document.querySelector('.overlay-step');
+            if (overlayStep && message) overlayStep.textContent = message;
+        };
+
+        try {
+            const response = await fetch(generationEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const created = await parseJsonResponseSafe(response, 'generate-outline-constrained');
+            if (!response.ok || created.status === 'error' || !created.task_id) {
+                throw new Error(created.error || created.message || '约束增强生成任务创建失败');
+            }
+
+            let task = null;
+            const pollingEndpoint = created.polling_endpoint || `/api/landppt/tasks/${created.task_id}`;
+            for (let attempt = 0; attempt < 120; attempt += 1) {
+                await sleep(attempt === 0 ? 300 : 1500);
+                const taskResponse = await fetch(pollingEndpoint);
+                if (taskResponse.status === 404) {
+                    setTaskMessage('任务状态正在同步，请稍候...');
+                    continue;
+                }
+                task = await parseJsonResponseSafe(taskResponse, 'constrained-outline-task');
+                if (!taskResponse.ok) {
+                    throw new Error(task.error || '无法查询约束增强生成任务');
+                }
+                setTaskMessage(task.message || (task.status === 'running' ? '正在生成并校验大纲...' : '等待任务执行...'));
+                if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') break;
+            }
+
+            if (!task || task.status !== 'completed') {
+                throw new Error((task && task.error) || '约束增强生成任务未完成，请稍后重试');
+            }
+
+            const parsedOutline = task.result && task.result.outline;
+            if (!parsedOutline || !Array.isArray(parsedOutline.slides)) {
+                throw new Error('约束增强任务返回的大纲格式无效');
+            }
+
+            const formattedContent = JSON.stringify(parsedOutline, null, 2);
+            const preElement = document.createElement('pre');
+            preElement.style.cssText = 'margin: 0; font-family: "Consolas", "Monaco", "Courier New", monospace; font-size: 13px; white-space: pre-wrap; word-wrap: break-word;';
+            preElement.textContent = formattedContent;
+            contentDiv.innerHTML = '';
+            contentDiv.appendChild(preElement);
+
+            stopBrainAnimation('constrained');
+            stopOutlineGenerationAnimations('constrained outline generation completed');
+            renderOutlinePreview(parsedOutline);
+            renderOutlineViewNewWithData(parsedOutline);
+            outlineGenerationStarted = false;
+            if (actionsDiv) actionsDiv.style.display = 'block';
+            showStartPPTButton();
+        } catch (error) {
+            console.error('[CONSTRAINED] Outline generation failed:', error);
+            stopBrainAnimation('constrained');
+            stopOutlineGenerationAnimations('constrained outline generation error');
+            outlineGenerationStarted = false;
+            showOutlineGenerationError(error.message || '约束增强生成失败', 'startConstrainedOutlineGeneration');
+        }
+    }
 
     async function startOutlineGenerationNew(options = {}) {
         console.log('Starting new outline generation (streaming)');

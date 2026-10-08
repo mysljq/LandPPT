@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Union, Tuple
 
 from .base import AIProvider, AIMessage, AIResponse, MessageRole, TextContent, ImageContent, MessageContentType
 from ..core.config import ai_config, resolve_timeout_seconds
+from .trace import record_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -335,10 +336,14 @@ class OpenAIProvider(AIProvider):
                 else:
                     match = self._find_first_match(remaining_buffer, close_markers)
                     if match is None:
+                        # Preserve provider-emitted <think> chunks for the local trace
+                        # while keeping them out of the visible application output.
+                        record_reasoning(remaining_buffer)
                         remaining_buffer = ""
                         break
 
                     think_end, close_marker = match
+                    record_reasoning(remaining_buffer[:think_end])
                     in_think_tag = False
                     remaining_buffer = remaining_buffer[think_end + len(close_marker):]
 
@@ -381,6 +386,17 @@ class OpenAIProvider(AIProvider):
 
         return filtered_content
 
+    @staticmethod
+    def _record_response_reasoning(message_or_response: Any, raw_content: str = "") -> None:
+        """Keep reasoning explicitly exposed by compatible providers in local traces."""
+        if raw_content:
+            for match in re.findall(r"<(?:think|thinking)[^>]*>(.*?)</(?:think|thinking)>", raw_content, re.I | re.S):
+                record_reasoning(match)
+        for name in ("reasoning_content", "reasoning", "thinking", "thoughts"):
+            value = getattr(message_or_response, name, None)
+            if value:
+                record_reasoning(value)
+
     async def _chat_completion_via_chat_completions(
         self,
         config: Dict[str, Any],
@@ -390,7 +406,9 @@ class OpenAIProvider(AIProvider):
         response = await self.client.chat.completions.create(**request_kwargs)
 
         choice = response.choices[0]
-        filtered_content = self._filter_think_content(choice.message.content or "")
+        raw_content = choice.message.content or ""
+        self._record_response_reasoning(choice.message, raw_content)
+        filtered_content = self._filter_think_content(raw_content)
 
         return AIResponse(
             content=filtered_content,
@@ -412,6 +430,9 @@ class OpenAIProvider(AIProvider):
     ) -> AIResponse:
         request_kwargs = self._build_responses_request(config, responses_input)
         response = await self.client.responses.create(**request_kwargs)
+        # Some OpenAI-compatible Responses endpoints expose reasoning items or summaries.
+        for item in (getattr(response, "output", None) or []):
+            self._record_response_reasoning(item)
 
         incomplete_details = getattr(response, "incomplete_details", None)
         finish_reason = getattr(incomplete_details, "reason", None)
@@ -494,8 +515,11 @@ class OpenAIProvider(AIProvider):
 
             async def _chat_completion_chunks() -> AsyncGenerator[str, None]:
                 async for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
+                    if chunk.choices:
+                        delta = chunk.choices[0].delta
+                        self._record_response_reasoning(delta)
+                        if delta.content:
+                            yield delta.content
 
             async for visible_chunk in self._filter_think_chunks(_chat_completion_chunks()):
                 yield visible_chunk
@@ -755,6 +779,8 @@ class AnthropicProvider(AIProvider):
                                         event_data = json.loads(data)
                                         if event_data.get('type') == 'content_block_delta':
                                             delta = event_data.get('delta', {})
+                                            if delta.get('type') in {'thinking_delta', 'thinking'}:
+                                                record_reasoning(delta.get('thinking') or delta.get('text'))
                                             if delta.get('type') == 'text_delta':
                                                 text = delta.get('text', '')
                                                 if text:

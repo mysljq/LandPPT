@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from pydantic import BaseModel
 from enum import Enum
 
+from .trace import trace_provider_method
+
 class MessageRole(str, Enum):
     """Message roles for AI conversations"""
     SYSTEM = "system"
@@ -44,6 +46,21 @@ class AIResponse(BaseModel):
 
 class AIProvider(ABC):
     """Abstract base class for AI providers"""
+
+    _TRACE_METHODS = {
+        "chat_completion",
+        "text_completion",
+        "stream_chat_completion",
+        "stream_text_completion",
+    }
+
+    def __init_subclass__(cls, **kwargs):
+        """Automatically trace every concrete provider entry point."""
+        super().__init_subclass__(**kwargs)
+        for method_name in cls._TRACE_METHODS:
+            method = cls.__dict__.get(method_name)
+            if method is not None:
+                setattr(cls, method_name, trace_provider_method(method))
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config

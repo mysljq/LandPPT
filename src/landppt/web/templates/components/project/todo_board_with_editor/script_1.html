@@ -2011,6 +2011,77 @@
         const projectId = '{{ todo_board.task_id }}';
         const generationKey = `ppt_generation_started_${projectId}`;
 
+        async function startConstrainedOutlineTaskFromEditor(generationEndpoint = `/projects/${projectId}/generate-outline-constrained`) {
+            const button = document.getElementById('constrainedOutlineBtn');
+            if (!button || button.disabled) return;
+            const originalHtml = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 生成中...';
+            try {
+                const response = await fetch(generationEndpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const created = await response.json();
+                if (!response.ok || !created.task_id) {
+                    throw new Error(created.error || created.message || '约束增强大纲任务创建失败');
+                }
+                const pollingEndpoint = created.polling_endpoint || `/api/landppt/tasks/${created.task_id}`;
+                for (let attempt = 0; attempt < 120; attempt += 1) {
+                    await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 300 : 1500));
+                    const taskResponse = await fetch(pollingEndpoint);
+                    if (taskResponse.status === 404) {
+                        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 同步任务状态...';
+                        continue;
+                    }
+                    const task = await taskResponse.json();
+                    if (!taskResponse.ok) throw new Error(task.error || '无法查询任务状态');
+                    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 生成中...';
+                    if (task.status === 'failed' || task.status === 'cancelled') {
+                        throw new Error(task.error || '约束增强大纲生成失败');
+                    }
+                    if (task.status === 'completed') {
+                        window.location.reload();
+                        return;
+                    }
+                }
+                throw new Error('任务执行时间过长，请稍后刷新页面查看结果');
+            } catch (error) {
+                console.error('[CONSTRAINED] editor task failed:', error);
+                alert(error.message || '约束增强大纲生成失败');
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+            }
+        }
+
+        async function startSmartOutlineTaskFromEditor() {
+            const button = document.getElementById('smartOutlineBtn');
+            if (!button || button.disabled) return;
+            const originalHtml = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 判断中...';
+            try {
+                button.disabled = false;
+                await startConstrainedOutlineTaskFromEditor(`/projects/${projectId}/generate-outline-smart`);
+            } catch (error) {
+                console.error('[SMART] smart generation task failed:', error);
+                button.disabled = false;
+                alert(error.message || '智能大纲生成失败');
+            } finally {
+                if (!button.disabled) button.innerHTML = originalHtml;
+            }
+        }
+
+        const constrainedOutlineBtn = document.getElementById('constrainedOutlineBtn');
+        if (constrainedOutlineBtn) {
+            constrainedOutlineBtn.addEventListener('click', startConstrainedOutlineTaskFromEditor);
+        }
+        const smartOutlineBtn = document.getElementById('smartOutlineBtn');
+        if (smartOutlineBtn) {
+            smartOutlineBtn.addEventListener('click', startSmartOutlineTaskFromEditor);
+        }
+
         // Check if PPT is already generated
         const projectSlidesData = {{ (project.slides_data | tojson | safe) if project and project.slides_data else '[]' }};
         const projectOutline = {{ (project.outline | tojson | safe) if project and project.outline else 'null' }};
