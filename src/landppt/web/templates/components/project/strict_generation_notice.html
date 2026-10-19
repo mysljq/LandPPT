@@ -1,0 +1,6 @@
+{% set saved_outline = project.outline if project and project.outline else {} %}
+{% set validation = (saved_outline.get('metadata') or {}).get('constraint_validation') or {} %}
+<div id="strict-generation-notice" role="status"
+     style="display: {{ 'block' if validation.get('skipped') else 'none' }}; margin: 16px; padding: 16px; border: 1px solid #d97706; border-radius: 8px; background: #fffbeb; color: #92400e;">
+    本次已降级为原始生成，未通过严格结构校验。页面数量、过渡页及逐页内容保留不受严格模式保证，请重新使用严格模式生成后再确认大纲。
+</div>

@@ -1264,7 +1264,8 @@
 
             let task = null;
             const pollingEndpoint = created.polling_endpoint || `/api/landppt/tasks/${created.task_id}`;
-            for (let attempt = 0; attempt < 120; attempt += 1) {
+            // Intent analysis, structure planning and repair may take several minutes.
+            for (let attempt = 0; attempt < 1200; attempt += 1) {
                 await sleep(attempt === 0 ? 300 : 1500);
                 const taskResponse = await fetch(pollingEndpoint);
                 if (taskResponse.status === 404) {
@@ -1299,6 +1300,11 @@
             stopOutlineGenerationAnimations('constrained outline generation completed');
             renderOutlinePreview(parsedOutline);
             renderOutlineViewNewWithData(parsedOutline);
+            const strictNotice = document.getElementById('strict-generation-notice');
+            if (strictNotice) {
+                const validation = parsedOutline.metadata && parsedOutline.metadata.constraint_validation;
+                strictNotice.style.display = validation && validation.skipped ? 'block' : 'none';
+            }
             outlineGenerationStarted = false;
             if (actionsDiv) actionsDiv.style.display = 'block';
             showStartPPTButton();

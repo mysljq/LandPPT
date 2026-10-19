@@ -12,6 +12,7 @@
 </div>
 
 <!-- Requirements Confirmation Section -->
+{% include 'components/project/strict_generation_notice.html' %}
 {% set requirements_stage = todo_board.stages | selectattr('id', 'equalto', 'requirements_confirmation') | first %}
 {% if not requirements_stage or requirements_stage.status == 'pending' %}
 <div id="requirements-section" class="requirements-shell"

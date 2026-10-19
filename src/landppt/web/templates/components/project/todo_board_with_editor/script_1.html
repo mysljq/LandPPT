@@ -2028,7 +2028,8 @@
                     throw new Error(created.error || created.message || '约束增强大纲任务创建失败');
                 }
                 const pollingEndpoint = created.polling_endpoint || `/api/landppt/tasks/${created.task_id}`;
-                for (let attempt = 0; attempt < 120; attempt += 1) {
+                // Match the multi-stage strict workflow's polling window.
+                for (let attempt = 0; attempt < 1200; attempt += 1) {
                     await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 300 : 1500));
                     const taskResponse = await fetch(pollingEndpoint);
                     if (taskResponse.status === 404) {
