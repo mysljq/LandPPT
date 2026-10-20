@@ -13268,6 +13268,20 @@
       strSlideXml += '<a:p>';
       // NOTE: `rtlMode` is like other opts, its propagated up to each text:options, so just check the 1st one
       var paragraphPropXml = "<a:pPr ".concat(((_a = line[0].options) === null || _a === void 0 ? void 0 : _a.rtlMode) ? ' rtl="1" ' : '');
+      // Inherit paragraph-level options before generating pPr.  A paragraph
+      // must contain exactly one pPr; emitting one for every run creates
+      // malformed DrawingML and can make Office reinterpret line breaks.
+      line.forEach(function (textObj) {
+        // B: Inherit pPr-type options from parent shape's `options`
+        textObj.options.align = textObj.options.align || opts.align;
+        textObj.options.lineSpacing = textObj.options.lineSpacing || opts.lineSpacing;
+        textObj.options.lineSpacingMultiple = textObj.options.lineSpacingMultiple || opts.lineSpacingMultiple;
+        textObj.options.indentLevel = textObj.options.indentLevel || opts.indentLevel;
+        textObj.options.paraSpaceBefore = textObj.options.paraSpaceBefore || opts.paraSpaceBefore;
+        textObj.options.paraSpaceAfter = textObj.options.paraSpaceAfter || opts.paraSpaceAfter;
+      });
+      paragraphPropXml = genXmlParagraphProperties(line[0], false);
+      strSlideXml += paragraphPropXml.replace('<a:pPr></a:pPr>', ''); // IMPORTANT: Empty "pPr" blocks will generate needs-repair/corrupt msg
       // B: Start paragraph, loop over lines and add text runs
       line.forEach(function (textObj, idx) {
         // A: Set line index
@@ -13276,15 +13290,6 @@
         if (idx > 0 && textObj.options.softBreakBefore) {
           strSlideXml += '<a:br/>';
         }
-        // B: Inherit pPr-type options from parent shape's `options`
-        textObj.options.align = textObj.options.align || opts.align;
-        textObj.options.lineSpacing = textObj.options.lineSpacing || opts.lineSpacing;
-        textObj.options.lineSpacingMultiple = textObj.options.lineSpacingMultiple || opts.lineSpacingMultiple;
-        textObj.options.indentLevel = textObj.options.indentLevel || opts.indentLevel;
-        textObj.options.paraSpaceBefore = textObj.options.paraSpaceBefore || opts.paraSpaceBefore;
-        textObj.options.paraSpaceAfter = textObj.options.paraSpaceAfter || opts.paraSpaceAfter;
-        paragraphPropXml = genXmlParagraphProperties(textObj, false);
-        strSlideXml += paragraphPropXml.replace('<a:pPr></a:pPr>', ''); // IMPORTANT: Empty "pPr" blocks will generate needs-repair/corrupt msg
         // C: Inherit any main options (color, fontSize, etc.)
         // NOTE: We only pass the text.options to genXmlTextRun (not the Slide.options),
         // so the run building function cant just fallback to Slide.color, therefore, we need to do that here before passing options below.
@@ -64786,7 +64791,9 @@
         ? { eaFontFace: exportEastAsiaFontFace, csFontFace: exportEastAsiaFontFace }
         : {}),
       ...(hasCjkText ? { lang: 'zh-CN' } : {}),
-      fontSize: Math.floor(fontSizePx * 0.75 * scale),
+      // Keep one decimal point so CSS sizes survive the px -> pt -> fit-scale
+      // conversion without integer truncation (e.g. 7.875pt becomes 7.9pt).
+      fontSize: Math.round(fontSizePx * 0.75 * scale * 10) / 10,
       bold: weightedFont ? weightedFont.bold : fontWeight === 'bold' || parseInt(fontWeight, 10) >= 600,
       italic: fontStyle === 'italic' || fontStyle.startsWith('oblique'),
       underline: textDecoration.includes('underline'),
@@ -65172,7 +65179,11 @@
           const line = Math.round((rect.top + rect.height / 2) * 10) / 10;
           if (!preserveNativeVerticalRun && previousLine !== null &&
               Math.abs(line - previousLine) > Math.max(1, rect.height * 0.45)) {
-            flush(true);
+            // A changed DOM rect row is a browser visual wrap. Keep it in the
+            // same PPT paragraph so PowerPoint can wrap the text naturally.
+            // Explicit <br>, block children and caller supplied breakLine are
+            // still emitted as hard paragraph breaks below.
+            flush(false);
             whitespacePending = false;
           } else if (whitespacePending && (segment || trimState.hasRenderableText)) {
             segment += ' ';

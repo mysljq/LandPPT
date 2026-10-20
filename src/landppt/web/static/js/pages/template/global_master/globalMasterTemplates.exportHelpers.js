@@ -1,6 +1,6 @@
 let domToPptxLoadPromise = null;
 const DOM_TO_PPTX_BUNDLE_PATH = '/static/js/dom-to-pptx.bundle.js';
-const DOM_TO_PPTX_BUNDLE_VERSION = '20260921-pages75-76-stripes-v180';
+const DOM_TO_PPTX_BUNDLE_VERSION = '20261020-natural-wrap-v182';
 const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
 
 function sleep(ms) {
