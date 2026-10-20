@@ -65156,6 +65156,21 @@
         );
         if (textOptions.hidden) { segment = ''; return; }
         delete textOptions.hidden;
+        // Inline descendants such as <strong> inherit the paragraph's font
+        // size in the browser.  Recomputing the size independently for each
+        // descendant can produce 7pt plain runs beside 7.9pt bold runs.
+        // Use the text container's size unless the descendant explicitly
+        // declares its own inline font-size.
+        const baseStyle = rootContainer
+          ? getNodeWindow(rootContainer).getComputedStyle(rootContainer)
+          : nodeStyle;
+        const baseFontSizePx = parseFloat(baseStyle.fontSize);
+        const hasExplicitInlineFontSize = parent.hasAttribute &&
+          parent.hasAttribute('style') &&
+          /(?:^|;)\s*font-size\s*:/i.test(parent.getAttribute('style') || '');
+        if (Number.isFinite(baseFontSizePx) && baseFontSizePx > 0 && !hasExplicitInlineFontSize) {
+          textOptions.fontSize = Math.round(baseFontSizePx * 0.75 * scale * 10) / 10;
+        }
         sanitizeTextRunHighlight(textOptions, nodeStyle, parent === rootContainer);
         segments.push({ text: transformed, options: breakLine ? { ...textOptions, breakLine: true } : textOptions });
         segment = '';
@@ -73817,7 +73832,7 @@
 
       if (textPayload) {
         textPayload.text[0].options.fontSize =
-          Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
+          Math.round((textPayload.text[0]?.options?.fontSize || 12) * 10) / 10;
         const textGeometry = getTextPayloadGeometry(textPayload, x, y, w, h, rotation);
         items.push({
           type: 'text',
@@ -73916,7 +73931,7 @@
 
         if (textPayload) {
           textPayload.text[0].options.fontSize =
-            Math.floor(textPayload.text[0]?.options?.fontSize) || 12;
+            Math.round((textPayload.text[0]?.options?.fontSize || 12) * 10) / 10;
           const textGeometry = getTextPayloadGeometry(textPayload, shapeOpts.x, shapeOpts.y, shapeOpts.w, shapeOpts.h, rotation);
           // Apply the measured browser-to-DrawingML baseline compensation at
           // the final geometry boundary as well. Some semantic text shapes are
