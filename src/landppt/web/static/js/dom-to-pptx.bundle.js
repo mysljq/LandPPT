@@ -64547,9 +64547,8 @@
     const exportedFamilies = collectExportFontFamilies(fontFamilyValue);
     for (const family of exportedFamilies) {
       if (isLikelyCjkFontFamily(family)) continue;
-      // Keep common PowerPoint fonts by their declared typeface even when the
-      // browser host cannot measure them (for example, exporting on Linux).
-      if (LATIN_DOMINANT_FONT_NAMES.has(normalizeFontFamilyKey(family))) return family;
+      // A familiar family name is not proof it is installed. Follow the live
+      // browser fallback chain (e.g. unavailable Helvetica Neue -> Arial).
       if (isLatinFontFamilyLikelyAvailable(family, fontContext)) {
         return family;
       }
@@ -64596,7 +64595,8 @@
     }
 
     for (const family of exportedFamilies) {
-      if (LATIN_DOMINANT_FONT_NAMES.has(normalizeFontFamilyKey(family))) {
+      if (LATIN_DOMINANT_FONT_NAMES.has(normalizeFontFamilyKey(family)) &&
+          isLatinFontFamilyLikelyAvailable(family, fontContext)) {
         recordFontExportDecision(fontContext, {
           fontFamilyValue,
           families: exportedFamilies,
@@ -68622,6 +68622,11 @@
   function generateRepeatingRadialPatternSVG(w, h, backgroundImage, backgroundSize, opacityMultiplier = 1) {
     try {
       const raw = String(backgroundImage || '').trim();
+      // Only a single gradient with an explicit pixel tile is a dot mat.
+      // CSS defaults background-repeat to repeat even for full-size glows.
+      if (splitTopLevelCommaParts(raw).length !== 1) return null;
+      const tile = String(backgroundSize || '').trim().match(/^(\d*\.?\d+)px(?:\s+(\d*\.?\d+)px)?$/i);
+      if (!tile || !(Number(tile[1]) > 0) || !(Number(tile[2] || tile[1]) > 0)) return null;
       const match = raw.match(/radial-gradient\((.*)\)/i);
       if (!match) return null;
       const parts = splitTopLevelCommaParts(match[1]);
@@ -68630,6 +68635,8 @@
       const first = String(stopParts[0] || '').trim().match(/^(.*?)(?:\s+([\d.]+)px)?$/i);
       const second = String(stopParts[1] || '').trim().match(/^(.*?)(?:\s+([\d.]+)px)?$/i);
       if (!first || !second) return null;
+      // Percentage stops belong to a continuous glow, not a pixel dot.
+      if (!first[2] || !second[2]) return null;
       const firstColor = parseColor(first[1]);
       const secondColor = parseColor(second[1]);
       if (!firstColor.hex) return null;
@@ -70210,6 +70217,27 @@
    * Optimized html2canvas wrapper
    * Includes fix for cropped icons by adjusting styles in the cloned document.
    */
+  function resolveCaptureBackdropColor(node) {
+    let current = node && node.parentElement;
+    while (current) {
+      try {
+        const style = (current.ownerDocument.defaultView || window).getComputedStyle(current);
+        const background = parseColor(style.backgroundColor);
+        if (background.hex && background.opacity >= 0.999) {
+          return `#${background.hex}`;
+        }
+      } catch (_) {
+        // Continue through the ancestor chain when a detached node has no
+        // usable computed style.
+      }
+      current = current.parentElement;
+    }
+    // A transparent ancestor leaves no reliable matte for a rasterized glow.
+    // Use white as the neutral fallback so WPS never substitutes black for
+    // the PNG's remaining transparent pixels.
+    return '#FFFFFF';
+  }
+
   async function elementToCanvasImage(node, widthPx, heightPx, options = {}) {
     return new Promise((resolve) => {
       const sourceDoc = node.ownerDocument || document;
@@ -70244,7 +70272,7 @@
       const captureScale = Number.isFinite(scaleRaw) ? Math.max(1, Math.min(scaleRaw, 4)) : 3;
 
       html2canvas(node, {
-        backgroundColor: null,
+        backgroundColor: options.backgroundColor || null,
         logging: false,
         scale: captureScale, // Higher scale for sharper icons
         foreignObjectRendering: Boolean(options.foreignObjectRendering),
@@ -70256,6 +70284,13 @@
         onclone: (clonedDoc) => {
           const clonedNode = clonedDoc.getElementById(tempId);
           if (clonedNode) {
+            if (options.backgroundColor) {
+              // foreignObjectRendering composites CSS gradients inside the
+              // cloned DOM before the canvas background is applied. Give the
+              // clone the same opaque backdrop so transparent stops cannot be
+              // premultiplied against the renderer's default black.
+              clonedNode.style.setProperty('background-color', options.backgroundColor, 'important');
+            }
             // --- FIX: CLIP & FONT ISSUES ---
             // Apply styles DIRECTLY to elements to ensure html2canvas picks them up
             // This avoids issues where <style> tags in onclone are ignored or delayed
@@ -70358,6 +70393,18 @@
           destCanvas.height = height;
           const ctx = destCanvas.getContext('2d');
 
+          // Some renderers keep transparent pixels even when html2canvas was
+          // given a backgroundColor. Flatten the captured bitmap before it is
+          // placed in PPT so WPS cannot composite the remaining alpha against
+          // black. This is enabled only for captures with a resolved backdrop.
+          if (options.flattenAlpha && options.backgroundColor) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = options.backgroundColor;
+            ctx.fillRect(0, 0, width, height);
+            ctx.restore();
+          }
+
           // Draw captured canvas (which is padded) back to the original size
           // We need to draw the CENTER of the source canvas to the destination
           // The source canvas is (width + 2*padding) * scale
@@ -70405,12 +70452,20 @@
             ctx.fill();
           }
 
+          if (options.flattenAlpha && options.backgroundColor) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'destination-over';
+            ctx.fillStyle = options.backgroundColor;
+            ctx.fillRect(0, 0, width, height);
+            ctx.restore();
+          }
+
           resolve(destCanvas.toDataURL('image/png'));
         })
         .catch((e) => {
           // Retry with a simpler html2canvas config before giving up.
           html2canvas(node, {
-            backgroundColor: null,
+            backgroundColor: options.backgroundColor || null,
             logging: false,
             scale: Math.max(1, captureScale - 1),
             useCORS: true,
@@ -70420,7 +70475,18 @@
             .then((fallbackCanvas) => {
               if (originalId) node.id = originalId;
               else node.removeAttribute('id');
-              resolve(fallbackCanvas.toDataURL('image/png'));
+              if (options.flattenAlpha && options.backgroundColor) {
+                const flattened = document.createElement('canvas');
+                flattened.width = fallbackCanvas.width;
+                flattened.height = fallbackCanvas.height;
+                const flattenCtx = flattened.getContext('2d');
+                flattenCtx.fillStyle = options.backgroundColor;
+                flattenCtx.fillRect(0, 0, flattened.width, flattened.height);
+                flattenCtx.drawImage(fallbackCanvas, 0, 0);
+                resolve(flattened.toDataURL('image/png'));
+              } else {
+                resolve(fallbackCanvas.toDataURL('image/png'));
+              }
             })
             .catch((fallbackErr) => {
               if (originalId) node.id = originalId;

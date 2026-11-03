@@ -418,7 +418,7 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20261020-natural-wrap-font-v186';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20261102-font-fallback-v191';
         const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
         let domToPptxReloadPromise = null;
 
