@@ -1,0 +1,14 @@
+const assert=require('node:assert/strict'),path=require('node:path'),{chromium}=require('playwright'),JSZip=require('jszip');
+(async()=>{const browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});try{
+ const page=await browser.newPage({viewport:{width:1280,height:720}});
+ await page.setContent(`<style>*{margin:0;padding:0;box-sizing:border-box}body{width:1280px;height:720px}p{width:250px;font:16px Arial;line-height:1.65;margin:20px}.visual{background:#eee;border:1px solid #888;padding:8px}.badge{background:#ff0;border-radius:4px;padding:2px 4px}.short{white-space:nowrap}</style><p id="plain">PLAIN paragraph with enough words to wrap across several lines and remain editable.</p><p id="rich">RICH paragraph with <strong>bold emphasis</strong> and enough words to wrap across several lines.</p><p class="visual">VISUAL card with its own background and border keeps its original size while its text wraps.</p><p>INLINE paragraph with a <span class="badge">colored label</span> and enough words to wrap across several lines.</p><p class="short">SHORT single line</p>`);
+ const bounds=await page.evaluate(()=>Object.fromEntries(['plain','rich'].map(id=>[id,document.getElementById(id).getBoundingClientRect().toJSON()])));
+ await page.addScriptTag({path:path.resolve('src/landppt/web/static/js/dom-to-pptx.bundle.js')});
+ const bytes=await page.evaluate(async()=>Array.from(new Uint8Array(await(await domToPptx.exportToPptx(document.body,{skipDownload:true,autoEmbedFonts:false})).arrayBuffer())));
+ const zip=await JSZip.loadAsync(Buffer.from(bytes)),xml=await zip.file('ppt/slides/slide1.xml').async('string'),shapes=xml.match(/<p:sp>[\s\S]*?<\/p:sp>/g)||[];
+ for(const id of ['plain','rich']){const shape=shapes.find(s=>s.includes(`<a:t>${id.toUpperCase()}`));assert.ok(shape,'Paragraph stays editable');assert.equal((shape.match(/<a:spAutoFit\/>/g)||[]).length,1,'One resize-shape policy');assert.ok(shape.includes('wrap="square"')&&!shape.includes('<a:normAutofit'),'Wrap at original width without shrinking font');const ext=shape.match(/<a:ext cx="(\d+)" cy="(\d+)"/);assert.ok(Math.abs(+ext[1]/7143.75-bounds[id].width)<.01);assert.ok(Math.abs(+ext[2]/7143.75-bounds[id].height)<=.51,'Initial height: '+(+ext[2]/7143.75)+' vs '+bounds[id].height);assert.ok(!shape.includes('<a:br'),'Width wrapping stays automatic')}
+ for(const word of ['VISUAL','INLINE','SHORT']){const selected=shapes.filter(s=>s.includes(word));assert.ok(selected.length);assert.ok(selected.every(s=>!s.includes('<a:spAutoFit/>')),word+' retains fixed visual/inline/single-line geometry')}
+ console.log('PASS: wrapping plain/rich paragraphs resize vertically without initial geometry changes, shrinking or forced line breaks; cards, inline labels and single lines retain geometry');
+}finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
+
+
