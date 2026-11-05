@@ -418,7 +418,7 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20261105-paragraph-height-autofit-v220';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20261105-cjk-heading-baseline-v222';
         const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
         let domToPptxReloadPromise = null;
 

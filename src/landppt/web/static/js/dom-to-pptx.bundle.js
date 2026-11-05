@@ -64868,22 +64868,28 @@
     const fallbackCounter = /^\d$/.test(text) && size >= 96 && declared &&
       !isGenericCssFontFamily(declared) && !isLatinFontFamilyLikelyAvailable(declared, node) &&
       getSingleLineNumericRatio(style, text, node) !== null;
-    const standaloneCounter = /^\d$/.test(text) && size >= 96 && !node.children.length &&
-      getSingleLineNumericRatio(style, text, node) !== null &&
+    // Share one baseline policy for standalone counters, percentages, ratios
+    // and short numeric labels with a unit, including normal KPI font sizes.
+    const numericValue = text.replace(/[\p{Script=Han}]{1,3}$/u, '');
+    const standaloneCounter = !node.children.length && size >= 24 &&
+      /^[+-]?\d+(?:[.,:/-]\d+)*(?:[+%％.])?$/.test(numericValue) &&
+      getBrowserTextVisualLineCount(node) === 1 &&
       !isNonTrivialCssValue(style.clipPath || style.webkitClipPath) &&
       !isNonTrivialCssValue(style.maskImage || style.webkitMaskImage);
     const height = parseFloat(style.lineHeight);
-    const compactHeading = size >= 48 && /^[A-Za-z][A-Za-z0-9 ,.!?&:'’\u2013\u2014-]{0,63}$/.test(text) &&
+    const compactHeading = size >= 48 && /^[A-Za-z\p{Script=Han}][A-Za-z0-9\p{Script=Han} ,.!?&:'’，。！？、：；·（）()\u2013\u2014-]{0,63}$/u.test(text) &&
       height > 0 && height / size <= 1.25 && parseInt(style.fontWeight, 10) >= 600;
     // Standalone counters and compact headings in tall-metric fonts expose
     // different first-baseline rules in Office and WPS. Native textPlain
     // WordArt fits their glyph ink without changing the font or using images.
     if ((!fallbackCounter && !standaloneCounter && !compactHeading && !layeredNumeric) || !(size <= 1024) ||
-        textParts.length !== 1 || textParts[0].options?.outline && !layeredNumeric ||
+        textParts.length !== 1 || textParts[0].options?.outline && !layeredNumeric && !standaloneCounter ||
         !/^(?:block|inline|inline-block)$/.test(style.display) ||
         (style.fontFeatureSettings && style.fontFeatureSettings !== 'normal') ||
         (style.fontVariantNumeric && style.fontVariantNumeric !== 'normal') ||
         (style.transform && style.transform !== 'none' && !isTranslationOnlyTransform(style.transform)) ||
+        isNonTrivialCssValue(style.clipPath || style.webkitClipPath) ||
+        isNonTrivialCssValue(style.maskImage || style.webkitMaskImage) ||
         hasNonHorizontalWritingMode(style)) return null;
     for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
       const transform = getNodeWindow(ancestor).getComputedStyle(ancestor).transform;
@@ -64923,7 +64929,8 @@
           top = Math.min(top, y); bottom = Math.max(bottom, y);
         }
         if (right < left || bottom < top) return null;
-        ink = { left: left - originX, top: top - baseline, w: right - left + 1, h: bottom - top + 1 };
+        ink = { left: left - originX, top: top - baseline, w: right - left + 1, h: bottom - top + 1,
+          baselineLift: (metrics.fontBoundingBoxAscent - metrics.fontBoundingBoxDescent) / 2 };
         cache.set(key, ink);
       }
       const before = node.getBoundingClientRect();
@@ -64931,18 +64938,46 @@
       const directGlyph = layeredNumeric && node.children.length
         ? Array.from(node.childNodes).find(child => child.nodeType === 3 && String(child.nodeValue || '').trim()) : null;
       if (directGlyph) range.selectNode(directGlyph);
-      else range.selectNodeContents(node);
+      else if (!node.children.length && node.firstChild && node.lastChild) {
+        // Anchor the Range in the original text nodes, so the probe itself
+        // cannot become part of the measured glyph bounds after insertion.
+        range.setStart(node.firstChild, 0);
+        range.setEnd(node.lastChild, node.lastChild.textContent.length);
+      } else range.selectNodeContents(node);
       const textRect = range.getBoundingClientRect();
-      if (range.detach) range.detach();
       const marker = doc.createElement('span');
+      // With negative CSS leading, the baseline can lie below the line box.
+      // Even a zero-height inline-block then enlarges the line and changes
+      // layout. Raise the zero-size probe to the middle of the font's em box,
+      // inside the line, then undo that known lift when reading the baseline.
+      const probeLift = ink.baselineLift;
       for (const [property, value] of Object.entries({ all:'initial', display:'inline-block', width:'0px', height:'0px',
-        'font-size':'0px', 'line-height':'0', 'vertical-align':'baseline', margin:'0', padding:'0', border:'0' }))
+        'font-size':'0px', 'line-height':'0', 'vertical-align':`${probeLift}px`, margin:'0', padding:'0', border:'0' }))
         marker.style.setProperty(property, value, 'important');
-      let baseline, after;
-      try { node.appendChild(marker); baseline = marker.getBoundingClientRect().top; after = node.getBoundingClientRect(); }
-      finally { marker.remove(); }
-      if (['x','y','width','height'].some(k => Math.abs(before[k] - after[k]) > 0.5)) return null;
+      let baseline, after, afterText;
+      try {
+        node.appendChild(marker);
+        baseline = marker.getBoundingClientRect().bottom + probeLift;
+        after = node.getBoundingClientRect();
+        afterText = range.getBoundingClientRect();
+      } finally { marker.remove(); if (range.detach) range.detach(); }
+      if (['x','y','width','height'].some(k => Math.abs(before[k] - after[k]) > 0.5 ||
+          Math.abs(textRect[k] - afterText[k]) > 0.5)) return null;
       const scale = PX_TO_INCH * config.scale;
+      if (compactHeading && hasCjkText(text)) {
+        // WPS can break CJK outlines when textPlain WordArt stretches them.
+        // Keep a normal editable text box. A single em-high, vertically
+        // centered line avoids the first-line shift caused by applying the
+        // browser's compressed line-height as PPT paragraph spacing.
+        for (const part of textParts) if (part.options) {
+          delete part.options.lineSpacing;
+          part.options.lineSpacingMultiple = 1;
+        }
+        return { x: config.offX + (textRect.left - config.rootX) * scale,
+          y: config.offY + (baseline + ink.top - config.rootY) * scale,
+          w: Math.max(textRect.width, before.right - textRect.left) * scale,
+          h: size * scale, rotate: 0, valign: 'middle' };
+      }
       return { x: config.offX + (textRect.left + ink.left - config.rootX) * scale,
         y: config.offY + (baseline + ink.top - config.rootY) * scale,
         w: ink.w * scale, h: ink.h * scale, rotate: 0, nativeTextWarp: 'textPlain' };
@@ -67937,6 +67972,10 @@
           ? Math.max(0.01, rangeWidth)
           : Math.max(0.01, boundaryWidth, rangeWidth);
         const h = Math.max(0.01, clampedHeight * (clampDirectLine ? 1 : 1.08) * PX_TO_INCH * config.scale);
+        const displayInk = lines.length === 1 && parent === boundary && !parent.children.length &&
+          /^[+-]?\d/.test(String(line.text || '').trim())
+          ? getSingleLineDisplayInkGeometry(parent, style, [{ text: line.text, options: textStyle }], config)
+          : null;
         items.push({
           type: 'text',
           zIndex: nextRenderableZIndex(zIndex, 2),
@@ -67955,6 +67994,7 @@
             wrap: !lockMeasuredLine,
             noWrap: lockMeasuredLine,
             rotate: rotation || 0,
+            ...(displayInk ? { ...displayInk, valign: 'top', wrap: false, noWrap: true } : {}),
           },
         });
       }
@@ -72720,7 +72760,7 @@
       let directNumericHeight = unrotatedH;
       const isDirectNumeric = isSingleDirectTextLine &&
         getSingleLineNumericRatio(style, textContent, parent) !== null && Math.abs(rotation) < 0.001;
-      const layeredInk = isDirectNumeric && isLayeredNumericGlyph(parent, style, textContent)
+      const directNumericInk = isDirectNumeric
         ? getSingleLineDisplayInkGeometry(parent, style, [{text:textContent,options:textOptions}], config) : null;
       if (isDirectNumeric) {
         const box = parent.getBoundingClientRect();
@@ -72761,7 +72801,7 @@
               // WPS font-metric difference cannot push the last glyph below it.
               noWrap: isSingleDirectTextLine || /^(?:nowrap|pre)$/.test(String(style.whiteSpace || '')),
               rotate: rotation || 0,
-              ...(layeredInk || {}),
+              ...(directNumericInk || {}),
             },
           },
         ],
@@ -74504,7 +74544,7 @@
             textPayload.rangeGeometry = inkGeometry;
             textPayload.margin = [0, 0, 0, 0];
             textPayload.align = 'left';
-            textPayload.valign = 'top';
+            textPayload.valign = inkGeometry.valign || 'top';
             textPayload.noWrap = true;
             textPayload.wrap = false;
           }

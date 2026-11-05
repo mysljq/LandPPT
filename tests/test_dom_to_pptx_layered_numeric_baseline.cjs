@@ -22,7 +22,7 @@ const {chromium}=require('playwright'),JSZip=require('jszip');
   const clipped=shapes.find(s=>s.includes('<a:t>9</a:t>'));
   assert.ok(clipped&&!clipped.includes('prst="textPlain"'),'Clipped overlay continues using its existing alignment policy');
   const plain=shapes.find(s=>s.includes('<a:t>486</a:t>'));
-  assert.ok(plain&&!plain.includes('prst="textPlain"')&&plain.includes('val="85000"'),'Ordinary numeric leading is unchanged');
+  assert.ok(plain&&plain.includes('prst="textPlain"')&&plain.includes('val="85000"'),'Multi-digit counters share measured geometry while preserving numeric leading');
   console.log('PASS: editable outline/fill digits share browser ink geometry across fonts/sizes/offsets; clipped and plain counters retain existing behavior');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1});
