@@ -2889,11 +2889,19 @@ class PlaywrightPDFConverter:
                   };
                   const el = pick();
                   if (!el) return null;
+                  // Cropped absolute watermarks are intentional decoration, not
+                  // body overflow. Hide them only for measurement, then restore.
+                  const decorations = Array.from(el.querySelectorAll('.bg-number, .watermark, [data-decorative]'))
+                    .filter(d => ['absolute', 'fixed'].includes(getComputedStyle(d).position))
+                    .map(d => ({d, value: d.style.getPropertyValue('display'), priority: d.style.getPropertyPriority('display')}));
+                  for (const {d} of decorations) d.style.setProperty('display', 'none', 'important');
                   const rect = el.getBoundingClientRect();
+                  const scaleY = el.offsetHeight > 0 ? rect.height / el.offsetHeight : 1;
+                  const scaleX = el.offsetWidth > 0 ? rect.width / el.offsetWidth : 1;
                   const container_h = Math.max(0, Math.round(rect.height));
                   const container_w = Math.max(0, Math.round(rect.width));
-                  const content_h = Math.round(el.scrollHeight || 0);
-                  const content_w = Math.round(el.scrollWidth || 0);
+                  const content_h = Math.round((el.scrollHeight || 0) * scaleY);
+                  const content_w = Math.round((el.scrollWidth || 0) * scaleX);
                   const overflow_px = Math.max(0, content_h - container_h);
                   const overflow_x_px = Math.max(0, content_w - container_w);
                   const overflow_ratio = container_h > 0 ? overflow_px / container_h : 0;
@@ -2901,16 +2909,17 @@ class PlaywrightPDFConverter:
                   // 纵向溢出子元素摘要
                   const overflows = [];
                   const overflows_x = [];
-                  const kids = el.querySelectorAll ? el.querySelectorAll(':scope > *') : [];
+                  const kids = el.querySelectorAll ? el.querySelectorAll('*') : [];
                   for (const k of kids) {
                     const kr = k.getBoundingClientRect();
-                    const ks = k.scrollHeight || 0;
-                    const kw = k.scrollWidth || 0;
+                    if (kr.height <= 0 || kr.width <= 0) continue;
+                    const ks = (k.scrollHeight || 0) * (k.offsetHeight > 0 ? kr.height / k.offsetHeight : 1);
+                    const kw = (k.scrollWidth || 0) * (k.offsetWidth > 0 ? kr.width / k.offsetWidth : 1);
                     const cls = (k.className && k.className.toString) ? k.className.toString().slice(0, 60) : '';
-                    if (ks > kr.height + 1 && ks - kr.height > 4 && overflows.length < 5) {
+                    if (ks > kr.height + 4) {
                       overflows.push({ tag: k.tagName.toLowerCase(), cls, item_h: Math.round(ks), box_h: Math.round(kr.height) });
                     }
-                    if (kw > kr.width + 1 && kw - kr.width > 4 && overflows_x.length < 5) {
+                    if (kw > kr.width + 4) {
                       overflows_x.push({ tag: k.tagName.toLowerCase(), cls, item_w: Math.round(kw), box_w: Math.round(kr.width) });
                     }
                   }
@@ -2942,7 +2951,8 @@ class PlaywrightPDFConverter:
                       if (skip.test(zcls)) continue;
                       const zr = z.getBoundingClientRect();
                       if (zr.height <= 0) continue;
-                      const zBottom = zr.top + (z.scrollHeight || zr.height);
+                      const zScale = z.offsetHeight > 0 ? zr.height / z.offsetHeight : 1;
+                      const zBottom = zr.top + (z.scrollHeight || z.offsetHeight || zr.height) * zScale;
                       const overlap = zBottom - frect.top;
                       if (overlap > 12 && (!worst || overlap > worst.overlap_px)) {
                         worst = {
@@ -2957,7 +2967,13 @@ class PlaywrightPDFConverter:
                     }
                     return worst;
                   })();
-                  return { container_h, container_w, content_h, content_w, overflow_px, overflow_x_px, overflow_ratio, overflow_x_ratio, overflows, overflows_x, zone_overlap };
+                  for (const {d, value, priority} of decorations) {
+                    if (value) d.style.setProperty('display', value, priority);
+                    else d.style.removeProperty('display');
+                  }
+                  overflows.sort((a,b) => (b.item_h-b.box_h)-(a.item_h-a.box_h));
+                  overflows_x.sort((a,b) => (b.item_w-b.box_w)-(a.item_w-a.box_w));
+                  return { container_h, container_w, content_h, content_w, overflow_px, overflow_x_px, overflow_ratio, overflow_x_ratio, overflows: overflows.slice(0,5), overflows_x: overflows_x.slice(0,5), zone_overlap };
                 }
                 """
             )

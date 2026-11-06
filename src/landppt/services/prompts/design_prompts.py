@@ -98,14 +98,47 @@ class DesignPrompts:
 """.strip()
 
     @staticmethod
+    def _build_readability_and_card_fit_context() -> str:
+        """在现有生成请求内规划字号、内容容量和整页空间。"""
+        return """
+**正文可读性与卡片适配（1280×720 画布，字号单位为 CSS px）**
+- 容量先行：正文的边界是模板实际的 `.suite-stage` / 主内容容器，不是整个 1280×720 画布。例如左右各留 123px 时正文仅约 1034px 宽，不能再写 1160px 固定宽。保留套件 top/left/right/bottom，按实际列宽、换行、行高及 padding/gap 预算容量；少量长段落也可能是密集页。
+- 字号先承袭模板，再按实际容量微调。普通正文可参考 22–26px，短要点说明可参考 24–28px，密集正文可参考 18–22px；这些是建议范围，不是强制下限或统一放大目标。多条并列要点标题通常 24–30px，不要因为字数少就全部放到 32–40px。只有单个焦点结论且确有空间时才明显放大；不能为了守住建议字号让文字越界或被裁切。注释、来源、刻度维持辅助层级。
+- 整页构图：短内容要以版心为参照展开，用大文字和合理分布建立足够体量；没有图像或数据的另一侧不能整片闲置。避免把所有短卡片挤在左半边、窄斜线或局部小区域，再用巨大编号、路径线代替信息主体。可采用跨版心的层次分组或聚焦构图；主体的宽度与重心要匹配正文可用区。
+- 卡片随内容：默认 `height:auto`，按需用 `align-items:start`、`grid-auto-rows:auto`，避免大 `min-height`、`height:100%`、`flex:1` 把短卡片撑满。等高对比按最长内容确定组高。只在顶部或中部有文字时，放大过小正文并收回多余高度和 padding；仅垂直居中或 `space-between` 不算修复。
+- 收缩后重排：同步重算组宽、列数、行轨道与位置，不能把卡内空白转移成页面底部或右侧大洞。空间充足时先扩大信息体量，再确定紧凑容器；不要仅缩短卡片，也不要靠拉大空框或模块间距撑满页面。
+- 输出前在本次生成内确认：最终字号下各栏总高不超预算，正文未被祖先容器裁切。容量不足时先减装饰、冗余间距和嵌套，再重排、调整媒体占比、精简重复与辅助文案，最后在可读范围内缩字；保留关键事实。禁止滚动、裁字或整体缩放。
+- 主内容区可调整字号和布局，页头页码及套件锁定槽位保持规则；封面/过渡页的有意留白保留。不要为填满版面编造事实、重复文案或加无关装饰。
+""".strip()
+
+    @staticmethod
+    def _build_slide_content_fit_context(slide_data: Dict[str, Any],
+                                        page_number: int = None, total_pages: int = None,
+                                        template_html: str = "", suite_context: str = "") -> str:
+        """Plan typography from text and the actual template content area."""
+        from ..content_density import plan_content_density
+
+        slide_data = slide_data or {}
+        if page_number == 1 or (total_pages is not None and page_number == total_pages):
+            return ""
+        slide_type = str(slide_data.get("slide_type") or slide_data.get("type") or "").lower().strip()
+        if slide_type in {
+            "cover", "title", "ending", "thankyou", "transition", "divider", "section", "chapter", "separator",
+            "outline", "catalog", "directory", "agenda",
+        }:
+            return ""
+        plan = plan_content_density(slide_data, template_html, suite_context)
+        return plan.to_prompt() if plan else ""
+
+    @staticmethod
     def _build_content_quality_context() -> str:
         """内容充实度与设计丰富度（合并原来两个方法）。"""
         return """
 **内容与设计质量**
-- 信息密度与主题复杂度相称，先补足事实和层次，再加装饰。
+- 信息密度与主题复杂度相称，基于已有素材表达清楚事实和层次，不为填充版面增加内容。
 - 留白服务于分组和节奏，不替代内容；背景、数据、结论形成有区分度的前后层次。
 - 避免四宫格等均质化布局；即使内容天然对等，也要通过主次、轻重、节奏建立层次差异。
-""".strip()
+""".strip() + "\n\n" + DesignPrompts._build_readability_and_card_fit_context()
 
     @staticmethod
     def _build_slide_generation_principles_context() -> str:
@@ -127,6 +160,7 @@ class DesignPrompts:
 **输出前问自己**
 - 主内容区是否真的围绕当前页任务重新组织，而不是直接沿用模板中段骨架？
 - 标题区、页码区和稳定锚点是否仍然来自模板原文，而不是我临时发明的新规则？
+- 正文是否匹配内容量，是否在空间充足时仍使用小字？卡片是否被固定高度或拉伸撑大，只在顶部或中间有一小块内容？若是，先调字号与容器体量，再检查换行和溢出。
 - 当我调整间距、比例或强调方式时，能否在模板原文或内容逻辑里说清依据？
 
 **AI 套路禁令（硬性，违反即视为生成失败）**
@@ -165,7 +199,7 @@ class DesignPrompts:
 - flex 骨架：锚点区稳定，主区可收缩；grid 骨架：主轨道可压缩，flex/grid item 设置最小尺寸。
 - 溢出时优先删减/分组/限高，不挤压锚点区；避免滚动条和硬裁切。
 - **宽度约束（硬性）**：所有元素自然宽度之和 ≤ 1280px。横向不可有溢出。检查 flex/grid 子项：不要用固定大宽（如 `width:1400px`），用百分比/`max-width`/`fr`；长文本必须 `word-wrap:break-word`；图片用 `max-width:100%`；避免固定大 padding 把内容推出视口。
-- **主内容区高度预算（硬约束）**：1280×720 里扣除页头页脚后，主内容区可用高度通常仅 540~600px。必须确保主内容区所有元素的自然高度之和 ≤ 可用高度，且任何子容器（卡片、列表、图文栏）的 `height` 不超过其父容器、不发生内容被裁切看不到。落地做法：先估内容总量，偏多就换更紧凑的组织（删次要项、转横向滚动、缩字号 1 级、减行间距、减少嵌套层级），**宁可减少内容也不让总高超出容器被裁切**；卡片类用 `min-height` 而非固定 `height`，避免内容多时被撑破或裁切。
+- **主内容区高度预算（硬约束）**：从 720px 扣除模板实际页头、页脚、安全区及正文 padding 后，才是内容可用高度，不能直接把 540~600px 当作固定预算。必须确保各栏内容、标题与 gap 的总高不超过实际可用高度，子容器不越界、不裁切。内容偏多就先重排分组、删次要项、精简辅助信息、减间距和嵌套层级，最后在可读范围内微调字号；严禁滚动条，也不要用居中排列把超高主体顶进页头。卡片默认 `height:auto`，仅在内容确有需要时设适度 `min-height`，不要为了填满画布把短内容卡片拉高。
 - **transform scale 禁令（硬性）**：绝对禁止在任何元素上使用 `transform: scale()`（包括 `scaleX()`、`scaleY()`）。CSS scale 变换会导致元素在 1280×720 固定画布中产生大小不均，破坏 PPTX 导出时的一致性。需要调节元素视觉大小时，一律通过 `font-size`、`width`、`height`、`padding` 等属性实现，不借助 scale 变换。`transform` 仅允许用于 `translate()` 位移（如居中定位），禁止任何形式的缩放。
 - **@media 禁令（硬性）**：绝对禁止使用任何 `@media` 查询。PPT 幻灯片始终以固定 1280×720 渲染，不存在视口变化，@media 响应式断点完全无意义且是 scale 问题的根源。不要在 `<style>` 中写入任何 `@media` 块。
 """.strip()
@@ -371,6 +405,8 @@ class DesignPrompts:
 
 {DesignPrompts._build_fixed_canvas_strategy_context()}
 
+{DesignPrompts._build_readability_and_card_fit_context()}
+
 **设计定位（强制首行声明）**
 先用一行宣告本次的整体取向，再展开规则。格式固定为：
 `设计定位：为<受众>的<类型>，采用<vibe>语言，倾向<设计家族>`
@@ -479,6 +515,8 @@ color: <页码文字色 #hex，全册普通页统一>
 
 **页面类型概览**
 {page_type_overview}
+
+{DesignPrompts._build_readability_and_card_fit_context()}
 
 {DesignPrompts._build_layout_mastery_context()}
 
@@ -713,6 +751,8 @@ color: <页码文字色 #hex，全册普通页统一>
 
 {DesignPrompts._build_fixed_canvas_html_guardrails()}
 
+{DesignPrompts._build_slide_content_fit_context(slide_data, page_number, total_pages, template_html, content_suite_constraint)}
+
 {DesignPrompts._build_layout_priority_context()}
 
 {context_info}
@@ -789,6 +829,8 @@ color: <页码文字色 #hex，全册普通页统一>
 {suite_block}
 
 {DesignPrompts._build_fixed_canvas_html_guardrails()}
+
+{DesignPrompts._build_slide_content_fit_context(slide_data, page_number, total_pages, template_html, content_suite_constraint)}
 
 {DesignPrompts._build_layout_priority_context()}
 

@@ -84,6 +84,11 @@ class LayoutRepairService:
             """
             import re
 
+            # Updating an already generated slide must not accumulate old guards.
+            html_content = re.sub(
+                r'<style\b[^>]*\bid=["\']anti-overflow-fix["\'][^>]*>.*?</style\s*>',
+                '', html_content, flags=re.IGNORECASE | re.DOTALL,
+            )
             anti_overflow_css = """
     <style id="anti-overflow-fix">
       /*
@@ -112,6 +117,14 @@ class LayoutRepairService:
       }
 
       /* 3. 明确保留画布骨架的裁切能力 */
+      /* 套件正文往往小于整张画布。限制直接内容包装层的固定大宽，
+       * 让原生 flex/grid 重排，而不是缩放整页或裁掉右侧卡片。 */
+      .suite-stage > * {
+        max-width: 100% !important;
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
       .content-layer,
       [data-content-layer],
       .main-content,

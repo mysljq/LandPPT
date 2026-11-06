@@ -36,6 +36,10 @@ from ...utils.thread_pool import run_blocking_io, to_thread
 
 logger = logging.getLogger(__name__)
 
+
+class SlideLayoutOverflowError(RuntimeError):
+    """A generated slide still exceeds its content area after retries."""
+
 if TYPE_CHECKING:
     from .slide_html_validation_service import SlideHtmlValidationService
 
@@ -192,7 +196,7 @@ class SlideHtmlRecoveryService:
                             continue
                         else:
                             logger.warning(f'⚠️ 审美未达标但已用尽重试次数，交付当前结构合法的 slide {page_number}')
-                            return await self._apply_auto_layout_repair(html_content, slide_data, page_number, total_pages)
+                            # Aesthetic failures are soft; geometry must still be checked.
                     # 审美通过后：测量主内容区是否溢出固定画布（Playwright 测高，非阻塞）
                     overflow = await self._measure_overflow(html_content, page_number)
                     # 阈值收紧：轻微溢出（≤12px 且占比≤2%）靠防溢出 CSS 自处理即可，
@@ -258,11 +262,18 @@ class SlideHtmlRecoveryService:
                             )
                             continue
                         else:
-                            logger.warning(f'⚠️ 内容溢出 {max(ov_px, local_ov_px, zone_ov_px)}px 但已用尽重试次数，交付当前 slide {page_number}（靠防溢出 CSS 兜底）')
+                            raise SlideLayoutOverflowError(
+                                f'第 {page_number} 页正文仍超出可用区域 '
+                                f'{max(ov_px, local_ov_px, zone_ov_px)}px；已停止交付裁切页面，请调整内容或重新生成。'
+                            )
                     elif ov_px > 0 or local_ov_px > 0 or zone_ov_px > 0:
                         logger.info(f'📏 轻微溢出 (slide {page_number}): 顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px，在阈值内，不重生成')
                     # 7. 横向溢出检测（内容超出 1280px 宽度）
-                    ovx_px = int(overflow.get('overflow_x_px', 0)) if overflow else 0
+                    ovx_px = max(
+                        int(overflow.get('overflow_x_px', 0)) if overflow else 0,
+                        max([int(it.get('item_w', 0)) - int(it.get('box_w', 0))
+                             for it in (overflow or {}).get('overflows_x', [])] or [0]),
+                    )
                     ovx_ratio = float(overflow.get('overflow_x_ratio', 0)) if overflow else 0.0
                     significant_x_overflow = overflow is not None and ovx_px > 0 and (ovx_px > 12 or ovx_ratio > 0.02)
                     if significant_x_overflow:
@@ -289,7 +300,10 @@ class SlideHtmlRecoveryService:
                             )
                             continue
                         else:
-                            logger.warning(f'⚠️ 横向溢出 {ovx_px}px 但已用尽重试次数，交付当前 slide {page_number}')
+                            raise SlideLayoutOverflowError(
+                                f'第 {page_number} 页正文横向超出可用区域 {ovx_px}px；'
+                                '已停止交付裁切页面，请调整布局或重新生成。'
+                            )
                     elif ovx_px > 0:
                         logger.info(f'📏 轻微横向溢出 {ovx_px}px (slide {page_number})，在阈值内，不重生成')
                     return await self._apply_auto_layout_repair(html_content, slide_data, page_number, total_pages)
@@ -323,6 +337,8 @@ class SlideHtmlRecoveryService:
                         logger.info(f'✅ HTML is valid with only missing element warnings for slide {page_number}')
                         return await self._apply_auto_layout_repair(html_content, slide_data, page_number, total_pages)
             except Exception as e:
+                if isinstance(e, SlideLayoutOverflowError):
+                    raise
                 error_msg = str(e)
                 logger.error(f'Error in HTML generation attempt {attempt + 1} for slide {page_number}: {error_msg}')
                 if 'Expecting value' in error_msg or 'JSON' in error_msg:
