@@ -173,9 +173,6 @@ class CreativeDesignService:
             fallback_html = await self._generate_fallback_slide_html(slide_data, page_number, total_pages)
             return fallback_html
         except Exception as exc:
-            from .slide_html_recovery_service import SlideLayoutOverflowError
-            if isinstance(exc, SlideLayoutOverflowError):
-                raise
             logger.error("使用模板风格生成幻灯片失败: %s", exc)
             fallback_html = await self._generate_fallback_slide_html(slide_data, page_number, total_pages)
             return fallback_html

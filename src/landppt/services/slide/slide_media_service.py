@@ -276,9 +276,6 @@ class SlideMediaService:
                     html_content = self._ensure_suite_body_reset(html_content)
             return html_content
         except Exception as e:
-            from .slide_html_recovery_service import SlideLayoutOverflowError
-            if isinstance(e, SlideLayoutOverflowError):
-                raise
             logger.error(f'Error generating single slide HTML with prompts: {e}')
             fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
         repaired_fallback = await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
@@ -1045,13 +1042,6 @@ class SlideMediaService:
             return ""
         tokens = str(suite.get("design_tokens") or "").strip()
         design_lang = SlideMediaService._extract_suite_design_language(suite)
-        from ..content_density import resolve_content_area
-        area = resolve_content_area(header_footer, page_title=(slide_data or {}).get('title') or '')
-        area_description = (
-            f"可用内空间约 {area.width:.0f}×{area.height:.0f}px（依据骨架 CSS，已扣除正文 padding）"
-            if area.source == 'template_css' else
-            f"静态计算尚不能确定完整尺寸，暂按不超过 {area.width:.0f}×{area.height:.0f}px 保守预算，最终以实际骨架为准"
-        )
         slide_data = slide_data or {}
         chapter = slide_data.get("chapter")
         # chapter=0 表示"不属于任何章节"（封面/目录/结尾等），绝不渲染成"第 0 章"。
@@ -1072,13 +1062,12 @@ class SlideMediaService:
             "配色/字体：正文排版必须从套件整体色板中选色（见下方「套件整体设计语言」），不得另造新色；"
             "让整页与套件风格完全一致。",
             "**标准正文舞台 `.suite-stage`**：套件骨架里已含 `<div class=\"suite-stage\">...{{ page_content }}...</div>`，"
-            f"其位置固定，{area_description}。"
+            "其位置固定、`overflow:hidden` 兜住溢出，内宽 1160px。"
             "**所有正文内容必须写在 `.suite-stage` 容器内**——它已避开页头分割线、不压页脚；超出会被容器 overflow:hidden 兜住，"
-            "所以必须按上面的实际正文区预算布局，不能按整张画布宽度设计后裁切内容。",
+            "所以请通过优化布局密度让内容落进 1160×~530px 区域，而不是溢出到页头页脚。",
             "**`.suite-stage` 的 top 必须保持套件骨架给定的值（不得改小/上移）**——这是按套件实测的页头底边精确算出的"
             "安全间距，改小会让正文与页头分割线交叉。",
-            f"**布局列宽基准为 `.suite-stage` 实际内宽（本次预算约 {area.width:.0f}px）**："
-            "flex/grid 多列时 `gap + 各列宽 ≤ 正文内宽`；"
+            "**布局列宽基准为 `.suite-stage` 内宽 1160px**：flex/grid 多列时 `gap + 各列宽 ≤ 1160px`；"
             "用 `flex:1` 自适应或 `calc(100% - Npx)` 计算列宽，禁用 `45%+55%+gap` 这种必然超出容器右沿的组合；"
             "百分比列宽以容器内宽为基准，而非 1280px。",
         ]
