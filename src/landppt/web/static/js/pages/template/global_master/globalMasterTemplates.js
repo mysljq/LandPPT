@@ -1,7 +1,7 @@
 import { apiClient } from '../../../modules/apiClient.js';
 import { debounce, formatBytes } from '../../../modules/domUtils.js';
 import { emit } from '../../../modules/eventBus.js';
-import { ensureDomToPptxReady, sanitizeFileName, setButtonLoadingState, renderTemplateSampleHtml, loadHtmlIntoIframe, waitForIframeVisualReady } from './globalMasterTemplates.exportHelpers.js?v=20261105-cjk-heading-baseline-v222';
+import { ensureDomToPptxReady, sanitizeFileName, setButtonLoadingState, renderTemplateSampleHtml, loadHtmlIntoIframe, waitForIframeVisualReady } from './globalMasterTemplates.exportHelpers.js?v=20261110-scene-layer-svg-v225';
 import { createGlobalMasterTemplatesUpload } from './globalMasterTemplates.upload.js';
 
 const currentUser = window.__LANDPPT_USER__ || {};

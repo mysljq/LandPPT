@@ -65875,15 +65875,51 @@
     }
   }
 
+  function hasNativeSvgRootTransform(node) {
+    const transform = getNodeWindow(node).getComputedStyle(node).transform;
+    if (isEffectivelyIdentityTransform(transform) || isTranslationOnlyTransform(transform)) return true;
+    const match = String(transform || '').match(/^matrix\(([^)]+)\)$/);
+    if (!match) return false;
+    const [a, b, c, d] = match[1].split(',').map(Number);
+    return Math.abs(a*a+b*b-1)<0.0001 && Math.abs(c*c+d*d-1)<0.0001 &&
+      Math.abs(a*c+b*d)<0.0001 && Math.abs(a*d-b*c-1)<0.0001;
+  }
+
+  function normalizeSvgRootTransform(node, clone) {
+    if (!hasNativeSvgRootTransform(node)) { removeSvgRootTranslation(node, clone); return; }
+    clone.removeAttribute('transform');
+    clone.style.setProperty('transform', 'none');
+    clone.style.removeProperty('transform-origin');
+    clone.style.setProperty('position', 'static');
+    ['left','right','top','bottom'].forEach(property => clone.style.removeProperty(property));
+  }
+
+  function getSvgExportViewportSize(node, rotation = getCumulativeTextRotation(node, node.ownerDocument.body)) {
+    const rect = node.getBoundingClientRect();
+    const style = getNodeWindow(node).getComputedStyle(node);
+    if (hasNativeSvgRootTransform(node)) {
+      const localW = node.clientWidth || parseFloat(style.width);
+      const localH = node.clientHeight || parseFloat(style.height);
+      if (localW > 0 && localH > 0) {
+        const angle = rotation * Math.PI / 180;
+        const boxWidth = localW * Math.abs(Math.cos(angle)) + localH * Math.abs(Math.sin(angle));
+        const scale = boxWidth > 0 ? rect.width / boxWidth : 1;
+        return { width: localW * scale, height: localH * scale };
+      }
+    }
+    return { width: rect.width || 300, height: rect.height || 150 };
+  }
+
   function svgToPng(node, options = {}) {
     return new Promise((resolve) => {
       const clone = node.cloneNode(true);
       const rect = node.getBoundingClientRect();
-      const width = rect.width || 300;
-      const height = rect.height || 150;
+      const viewport = getSvgExportViewportSize(node);
+      const width = options.viewportWidth || viewport.width;
+      const height = options.viewportHeight || viewport.height;
 
       inlineSvgStyles(node, clone);
-      removeSvgRootTranslation(node, clone);
+      normalizeSvgRootTransform(node, clone);
       if (options.stripText) stripSvgTextFromClone(clone);
       clone.setAttribute('width', width);
       clone.setAttribute('height', height);
@@ -65895,7 +65931,9 @@
       img.crossOrigin = 'Anonymous';
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const scale = 3;
+        // Small pattern dots must not depend on Office/WPS downsampling a
+        // supersampled PNG differently. Paint these at their CSS pixel size.
+        const scale = node.querySelector('pattern') ? 1 : 3;
         canvas.width = width * scale;
         canvas.height = height * scale;
         const ctx = canvas.getContext('2d');
@@ -65931,11 +65969,12 @@
       try {
         const clone = node.cloneNode(true);
         const rect = node.getBoundingClientRect();
-        const width = rect.width || 300;
-        const height = rect.height || 150;
+        const viewport = getSvgExportViewportSize(node);
+        const width = options.viewportWidth || viewport.width;
+        const height = options.viewportHeight || viewport.height;
 
         inlineSvgStyles(node, clone);
-        removeSvgRootTranslation(node, clone);
+        normalizeSvgRootTransform(node, clone);
         if (options.stripText) stripSvgTextFromClone(clone);
         clone.setAttribute('width', width);
         clone.setAttribute('height', height);
@@ -67923,6 +67962,16 @@
         if (String(parent.namespaceURI || '').includes('svg') && style.fill && style.fill !== 'none') {
           const fill = parseColor(style.fill);
           if (fill.hex) textStyle.color = fill.hex;
+          const matrix = typeof parent.getScreenCTM === 'function' ? parent.getScreenCTM() : null;
+          const svgScale = matrix ? Math.sqrt(Math.abs(matrix.a * matrix.d - matrix.b * matrix.c)) : 1;
+          if (Number.isFinite(svgScale) && svgScale > 0) textStyle.fontSize = Math.round(textStyle.fontSize * svgScale * 10) / 10;
+          const stroke = parseColor(style.stroke);
+          const strokeWidth = parseFloat(style.strokeWidth);
+          if (style.stroke !== 'none' && stroke.hex && strokeWidth > 0) {
+            const strokePaintsFirst = /^stroke(?:\s|$)/.test(String(style.paintOrder || ''));
+            textStyle.outline = { color: stroke.hex, size: strokeWidth * svgScale * 0.75 * config.scale * (strokePaintsFirst ? 0.5 : 1),
+              transparency: (1 - stroke.opacity * (parseFloat(style.strokeOpacity) || 0) * textOpacity) * 100 };
+          }
         }
         const rect = line.rect;
         // A text node that owns an absolutely positioned clipped child can
@@ -71163,7 +71212,7 @@
   async function elementBackgroundToCanvasImage(node, widthPx, heightPx, options = {}) {
     if (!node || !node.ownerDocument) return null;
     const computedBackground = getNodeWindow(node).getComputedStyle(node);
-    if (/\b(?:radial|conic)-gradient\s*\(/i.test(computedBackground.backgroundImage || '')) {
+    if (/\b(?:linear|radial|conic|repeating-linear|repeating-radial|repeating-conic)-gradient\s*\(/i.test(computedBackground.backgroundImage || '')) {
       const captured = await captureIsolatedCssVisual(node, { backgroundOnly: true,
         isolatedPadding: 0, isolatedRasterScale: Number(options.scale) || 2,
         effectiveOpacity: options.effectiveOpacity, requireVisiblePixels: true });
@@ -71593,6 +71642,24 @@
     arc(tl, 180, tl.rx, 0);
     points.push({ close: true });
     return { shapeType: 'custGeom', options: { points } };
+  }
+
+  // Preset shapes have an intrinsic text rectangle in addition to bodyPr
+  // margins. CSS padding starts at the border box, so compensate that inset
+  // before combining a native curved shape with editable text.
+  function getNativeShapeTextInsets(shapeType, options) {
+    const cornerInset = 1 - Math.SQRT1_2;
+    if (shapeType === 'ellipse') {
+      const x = options.w * cornerInset / 2 * 72;
+      const y = options.h * cornerInset / 2 * 72;
+      return [x, x, y, y]; // left, right, bottom, top (PptxGenJS order)
+    }
+    if (shapeType === 'roundRect') {
+      const radius = Math.min(Number(options.rectRadius) || 0,
+        Math.min(options.w, options.h) / 2);
+      return Array(4).fill(radius * cornerInset * 72);
+    }
+    return [0, 0, 0, 0];
   }
 
   // CSS paints its border inside the border box; DrawingML centers the stroke
@@ -72322,8 +72389,13 @@
           // Absolute insets are measured from the owner's padding box. The
           // exported geometry starts at the outer border box, so include the
           // border inset before rotating both circles around the same center.
-          positionedX = geometry.x + (positioningBox.borderLeft + leftPx) * pxToInchScale;
-          positionedY = geometry.y + (positioningBox.borderTop + topPx) * pxToInchScale;
+          const dx = positioningBox.borderLeft + leftPx + renderedWidth / 2 - geometry.widthPx / 2;
+          const dy = positioningBox.borderTop + topPx + renderedHeight / 2 - geometry.heightPx / 2;
+          const angle = (geometry.rotation || 0) * Math.PI / 180;
+          positionedX = geometry.x + geometry.w / 2 +
+            (dx * Math.cos(angle) - dy * Math.sin(angle) - renderedWidth / 2) * pxToInchScale;
+          positionedY = geometry.y + geometry.h / 2 +
+            (dx * Math.sin(angle) + dy * Math.cos(angle) - renderedHeight / 2) * pxToInchScale;
           positionedRotation = geometry.rotation;
         } else {
         // The local inset must rotate around the containing block, not around
@@ -72832,8 +72904,9 @@
       ? Math.max(0, Math.min(1, effectiveOpacity))
       : 1;
 
-    const widthPx = node.offsetWidth || effectiveRectWidth;
-    const heightPx = node.offsetHeight || effectiveRectHeight;
+    const svgViewport = node.nodeName.toUpperCase() === 'SVG' ? getSvgExportViewportSize(node, rotation) : null;
+    const widthPx = node.offsetWidth || (svgViewport ? svgViewport.width : effectiveRectWidth);
+    const heightPx = node.offsetHeight || (svgViewport ? svgViewport.height : effectiveRectHeight);
     const unrotatedW = widthPx * PX_TO_INCH * config.scale;
     const unrotatedH = heightPx * PX_TO_INCH * config.scale;
     const centerX = rect.left + effectiveRectWidth / 2;
@@ -73151,6 +73224,10 @@
         node.children.length > 0 &&
         risk.reasons.length === 1 &&
         risk.reasons[0] === 'backdrop-filter';
+      const preserveRectangularClipChildren = node.children.length > 0 &&
+        risk.reasons.length === 1 && risk.reasons[0] === 'transformed-descendant-clipping' &&
+        isEffectivelyIdentityTransform(style.transform) &&
+        resolveCssCornerRadii(style, widthPx, heightPx).every(corner => !corner.rx && !corner.ry);
       const hasRenderablePseudoDecoration = ['::before', '::after'].some((selector) => {
         try {
           const pseudo = getNodeWindow(node).getComputedStyle(node, selector);
@@ -73169,7 +73246,7 @@
         hasRenderablePseudoDecoration &&
         risk.reasons.length === 1 &&
         risk.reasons[0] === 'transformed-clipping';
-      if (risk.risky && !backgroundOnlyRisk && !preserveBackdropContainerChildren && !preserveNativePseudoDecoratedLeaf &&
+      if (risk.risky && !backgroundOnlyRisk && !preserveBackdropContainerChildren && !preserveRectangularClipChildren && !preserveNativePseudoDecoratedLeaf &&
           !isFaintOversizedText(node, style)) {
         const isolatedClipAncestor =
           risk.reasons.length === 1 &&
@@ -73581,10 +73658,9 @@
 
     // --- ASYNC JOB: SVG visual layer + editable SVG text layer ---
     if (node.nodeName.toUpperCase() === 'SVG') {
-      // The cloned SVG already contains its own computed CSS transform. Only
-      // apply ancestor rotation to the PPT image, otherwise a root transform
-      // (for example `rotate(-90deg)` on a progress ring) is doubled.
-      const svgImageRotation = node.parentElement
+      // Rigid root transforms are removed from the SVG and applied once by
+      // PPT. Other transforms remain baked into the SVG visual.
+      const svgImageRotation = hasNativeSvgRootTransform(node) ? rotation : node.parentElement
         ? getCumulativeTextRotation(node.parentElement, config.root)
         : 0;
       const svgTextItems = collectEditableTextLineItems(
@@ -73615,6 +73691,7 @@
         // Use svgToPng for rasterized output (pixel perfect)
         const converter = globalOptions.svgAsVector ? svgToSvg : svgToPng;
         const processed = await converter(node, {
+          viewportWidth: widthPx, viewportHeight: heightPx,
           stripText: svgTextItems.length > 0,
           backdropColor: !globalOptions.svgAsVector ? getUniformSvgPatternBackdrop(node, svgAncestorOpacity) : null,
           opacityMultiplier: bakeSvgAncestorOpacity ? svgAncestorOpacity : 1,
@@ -74314,6 +74391,8 @@
           rotate: rotation,
         },
       };
+      if (hasShadow && !shadowVisual && !hardShadow)
+        backgroundItem.options.shadow = getVisibleShadow(shadowStr, config.scale);
       items.push(backgroundItem);
       if (shadowVisual && shadowVisual.inner && shadowVisual.inner.data) {
         items.push({
@@ -74347,7 +74426,12 @@
       if (childW >= widthPx - 2 && childH >= heightPx - 2) isImageWrapper = true;
     }
 
+    const hasNegativePseudoLayer = ['::before', '::after'].some(selector => {
+      const pseudo = getNodeWindow(node).getComputedStyle(node, selector);
+      return !['none', 'normal'].includes(pseudo.content) && pseudo.display !== 'none' && parseInt(pseudo.zIndex, 10) < 0;
+    });
     let textPayload = null;
+    let hasSplitNativeTextSurface = false;
     const isText = isTextContainer(node);
     const isCompactTag = /(?:^|\s)(?:tag|chip|badge)(?:\s|$)/i.test(
       String(node.getAttribute && node.getAttribute('class') || '')
@@ -74910,6 +74994,12 @@
             const insetPoints = (parseFloat(style.borderTopWidth) || 0) * 0.75 * config.scale / 2;
             for (let i = 0; i < textMargin.length; i++) textMargin[i] += insetPoints;
           }
+          const nativeTextInsets = getNativeShapeTextInsets(bodyShapeType, shapeOpts);
+          const splitCurvedTextSurface = nativeTextInsets.some((inset, i) => textMargin[i] + 0.001 < inset);
+          if (!nativeCompositeBorders && !splitCurvedTextSurface) {
+            for (let i = 0; i < textMargin.length; i++)
+              textMargin[i] = Math.max(0, textMargin[i] - nativeTextInsets[i]);
+          }
           const textOptions = {
             shape: bodyShapeType,
             ...shapeOpts,
@@ -74923,18 +75013,23 @@
             autoFit: false,
             fit: textPayload.fit || (textPayload.wrap ? 'none' : undefined),
           };
-          if (nativeCompositeBorders) {
+          const splitPseudoTextSurface = hasNegativePseudoLayer && (useSolidFill || hasUniformBorder || hasShadow);
+          if (nativeCompositeBorders || splitCurvedTextSurface || splitPseudoTextSurface) {
             // Background -> narrow edge shapes -> editable text. A combined
             // filled text shape would otherwise paint over the native edges.
             items.push({ type: 'shape', zIndex, domOrder, shapeType: bodyShapeType, options: { ...shapeOpts } });
             textOptions.fill = { type: 'none' };
             textOptions.line = { type: 'none' };
+            textOptions.shape = 'rect';
+            delete textOptions.rectRadius;
+            delete textOptions.points;
             delete textOptions.shadow;
+            hasSplitNativeTextSurface = true;
           }
           items.push({
             type: 'text',
             zIndex,
-            domOrder: domOrder + (nativeCompositeBorders ? 0.2 : 0),
+            domOrder: domOrder + (nativeCompositeBorders || splitCurvedTextSurface || hasNegativePseudoLayer ? 0.2 : 0),
             textParts: textPayload.text,
             options: textOptions,
           });
@@ -75058,6 +75153,7 @@
       items,
       job: inlineVisualJob,
       stopRecursion: !!textPayload || preserveInlineVisualSurfaces,
+      semanticGroupName: hasSplitNativeTextSurface ? getPptxGroupName(node, true) : undefined,
     };
   }
 
