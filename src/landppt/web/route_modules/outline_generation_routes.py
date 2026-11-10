@@ -34,6 +34,38 @@ from .support import (
 router = APIRouter()
 
 
+@router.post("/projects/{project_id}/parallel-page-plan")
+async def preview_parallel_page_plan(
+    project_id: str,
+    request: Request,
+    user: User = Depends(get_current_user_required),
+):
+    """Prepare the same persisted plan used by slide generation for outline review."""
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    outline = project.outline if isinstance(project.outline, dict) else {}
+    slides = outline.get("slides", [])
+    if not slides:
+        raise HTTPException(status_code=400, detail="请先生成并保存大纲")
+    from ...services.slide.parallel_page_service import ParallelPageService
+    body = await request.json()
+    preview_slides = body.get("slides") if isinstance(body, dict) else None
+    if not isinstance(preview_slides, list) or any(not isinstance(s, dict) for s in preview_slides):
+        raise HTTPException(status_code=400, detail="大纲格式不正确")
+    if ParallelPageService.fingerprint(preview_slides) != ParallelPageService.fingerprint(slides):
+        raise HTTPException(status_code=409, detail="大纲有未保存的修改，请保存后重新识别分组")
+    if body.get("force"):
+        outline = dict(outline)
+        outline.pop("parallel_page_plan", None)
+    service = get_ppt_service_for_user(user.id)
+    await ParallelPageService.prepare(service, project_id, outline, slides)
+    plan = outline.get("parallel_page_plan")
+    if not plan:
+        raise HTTPException(status_code=503, detail="分组识别失败，请重试")
+    return {"plan": plan}
+
+
 @router.post("/projects/{project_id}/classify-outline-generation-mode")
 async def classify_outline_generation_mode(
     project_id: str,

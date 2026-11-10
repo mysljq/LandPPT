@@ -29,8 +29,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldcode.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/foldgutter.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/addon/fold/xml-fold.min.js"></script>
+    <script src="/static/js/pages/project/todo_board/parallelPagePlan.js"></script>
     <script>
 {% include "components/project/todo_board_with_editor/script_1.html" %}
+    </script>
+    <script>
+        if (projectOutline && projectOutline.slides) {
+            window.ParallelPagePlan.mount(document.getElementById('parallel-page-plan-editor'), projectOutline, projectId);
+        }
     </script>
 </body>
 

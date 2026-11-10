@@ -111,6 +111,15 @@ class SlideMediaService:
         try:
             if not project_id:
                 project_id = confirmed_requirements.get('project_id')
+            # Copy transient reference data: never persist reference HTML in the outline.
+            slide_data = dict(slide_data)
+            from .parallel_page_service import ParallelPageService
+            try:
+                slide_data['_parallel_reference_context'] = await ParallelPageService.reference_context(
+                    project_id, page_number, all_slides, existing_slides_data
+                )
+            except Exception:
+                logger.warning('读取并列页面参考失败，继续生成当前页', exc_info=True)
             # 章节号刷新：老/坏大纲可能把所有 slide 的 chapter 存成 0（典型"第 0 章"事故）。
             # _assign_chapter_numbers 幂等重算全部章节号（确定性、按页序）——对
             # "过渡页=章节边界 + 无编号前缀章节名/agenda 匹配"更鲁棒，保证生成时

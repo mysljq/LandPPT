@@ -993,6 +993,11 @@ class CreativeDesignService:
             suite_design_context=suite_design_context,
         )
 
+        parallel_context = str(slide_data.get('_parallel_reference_context') or '')
+        # Scope only page guidance to the reference; global style remains shared.
+        if parallel_context:
+            suite_design_context += '\n' + parallel_context
+
         generation_config = await self._get_user_generation_config()
         enable_per_slide_guidance = bool(
             generation_config.get("enable_per_slide_creative_guidance", True)
@@ -1021,6 +1026,8 @@ class CreativeDesignService:
             current_entry = next((p for p in page_creative_briefs if p.get("page") == page_number), None)
             current_page_brief = str((current_entry or {}).get("creative_brief") or "").strip()
 
+        if parallel_context:
+            current_page_brief += '\n' + parallel_context
         return style_genes, global_constitution, current_page_brief
 
     async def _extract_style_genes_and_guide(

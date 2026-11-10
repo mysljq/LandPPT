@@ -3650,6 +3650,7 @@
 
         // 渲染详细视图
         renderDetailView(outlineData);
+        window.ParallelPagePlan?.mount(document.getElementById("outline-slides-compact")?.parentElement, outlineData, currentProjectId);
     }
 
     // 渲染简洁视图
@@ -4369,6 +4370,7 @@
         }
 
         container.appendChild(contentSection);
+        window.ParallelPagePlan?.mount(container, outline, currentProjectId);
     }
 
     // 渲染简洁视图

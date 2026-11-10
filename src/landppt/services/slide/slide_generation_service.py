@@ -387,6 +387,8 @@ class SlideGenerationService:
                 user_gen_config = await self._get_user_generation_config()
                 parallel_enabled = user_gen_config["enable_parallel_generation"]
                 parallel_count = user_gen_config["parallel_slides_count"] if parallel_enabled else 1
+                from .parallel_page_service import ParallelPageService
+                parallel_groups = await ParallelPageService.prepare(self, project_id, outline, slides)
                 design_context_prepared = False
 
                 if parallel_enabled:
@@ -422,6 +424,7 @@ class SlideGenerationService:
                         pass
                     # 确定本批次要生成的幻灯片
                     batch_end = min(i + parallel_count, len(slides))
+                    batch_end = ParallelPageService.batch_end(i, batch_end, parallel_groups)
                     batch_slides = slides[i:batch_end]
 
                     # 收集本批次需要生成的幻灯片
@@ -496,7 +499,7 @@ class SlideGenerationService:
                                 all_slides=slides,
                                 total_pages=outline_total_pages,
                                 prewarm_slide_guides=0,
-                                async_prewarm_remaining_slide_guides=True,
+                                async_prewarm_remaining_slide_guides=not bool(parallel_groups),
                             )
                             design_context_prepared = True
 
