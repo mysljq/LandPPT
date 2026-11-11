@@ -17,6 +17,7 @@ from ...api.models import (
 )
 from ...auth.middleware import get_current_user_required
 from ...database.models import User
+from ...services.outline.document_structure_service import DOCUMENT_STRUCTURE_MODE, get_document_outline
 from .outline_support import (
     _extract_saved_file_outline,
     _is_billable_provider,
@@ -78,6 +79,8 @@ async def classify_outline_generation_mode(
     if not project.confirmed_requirements:
         return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
     confirmed = project.confirmed_requirements or {}
+    if confirmed.get("creation_mode") == DOCUMENT_STRUCTURE_MODE:
+        return {"status": "success", "mode": DOCUMENT_STRUCTURE_MODE, "reason": "按上传文档的内容和标题层级生成"}
     text = "\n".join(
         value for value in [
             confirmed.get("requirements", project.requirements),
@@ -114,6 +117,8 @@ async def create_constrained_outline_generation_task(
         return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
 
     user_ppt_service = get_ppt_service_for_user(user.id)
+    if (project.confirmed_requirements or {}).get("creation_mode") == DOCUMENT_STRUCTURE_MODE:
+        raise HTTPException(status_code=400, detail="当前为文档结构模式，请使用重新生成大纲以恢复原文结构。")
     _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
     outline_provider_name = outline_settings.get("provider")
     has_credits, required, balance = await check_credits_for_operation(
@@ -247,6 +252,8 @@ async def create_smart_outline_generation_task(
         return {"status": "error", "error": "项目需求尚未确认，请先完成需求确认步骤"}
 
     user_ppt_service = get_ppt_service_for_user(user.id)
+    if (project.confirmed_requirements or {}).get("creation_mode") == DOCUMENT_STRUCTURE_MODE:
+        raise HTTPException(status_code=400, detail="当前为文档结构模式，请使用重新生成大纲以恢复原文结构。")
     _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
     outline_provider_name = outline_settings.get("provider")
     has_credits, required, balance = await check_credits_for_operation(
@@ -435,6 +442,12 @@ async def stream_outline_generation(
             raise HTTPException(status_code=404, detail="Project not found")
 
         user_ppt_service = get_ppt_service_for_user(user.id)
+        if (project.confirmed_requirements or {}).get("creation_mode") == DOCUMENT_STRUCTURE_MODE:
+            return StreamingResponse(
+                user_ppt_service.generate_outline_streaming(project_id, force_regenerate=force_regenerate),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
         outline_provider_name = outline_settings.get("provider")
 
@@ -566,6 +579,15 @@ async def generate_outline(
 
         # Check credits before generating outline
         user_ppt_service = get_ppt_service_for_user(user.id)
+        document_outline = get_document_outline(project, restore_source=True)
+        if document_outline is not None:
+            import json
+            await user_ppt_service._update_outline_generation_stage(project_id, document_outline)
+            return {
+                "status": "success",
+                "outline_content": json.dumps(document_outline, ensure_ascii=False, indent=2),
+                "message": "已按原文内容和层级恢复大纲",
+            }
         _, outline_settings = await user_ppt_service.get_role_provider_async("outline")
         outline_provider_name = outline_settings.get("provider")
         has_credits, required, balance = await check_credits_for_operation(

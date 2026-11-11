@@ -94,6 +94,7 @@ async def web_project_todo_board(
     request: Request,
     project_id: str,
     auto_start: bool = False,
+    outline_mode: bool = False,
     user: User = Depends(get_current_user_required),
 ):
     """项目 TODO 看板页。"""
@@ -140,6 +141,9 @@ async def web_project_todo_board(
             and has_outline
             and (ppt_creation_running or has_slides or has_selected_template or auto_start)
         )
+
+        if outline_mode:
+            use_integrated_editor = False
 
         template_name = (
             "pages/project/todo_board_with_editor.html"

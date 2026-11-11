@@ -332,6 +332,15 @@
     </div>
 
     <div class="scenarios-grid">
+        <div class="scenario-card" onclick="selectScenario('general', '文档结构', 'document_structure')">
+            <div class="scenario-card-body">
+                <h3 class="scenario-title">按文档结构创建</h3>
+                <p class="scenario-description">上传 Word 或 Markdown，按原文标题层级、顺序和正文归属生成大纲</p>
+                <button class="scenario-button" onclick="event.stopPropagation(); selectScenario('general', '文档结构', 'document_structure')">
+                    上传文档创建
+                </button>
+            </div>
+        </div>
         {% for scenario in scenarios %}
         <div class="scenario-card" onclick="selectScenario('{{ scenario.id }}', '{{ scenario.name }}')">
             <div class="scenario-card-body">
@@ -353,11 +362,26 @@
             <h3>创建 <span id="selectedScenarioName"></span> 项目</h3>
         </div>
         <div class="modal-surface-body">
-            <form action="/projects/create" method="post">
+            <form id="create-project-form" action="/projects/create" method="post" enctype="multipart/form-data">
                 <input type="hidden" id="scenarioInput" name="scenario" value="">
 
                 <div class="form-group">
-                    <label for="topic">PPT 主题 *</label>
+                    <label for="creation_mode">创建模式</label>
+                    <select id="creation_mode" name="creation_mode" onchange="toggleCreationMode()">
+                        <option value="standard">常规创建 · 根据主题生成</option>
+                        <option value="document_structure">按文档结构创建 · 遵循原文内容和层级</option>
+                    </select>
+                </div>
+
+                <div id="document-source-fields" class="form-group" hidden>
+                    <label for="source_document">Word / Markdown 文件 *</label>
+                    <input type="file" id="source_document" name="source_document" accept=".docx,.md,.markdown" disabled>
+                    <p class="checkbox-row-hint">支持 .docx、.md、.markdown，最大 20MB；旧版 .doc 请先另存为 .docx。</p>
+                    <p class="checkbox-row-hint">由大模型理解文档内容和层级，兼容自定义标题、手工编号与非标准排版。尽量保留原文、列表和表格及其章节归属，不扩写内容。页数随文档结构确定，创建后可查看、编辑并确认大纲。</p>
+                </div>
+
+                <div class="form-group">
+                    <label id="topic-label" for="topic">PPT 主题 *</label>
                     <input type="text" id="topic" name="topic" required placeholder="例如：人工智能技术发展趋势">
                 </div>
 
@@ -379,7 +403,7 @@
                     </select>
                 </div>
 
-                <div class="form-group">
+                <div class="form-group" id="network-mode-fields">
                     <label class="checkbox-row">
                         <input type="checkbox" id="network_mode" name="network_mode">
                         <span>
@@ -405,15 +429,47 @@
 
 {% block extra_js %}
 <script>
-function selectScenario(scenarioId, scenarioName) {
+function selectScenario(scenarioId, scenarioName, mode = 'standard') {
     document.getElementById('scenarioInput').value = scenarioId;
     document.getElementById('selectedScenarioName').textContent = scenarioName;
+    document.getElementById('creation_mode').value = mode;
+    toggleCreationMode();
     document.getElementById('generationModal').style.display = 'block';
 
     setTimeout(() => {
-        document.getElementById('topic').focus();
+        document.getElementById(mode === 'document_structure' ? 'source_document' : 'topic').focus();
     }, 100);
 }
+
+function toggleCreationMode() {
+    const documentMode = document.getElementById('creation_mode').value === 'document_structure';
+    const upload = document.getElementById('source_document');
+    document.getElementById('document-source-fields').hidden = !documentMode;
+    upload.disabled = !documentMode;
+    upload.required = documentMode;
+    document.getElementById('topic').required = !documentMode;
+    document.getElementById('topic-label').textContent = documentMode ? '项目主题（可选，默认使用文档标题）' : 'PPT 主题 *';
+    document.getElementById('network-mode-fields').hidden = documentMode;
+    document.getElementById('network_mode').disabled = documentMode;
+}
+
+document.getElementById('source_document').addEventListener('change', function() {
+    const file = this.files[0];
+    this.setCustomValidity(file && file.size > 20 * 1024 * 1024 ? '文件不能超过 20MB，请拆分后上传。' : '');
+    this.reportValidity();
+});
+
+document.getElementById('create-project-form').addEventListener('submit', function() {
+    const button = this.querySelector('button[type="submit"]');
+    button.disabled = true;
+    button.textContent = document.getElementById('creation_mode').value === 'document_structure' ? '大模型正在解析文档并创建大纲…' : '正在创建…';
+});
+
+window.addEventListener('pageshow', function() {
+    const button = document.querySelector('#create-project-form button[type="submit"]');
+    button.disabled = false;
+    button.textContent = '创建项目';
+});
 
 function closeModal() {
     document.getElementById('generationModal').style.display = 'none';

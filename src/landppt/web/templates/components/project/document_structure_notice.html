@@ -1,0 +1,6 @@
+{% if project and project.confirmed_requirements and project.confirmed_requirements.get('creation_mode') == 'document_structure' %}
+<div role="status" style="max-width: 1100px; margin: 16px auto; padding: 16px 20px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; color: #1e3a8a;">
+    <strong>按文档结构创建</strong> · {{ project.confirmed_requirements.get('filename', '') }}
+    <div style="margin-top: 6px; font-size: 0.9em;">大纲按原文标题顺序和层级生成，正文保留在所属标题下。您可以编辑并确认大纲；重新生成将恢复上传时的原文大纲。</div>
+</div>
+{% endif %}

@@ -23,11 +23,11 @@ class JSONParser:
             response: LLM的原始响应文本
             
         Returns:
-            解析后的JSON字典，如果解析失败则返回默认结构
+            解析后的 JSON 字典；解析失败时抛出异常，避免伪造成功结果
         """
         if response is None:
-            logger.warning("收到空响应，返回默认JSON结构")
-            return JSONParser._get_default_structure()
+            logger.warning("收到空响应，拒绝生成占位大纲")
+            raise ValueError("模型响应无法解析为有效 JSON，拒绝生成占位大纲")
 
         if isinstance(response, dict):
             return response
@@ -40,8 +40,8 @@ class JSONParser:
             response = str(response)
 
         if not response.strip():
-            logger.warning("收到空响应，返回默认JSON结构")
-            return JSONParser._get_default_structure()
+            logger.warning("收到空响应，拒绝生成占位大纲")
+            raise ValueError("模型响应无法解析为有效 JSON，拒绝生成占位大纲")
 
         response = response.strip()
 
@@ -81,7 +81,7 @@ class JSONParser:
             "所有JSON解析方法都失败，响应内容(截断): %s",
             JSONParser._truncate_for_log(response),
         )
-        return JSONParser._get_default_structure()
+        raise ValueError("模型响应无法解析为有效 JSON，拒绝生成占位大纲")
 
     @staticmethod
     def _truncate_for_log(text: str, limit: int = 1200) -> str:
@@ -356,6 +356,10 @@ class JSONParser:
         Returns:
             验证并修复后的PPT数据
         """
+        if not isinstance(data, dict) or not isinstance(data.get("slides"), list) or not data["slides"]:
+            raise ValueError("模型响应缺少有效的 slides 列表")
+        if any(not isinstance(slide, dict) for slide in data["slides"]):
+            raise ValueError("大纲包含无效的幻灯片节点")
         # 确保必需字段存在
         if "title" not in data:
             data["title"] = "PPT大纲"

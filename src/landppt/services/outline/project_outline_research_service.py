@@ -262,7 +262,7 @@ class ProjectOutlineResearchService:
             return standardized_outline
         except Exception as e:
             logger.error(f'Error standardizing summeryfile outline: {e}')
-            return {'title': 'PPT大纲', 'slides': [{'page_number': 1, 'title': '标题页', 'content_points': ['演示标题', '演示者', '日期'], 'slide_type': 'title', 'type': 'title', 'description': 'PPT标题页'}], 'metadata': {'generated_with_summeryfile': True, 'page_count_settings': {'mode': 'ai_decide'}, 'actual_page_count': 1, 'generated_at': time.time(), 'error': str(e)}}
+            raise ValueError("文件大纲格式转换失败，拒绝保存单页占位结果") from e
 
     async def conduct_research_and_merge_with_files(self, topic: str, language: str, file_paths: Optional[List[str]]=None, context: Optional[Dict[str, Any]]=None, event_callback=None) -> str:
         """

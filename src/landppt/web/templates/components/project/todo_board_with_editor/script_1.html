@@ -2302,3 +2302,37 @@
 
         // 定期检查PPT状态（每10秒检查一次）
         setInterval(checkPPTStatus, 10000);
+
+        async function returnToOutline() {
+            const button = document.getElementById('returnToOutlineBtn');
+            if (button.disabled || !confirm('返回大纲将清空当前项目已生成的PPT、讲稿和生成历史，保留大纲及需求配置。返回后可重新选择套件。确定继续吗？')) return;
+            button.disabled = true;
+            isManualStop = true;
+            isPaused = true;
+            if (eventSource) { eventSource.close(); eventSource = null; }
+            clearTimeout(connectionTimeout);
+            stopHeartbeat();
+            ['startBtn', 'resumeBtn', 'pauseBtn', 'stopBtn'].forEach(id => {
+                const control = document.getElementById(id);
+                if (control) control.disabled = true;
+            });
+            try {
+                updateStatus('正在停止生成并清空PPT，请稍候…', 'progress');
+                while (true) {
+                    const response = await fetch(`/api/projects/${projectId}/slides/return-to-outline`, {method: 'POST'});
+                    const data = await response.json();
+                    if (response.status === 202 && data.waiting) {
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+                        continue;
+                    }
+                    if (!response.ok || !data.success) throw new Error(data.detail || data.error || '返回大纲失败');
+                    sessionStorage.removeItem(generationKey);
+                    releaseStartGenerationLock();
+                    window.location.href = data.redirect_url;
+                    return;
+                }
+            } catch (error) {
+                updateStatus(error.message + '，可重试返回大纲。', 'error');
+                button.disabled = false;
+            }
+        }

@@ -190,23 +190,8 @@ class GraphNodes(LoggerMixin):
             }
             
         except Exception as e:
-            self.logger.error(f"初始PPT框架生成失败: {e}")
-            # 返回默认框架
-            return {
-                "ppt_title": "学术演示",
-                "total_pages": 15,
-                "page_count_mode": "estimated",
-                "slides": [
-                    {
-                        "page_number": 1,
-                        "title": "标题页",
-                        "content_points": ["演示标题", "演示者", "日期"],
-                        "slide_type": "title",
-                        "description": "PPT开场标题页"
-                    }
-                ],
-                "current_index": 1
-            }
+            self.logger.exception("初始大纲生成失败，拒绝使用单页占位结果")
+            raise ValueError("初始大纲生成失败，请重试") from e
     
     async def generate_initial_outline_streaming(
         self,
@@ -256,22 +241,8 @@ class GraphNodes(LoggerMixin):
                 "current_index": 1,
             }
         except Exception as e:
-            self.logger.error(f"流式初始 PPT 框架生成失败: {e}")
-            return {
-                "ppt_title": "学术演示",
-                "total_pages": 15,
-                "page_count_mode": "estimated",
-                "slides": [
-                    {
-                        "page_number": 1,
-                        "title": "标题页",
-                        "content_points": ["演示标题", "演示者", "日期"],
-                        "slide_type": "title",
-                        "description": "PPT 开场标题页",
-                    }
-                ],
-                "current_index": 1,
-            }
+            self.logger.exception("初始大纲生成失败，拒绝使用单页占位结果")
+            raise ValueError("初始大纲生成失败，请重试") from e
 
     async def refine_outline(self, state: PPTState, config: RunnableConfig) -> Dict[str, Any]:
         """

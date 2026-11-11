@@ -884,9 +884,11 @@
                             <button onclick="regenerateOutlineNew()" class="btn btn-sm btn-outline-warning" style="margin-right: 8px;">
                                 <i class="fas fa-sync"></i> 重新生成大纲
                             </button>
+                            {% if not (project and project.confirmed_requirements and project.confirmed_requirements.get('creation_mode') == 'document_structure') %}
                             <button onclick="startConstrainedOutlineGeneration()" class="btn btn-sm" style="margin-right: 8px; background: #111; color: #fff; border: 1px solid #111;" title="按页面级硬性要求生成并校验">
                                 <i class="fas fa-shield-alt"></i> 约束增强生成
                             </button>
+                            {% endif %}
                             <button onclick="editOutlineNew()" class="btn btn-sm btn-outline-primary" style="margin-right: 8px;">
                                 <i class="fas fa-edit"></i> 编辑大纲
                             </button>
@@ -3645,6 +3647,12 @@
         if (emptyDiv) emptyDiv.style.display = 'none';
         if (loadingDiv) loadingDiv.style.display = 'none';
 
+        if (outlineData.metadata?.generation_mode === 'document_structure') {
+            renderDocumentStructureOutline(outlineData, document.getElementById('outline-slides-compact'), false);
+            renderDocumentStructureOutline(outlineData, document.getElementById('outline-slides-detail'), true);
+            return;
+        }
+
         // 渲染简洁视图
         renderCompactView(outlineData);
 
@@ -3858,6 +3866,7 @@
         </div>
     `;
 
+        content.querySelector('#outlineEditorNew').value = outlineContent;
         modal.className = 'modal';
         modal.appendChild(content);
         document.body.appendChild(modal);
@@ -4336,8 +4345,41 @@
     }
 
     // 渲染大纲内容
+    function renderDocumentStructureOutline(outline, container, expanded) {
+        if (!container) return;
+        container.replaceChildren();
+        const heading = document.createElement('h4');
+        heading.textContent = `${outline.title} · ${outline.slides.length} 页`;
+        container.appendChild(heading);
+        outline.slides.forEach((slide, index) => {
+            const card = document.createElement('details');
+            card.open = expanded;
+            const depth = Array.isArray(slide.source_path) ? slide.source_path.length - 1 : 0;
+            card.style.cssText = `margin: 10px 0 10px ${Math.min(depth, 5) * 16}px; padding: 14px; border-left: 3px solid #2563eb; border-radius: 8px; background: var(--surface, white);`;
+            const summary = document.createElement('summary');
+            summary.style.cssText = 'cursor: pointer; font-weight: 600; overflow-wrap: anywhere;';
+            summary.textContent = `${index + 1}. ${slide.title}`;
+            card.appendChild(summary);
+            const path = document.createElement('p');
+            path.style.cssText = 'color: #64748b; font-size: 12px; overflow-wrap: anywhere;';
+            path.textContent = (slide.source_path || []).join(' › ');
+            card.appendChild(path);
+            (slide.content_points || []).forEach(point => {
+                const paragraph = document.createElement('div');
+                paragraph.style.cssText = 'white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; margin-top: 8px;';
+                paragraph.textContent = point;
+                card.appendChild(paragraph);
+            });
+            container.appendChild(card);
+        });
+    }
+
     function renderOutlineContentNew(outline, container) {
         if (!outline || !outline.slides || !container) {
+            return;
+        }
+        if (outline.metadata?.generation_mode === 'document_structure') {
+            renderDocumentStructureOutline(outline, container, isDetailViewNew);
             return;
         }
 
@@ -4625,7 +4667,7 @@
             <button onclick="this.closest('.modal').remove()" style="background: transparent; color: #111; border: 1px solid #111; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center;">×</button>
         </div>
         <div style="flex: 1; display: flex; flex-direction: column;">
-            <textarea id="outlineEditorNew" style="flex: 1; border: 2px solid #d9d9d9; border-radius: 8px; padding: 15px; font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.5; resize: none; background: #fff; color: #111;" placeholder="编辑大纲JSON...">${outlineContent}</textarea>
+            <textarea id="outlineEditorNew" style="flex: 1; border: 2px solid #d9d9d9; border-radius: 8px; padding: 15px; font-family: 'Courier New', monospace; font-size: 14px; line-height: 1.5; resize: none; background: #fff; color: #111;" placeholder="编辑大纲JSON..."></textarea>
             <div style="display: flex; gap: 8px; margin-top: 15px; justify-content: space-between;">
                 <button onclick="aiOptimizeJSONOutlineInModal()" class="btn btn-sm" style="background: #111; color: #fff; border: 1px solid #111;">
                     <i class="fas fa-magic"></i> 优化大纲

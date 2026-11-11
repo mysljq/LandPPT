@@ -240,7 +240,27 @@ class ChainExecutor:
                 return result
             except Exception as e:
                 last_exception = e
-                self.logger.warning(f"处理链 {chain_name} 第 {attempt + 1} 次流式尝试失败: {e}")
+                # Some compatible providers fail while closing an otherwise
+                # complete stream. Keep a complete outline instead of retrying
+                # and ultimately replacing the visible result with a fallback.
+                if chain_name in ("initial_outline", "refine_outline") and collected_chunks:
+                    import json
+                    text = "".join(collected_chunks).strip()
+                    if text.startswith("```"):
+                        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                    try:
+                        value = json.loads(text)
+                        slides = value.get("slides") if isinstance(value, dict) else None
+                        if isinstance(slides, list) and slides and all(
+                            isinstance(slide, dict) and isinstance(slide.get("title"), str)
+                            and isinstance(slide.get("content_points"), list)
+                            and slide["content_points"] for slide in slides
+                        ):
+                            self.logger.warning("处理链 %s 流结束异常，但完整大纲已收到，保留 %s 页: %s", chain_name, len(slides), e)
+                            return text
+                    except (ValueError, TypeError):
+                        pass
+                self.logger.warning(f"处理链 {chain_name} 第 {attempt + 1} 次流式尝试失败: {e}", exc_info=True)
 
                 if attempt < self.max_retries - 1:
                     import asyncio

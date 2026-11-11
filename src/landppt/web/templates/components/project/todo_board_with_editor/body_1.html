@@ -24,6 +24,7 @@
         </div>
 
         {% include 'components/project/strict_generation_notice.html' %}
+        {% include 'components/project/document_structure_notice.html' %}
         <div class="content-area">
             <!-- Editor Section -->
             <div class="editor-section">
@@ -33,6 +34,7 @@
                         <h4>PPT 智能生成器</h4>
                     </div>
                     <div class="btn-group-custom">
+                        {% if not (project and project.confirmed_requirements and project.confirmed_requirements.get('creation_mode') == 'document_structure') %}
                         <button class="btn" id="constrainedOutlineBtn" style="background: #111; color: #fff; border-color: #111;"
                             title="按页面级硬性要求重新生成并校验大纲">
                             <i class="fas fa-shield-alt"></i> 约束增强大纲
@@ -41,11 +43,16 @@
                             title="由大模型判断使用严格约束生成还是原始生成">
                             <i class="fas fa-wand-magic-sparkles"></i> 智能选择方案
                         </button>
+                        {% endif %}
                         <button class="btn btn-primary" id="startBtn">
                             <i class="fas fa-play"></i> 开始生成
                         </button>
                         <button class="btn btn-warning" id="pauseBtn" style="display: none;">
                             <i class="fas fa-pause"></i> 暂停
+                        </button>
+                        <button class="btn btn-outline-danger" id="returnToOutlineBtn" onclick="returnToOutline()"
+                            title="停止生成并清空当前PPT，返回大纲编辑和套件选择">
+                            <i class="fas fa-undo"></i> 返回大纲
                         </button>
                         <button class="btn btn-success" id="resumeBtn" style="display: none;">
                             <i class="fas fa-play"></i> 继续

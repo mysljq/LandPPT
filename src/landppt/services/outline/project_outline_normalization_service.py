@@ -675,6 +675,8 @@ class ProjectOutlineNormalizationService:
         metadata = root.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
+        from .document_structure_service import DOCUMENT_STRUCTURE_MODE
+        preserve_document = metadata.get("generation_mode") == DOCUMENT_STRUCTURE_MODE
 
         standardized_slides: List[Dict[str, Any]] = []
         total_slides = len(slides_data)
@@ -707,6 +709,11 @@ class ProjectOutlineNormalizationService:
                 slide_title=title_text,
                 description=description,
             )
+            if preserve_document:
+                raw_points = slide.get("content_points", [])
+                if not isinstance(raw_points, list) or any(not isinstance(point, str) for point in raw_points):
+                    raise ValueError("文档大纲的 content_points 必须是文本数组")
+                content_points = list(raw_points)
 
             standardized_slide = {
                 "page_number": index,
@@ -719,13 +726,19 @@ class ProjectOutlineNormalizationService:
 
             if slide.get("chart_config"):
                 standardized_slide["chart_config"] = slide["chart_config"]
+            if preserve_document:
+                for key in ("source_id", "source_parent_id", "source_heading_level", "source_path", "section", "notes", "chapter"):
+                    if key in slide:
+                        standardized_slide[key] = slide[key]
 
             standardized_slides.append(standardized_slide)
 
         # Apply transition type correction based on description heuristics
-        standardized_slides = self._correct_transition_slide_types(standardized_slides)
+        if not preserve_document:
+            standardized_slides = self._correct_transition_slide_types(standardized_slides)
         # 章节号赋值：与 page_number 同级，按章节起始信号确定性计算（不信任 LLM）。
-        standardized_slides = self._assign_chapter_numbers(standardized_slides)
+        if not preserve_document:
+            standardized_slides = self._assign_chapter_numbers(standardized_slides)
 
         standardized_outline = {
             "title": title,

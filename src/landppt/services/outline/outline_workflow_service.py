@@ -125,7 +125,9 @@ class OutlineWorkflowService:
                         }
                     }
 
+                    logger.info("File outline before normalization: %s slides", len(outline_obj.slides))
                     outline = svc._standardize_summeryfile_outline(outline_obj.to_dict())
+                    logger.info("File outline after normalization: %s slides", len(outline.get("slides", [])))
                     # 开启过渡页时保证每个一级章节（含第一章）前都有 transition 页（确定性补齐）。
                     # 在页数校验/修复之前插入，使过渡页计入页数约束，避免超页。
                     from .project_outline_normalization_service import ProjectOutlineNormalizationService as _Normalizer
@@ -140,6 +142,7 @@ class OutlineWorkflowService:
                             outline.get("title", "Document Presentation"),
                         ),
                     )
+                    logger.info("File outline after validation: %s slides", len(outline.get("slides", [])))
                     yield {
                         "outline": outline,
                         "llm_call_count": max(llm_call_count, 0),
@@ -151,7 +154,8 @@ class OutlineWorkflowService:
                     exc,
                 )
             except Exception as exc:
-                logger.error("summeryanyfile streaming file outline generation failed: %s", exc)
+                logger.exception("summeryanyfile streaming file outline generation failed")
+                raise
 
             fallback_result = await self._generate_outline_from_file_fallback(request)
             if not fallback_result.success or not fallback_result.outline:
@@ -249,8 +253,8 @@ class OutlineWorkflowService:
                 logger.warning("summeryanyfile unavailable, using fallback generator: %s", exc)
                 return await self._generate_outline_from_file_fallback(request)
             except Exception as exc:
-                logger.error("summeryanyfile outline generation failed, using fallback: %s", exc)
-                return await self._generate_outline_from_file_fallback(request)
+                logger.exception("summeryanyfile outline generation failed")
+                raise
         except Exception as exc:
             logger.error("Outline generation from file failed: %s", exc)
             return FileOutlineGenerationResponse(

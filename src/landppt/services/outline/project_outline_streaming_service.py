@@ -309,6 +309,16 @@ class ProjectOutlineStreamingService:
             project = await self.project_manager.get_project(project_id)
             if not project:
                 raise ValueError('Project not found')
+            from .document_structure_service import get_document_outline
+            document_outline = get_document_outline(project, restore_source=force_regenerate)
+            if document_outline is not None:
+                import json
+                await self._update_outline_generation_stage(project_id, document_outline)
+                formatted = json.dumps(document_outline, ensure_ascii=False, indent=2)
+                for offset in range(0, len(formatted), 4096):
+                    yield f"data: {json.dumps({'content': formatted[offset:offset + 4096]}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'done': True, 'llm_call_count': 0})}\n\n"
+                return
             from ..file_outline_utils import extract_saved_file_outline, should_force_file_outline_regeneration
             force_file_outline_regeneration = should_force_file_outline_regeneration(project.confirmed_requirements or {})
             ignore_saved_outline = bool(force_regenerate or force_file_outline_regeneration)

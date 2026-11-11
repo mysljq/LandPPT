@@ -6,13 +6,21 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ...api.models import PPTGenerationRequest
 from ...auth.middleware import get_current_user_required
 from ...database.models import User
-from .support import get_ppt_service_for_user, ppt_service, templates
+from ...services.outline.document_structure_service import (
+    DOCUMENT_STRUCTURE_MODE,
+    MAX_DOCUMENT_UPLOAD_BYTES,
+    read_document_source,
+    generate_document_outline,
+)
+from ...utils.thread_pool import run_blocking_io
+from .support import (get_ppt_service_for_user, ppt_service, templates,
+                      check_credits_for_operation, consume_credits_for_operation)
 
 router = APIRouter()
 
@@ -124,15 +132,44 @@ async def web_projects_list(
 async def web_create_project(
     request: Request,
     scenario: str = Form(...),
-    topic: str = Form(...),
+    topic: str = Form(""),
     requirements: str | None = Form(None),
     notes: str | None = Form(None),
     language: str = Form("zh"),
     network_mode: bool = Form(False),
+    creation_mode: str = Form("standard"),
+    source_document: UploadFile | None = File(None),
     user: User = Depends(get_current_user_required),
 ):
     """创建项目。"""
     try:
+        if creation_mode not in ("standard", DOCUMENT_STRUCTURE_MODE):
+            raise ValueError("不支持的创建模式。")
+        document_outline = None
+        if creation_mode == DOCUMENT_STRUCTURE_MODE:
+            if source_document is None or not source_document.filename:
+                raise ValueError("请上传 Word（.docx）或 Markdown 文件。")
+            try:
+                content = await source_document.read(MAX_DOCUMENT_UPLOAD_BYTES + 1)
+                filename, source = await run_blocking_io(
+                    read_document_source, content, source_document.filename
+                )
+            finally:
+                await source_document.close()
+            service = get_ppt_service_for_user(user.id)
+            _, settings = await service.get_role_provider_async("outline")
+            provider_name = settings.get("provider")
+            has_credits, required, balance = await check_credits_for_operation(
+                user.id, "outline_generation", 3, provider_name=provider_name,
+            )
+            if not has_credits:
+                raise ValueError(f"积分不足，文档解析最多需要 {required} 积分，当前余额 {balance} 积分")
+            document_outline = await generate_document_outline(source, filename, topic, service)
+            topic = document_outline["title"]
+            network_mode = False
+        elif not topic.strip():
+            raise ValueError("请输入 PPT 主题。")
+
         project_request = PPTGenerationRequest(
             scenario=scenario,
             topic=topic,
@@ -144,7 +181,46 @@ async def web_create_project(
         )
         project = await ppt_service.project_manager.create_project(project_request)
         await ppt_service.project_manager.update_project_status(project.project_id, "in_progress")
+        if document_outline is not None:
+            confirmed = {
+                "creation_mode": DOCUMENT_STRUCTURE_MODE,
+                "topic": topic,
+                "scenario": scenario,
+                "requirements": requirements,
+                "target_audience": "普通大众",
+                "ppt_style": "general",
+                "content_source": "file",
+                "filename": document_outline["metadata"]["source_filename"],
+                "page_count_settings": {"mode": "document_structure"},
+                "include_transition_pages": False,
+                "force_file_outline_regeneration": False,
+                "file_generated_outline": document_outline,
+                "document_source_outline": document_outline,
+            }
+            manager = ppt_service.project_manager
+            if not await manager.update_todo_board_with_confirmed_requirements(
+                project.project_id, confirmed, user_id=user.id
+            ):
+                raise RuntimeError("文档已解析，但保存任务失败，请重试。")
+            if not await manager.save_project_outline(project.project_id, document_outline):
+                raise RuntimeError("保存文档大纲失败，请重试。")
+            if not await manager.update_stage_status(
+                project.project_id, "outline_generation", "completed", 100.0,
+                {"outline_data": document_outline}, user_id=user.id,
+            ):
+                raise RuntimeError("更新大纲阶段失败，请重试。")
+            billed, message = await consume_credits_for_operation(
+                user.id, "outline_generation", document_outline["metadata"]["llm_call_count"],
+                description=f"文档结构解析: {topic}", reference_id=project.project_id,
+                provider_name=provider_name,
+            )
+            if not billed:
+                raise RuntimeError(message or "文档解析积分扣费失败")
         return RedirectResponse(url=f"/projects/{project.project_id}/todo", status_code=302)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            "error.html", {"request": request, "error": str(exc)}, status_code=400
+        )
     except Exception as exc:
         return templates.TemplateResponse("error.html", {"request": request, "error": str(exc)})
 

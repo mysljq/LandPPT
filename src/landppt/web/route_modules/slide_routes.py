@@ -648,6 +648,37 @@ async def stream_slides_generation(
         return {"error": str(e)}
 
 
+@router.post("/api/projects/{project_id}/slides/return-to-outline")
+async def return_to_outline(project_id: str, user: User = Depends(get_current_user_required)):
+    project = await ppt_service.project_manager.get_project(project_id, user_id=user.id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目未找到")
+    service = get_ppt_service_for_user(user.id)
+    await service.request_cancel_slides_generation(project_id)
+    from ...services.db_project_manager import DatabaseProjectManager
+    await DatabaseProjectManager().update_stage_status(
+        project_id, "ppt_creation", "cancelled", None,
+        {"message": "正在停止生成并返回大纲"}, user_id=user.id,
+    )
+    # Never clear slides while a generator can still write them back.
+    lock = await service.slide_authoring._try_acquire_slides_generation_lock(project_id)
+    if not lock.get("acquired"):
+        return JSONResponse(status_code=202, content={"success": False, "waiting": True})
+    local_lock = lock.get("local_lock")
+    try:
+        if local_lock is not None:
+            await local_lock.acquire()
+        from ...services.slide.slide_reset_service import SlideResetService
+        async with AsyncSessionLocal() as session:
+            if not await SlideResetService.reset(session, project_id, user.id):
+                raise HTTPException(status_code=404, detail="项目未找到")
+        return {"success": True, "redirect_url": f"/projects/{project_id}/todo?outline_mode=true"}
+    finally:
+        if local_lock is not None and local_lock.locked():
+            local_lock.release()
+        await service.slide_authoring._release_slides_generation_lock(lock)
+
+
 @router.post("/api/projects/{project_id}/slides/cancel")
 async def cancel_slides_generation(
     project_id: str,
