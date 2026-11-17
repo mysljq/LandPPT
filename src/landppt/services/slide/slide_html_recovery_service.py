@@ -117,6 +117,58 @@ class SlideHtmlRecoveryService:
                 except Exception:
                     pass
 
+    async def _repair_html_with_edits(self, html, feedback, system_prompt, slide_data):
+        """Request small exact replacements instead of another complete document."""
+        prompt = (
+            '修复现有PPT HTML，只修改下面指出的问题，保留已有设计、事实、正文、图片和套件页头页脚。'
+            '布局问题只修改CSS或容器属性，禁止删减文字、裁切内容或缩放整页。'
+            '不要减少内容，不要使用overflow:hidden 裁切。'
+            '优先优化布局密度：使用min-height自适应、收紧行距与间距、调整列数或小幅缩字号。'
+            '返回JSON：{"edits":[{"old":"原文中的唯一连续片段","new":"替换片段"}]}。'
+            '最多12处，每处尽量短；不能返回整页HTML。\n问题：' + feedback
+            + '\n本页数据：' + json.dumps(slide_data, ensure_ascii=False, default=str)
+            + '\n现有HTML：\n' + html
+        )
+        try:
+            response = await self._text_completion_for_role(
+                'slide_generation', prompt=prompt, system_prompt=system_prompt,
+                temperature=0.2, max_tokens=2500,
+            )
+            raw = self._strip_think_tags(response.content.strip())
+            edits = json.loads(raw[raw.index('{'):raw.rindex('}') + 1]).get('edits')
+            if not isinstance(edits, list) or not 1 <= len(edits) <= 12:
+                return None
+            # Resolve all edits against the original; reject ambiguous/overlapping edits.
+            replacements = []
+            for edit in edits:
+                if not isinstance(edit, dict):
+                    return None
+                old, new = edit.get('old'), edit.get('new')
+                if (not isinstance(old, str) or not old or not isinstance(new, str)
+                        or html.count(old) != 1 or len(old) > max(500, len(html) // 2)):
+                    return None
+                start = html.index(old)
+                replacements.append((start, start + len(old), new))
+            replacements.sort()
+            if any(a[1] > b[0] for a, b in zip(replacements, replacements[1:])):
+                return None
+            patched = html
+            for start, end, new in reversed(replacements):
+                patched = patched[:start] + new + patched[end:]
+            # Local layout repair must not silently remove or rewrite slide content.
+            from bs4 import BeautifulSoup
+            def visible_text(value):
+                soup = BeautifulSoup(value, 'html.parser')
+                for node in soup(['style', 'script']):
+                    node.decompose()
+                return ''.join(soup.stripped_strings)
+            if patched == html or visible_text(patched) != visible_text(html):
+                return None
+            return patched
+        except Exception as exc:
+            logger.warning('局部HTML修复不可用，回退到生成流程: %s', exc)
+            return None
+
     async def _generate_html_with_retry(self, context: str, system_prompt: str, slide_data: Dict[str, Any], page_number: int, total_pages: int, max_retries: int=3) -> str:
         """Generate HTML with retry mechanism for incomplete responses"""
         # 从 prompt context 中解析全册页头页脚令牌（非解析失败也无妨，退化为常规审美预检）
@@ -134,6 +186,11 @@ class SlideHtmlRecoveryService:
         lock_repr = ', '.join(f'{k}={v}' for k, v in (header_lock or {}).items()) or '无'
         logger.info(f'页头令牌 (slide {page_number}): {lock_repr}')
         from .retry_progress import notify_retry_progress
+        max_retries = max(1, min(max_retries, 3))
+        repair_source = None
+        repair_feedback = ''
+        full_generations = 0
+        best_html = None
         for attempt in range(max_retries):
             try:
                 logger.info(f'Generating HTML for slide {page_number}, attempt {attempt + 1}/{max_retries}')
@@ -147,9 +204,19 @@ class SlideHtmlRecoveryService:
                 retry_context = context
                 if attempt > 0:
                     retry_context += f'\n\n    **重要提醒（第{attempt + 1}次尝试）：**\n    - 前面的尝试可能生成了不完整的HTML，请确保这次生成完整的HTML文档\n    - 必须包含完整的HTML结构：<!DOCTYPE html>, <html>, <head>, <body>等标签\n    - 确保所有标签都正确闭合\n    - 使用markdown代码块格式：```html\n[完整HTML代码]\n```\n    - 不要截断HTML代码，确保以</html>结束\n    '
-                response = await self._text_completion_for_role('slide_generation', prompt=retry_context, system_prompt=system_prompt, temperature=max(0.1, ai_config.temperature))
+                candidate = None
+                if repair_source:
+                    candidate = await self._repair_html_with_edits(
+                        repair_source, repair_feedback, system_prompt, slide_data,
+                    )
+                if candidate is None:
+                    if full_generations >= 2:
+                        break
+                    full_generations += 1
+                    response = await self._text_completion_for_role('slide_generation', prompt=retry_context, system_prompt=system_prompt, temperature=max(0.1, ai_config.temperature))
+                    candidate = response.content
                 try:
-                    html_content = self._clean_html_response(response.content)
+                    html_content = self._clean_html_response(candidate)
                     html_content = self._inject_anti_overflow_css(html_content)
                     if not html_content or len(html_content.strip()) < 50:
                         logger.warning(f'AI returned empty or too short HTML content for slide {page_number}')
@@ -158,8 +225,14 @@ class SlideHtmlRecoveryService:
                     logger.error(f'Error cleaning HTML response for slide {page_number}: {e}')
                     continue
                 validation_result = self._validate_html_completeness(html_content)
+                if not validation_result['is_complete'] and validation_result['errors']:
+                    fixed = self._auto_fix_html_with_parser(html_content)
+                    fixed_validation = self._validate_html_completeness(fixed)
+                    if fixed_validation['is_complete']:
+                        html_content, validation_result = fixed, fixed_validation
                 logger.info(f"HTML validation result for slide {page_number}, attempt {attempt + 1}: Complete: {validation_result['is_complete']}, Errors: {len(validation_result['errors'])}, Missing elements: {len(validation_result['missing_elements'])}")
                 if validation_result['is_complete']:
+                    best_html = html_content
                     if validation_result['missing_elements']:
                         logger.warning(f"Missing elements (warnings only): {', '.join(validation_result['missing_elements'])}")
                     logger.info(f'Successfully generated complete HTML for slide {page_number} on attempt {attempt + 1}')
@@ -183,6 +256,8 @@ class SlideHtmlRecoveryService:
                                 stage="aesthetic_retry",
                                 detail=f"第 {page_number} 页审美预检不过，重试（{attempt + 2}/{max_retries}）：{'；'.join(aesthetic_hard)}",
                             )
+                            repair_source = html_content
+                            repair_feedback = hard_summary
                             # 把违规反馈注入下一轮 retry_context，让模型针对性修正
                             context = context + (
                                 f'\n\n    **上一轮审美预检未通过，请修正以下问题：**\n    '
@@ -249,6 +324,8 @@ class SlideHtmlRecoveryService:
                                 stage="overflow_retry",
                                 detail=f"第 {page_number} 页内容溢出（顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px），重试（{attempt + 2}/{max_retries}）",
                             )
+                            repair_source = html_content
+                            repair_feedback = f'纵向溢出：顶层{ov_px}px，局部{local_ov_px}px，遮挡页脚{zone_ov_px}px。{detail_text}'
                             context = context + (
                                 f'\n\n    **上一轮内容区域溢出（顶层 {ov_px}px/局部 {local_ov_px}px/盖页脚 {zone_ov_px}px），请修正：**\n'
                                 f'- **不要减少内容、不要加 overflow:hidden 裁切**；通过优化布局密度让已有信息量落进可用空间。\n'
@@ -281,6 +358,8 @@ class SlideHtmlRecoveryService:
                                 stage="overflow_retry",
                                 detail=f"第 {page_number} 页横向溢出 {ovx_px}px（{ovx_pct}%），重试（{attempt + 2}/{max_retries}）",
                             )
+                            repair_source = html_content
+                            repair_feedback = f'横向溢出{ovx_px}px。{x_detail_text}'
                             context = context + (
                                 f'\n\n    **上一轮内容横向超出可见范围 {ovx_px}px（约 {ovx_pct}%），请修正：**\n    '
                                 f'- 主内容区宽度超出 1280px 可用空间，右侧内容会被裁切看不到。\n    '
@@ -301,9 +380,11 @@ class SlideHtmlRecoveryService:
                     if validation_result['errors']:
                         logger.info(f'🔧 Attempting automatic parser fix for slide {page_number}')
                         parser_fixed_html = self._auto_fix_html_with_parser(html_content)
-                        if parser_fixed_html != html_content:
+                        if parser_fixed_html != html_content and self._validate_html_completeness(parser_fixed_html)['is_complete']:
                             logger.info(f'✅ Successfully fixed HTML with parser for slide {page_number}, returning fixed result')
-                            return await self._apply_auto_layout_repair(parser_fixed_html, slide_data, page_number, total_pages)
+                            repair_source = parser_fixed_html
+                            repair_feedback = '保持正文内容，修正剩余HTML结构问题。'
+                            continue
                         else:
                             logger.info(f'🔧 Parser did not change HTML for slide {page_number}')
                         if attempt < max_retries - 1:
@@ -333,10 +414,10 @@ class SlideHtmlRecoveryService:
                         continue
                 if attempt == max_retries - 1:
                     logger.error(f'All attempts failed with errors, using fallback for slide {page_number}')
-                    fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
+                    fallback_html = best_html or self._generate_fallback_slide_html(slide_data, page_number, total_pages)
                     return await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
                 continue
-        fallback_html = self._generate_fallback_slide_html(slide_data, page_number, total_pages)
+        fallback_html = best_html or self._generate_fallback_slide_html(slide_data, page_number, total_pages)
         return await self._apply_auto_layout_repair(fallback_html, slide_data, page_number, total_pages)
 
     def _fix_incomplete_html(self, html_content: str, slide_data: Dict[str, Any], page_number: int, total_pages: int) -> str:

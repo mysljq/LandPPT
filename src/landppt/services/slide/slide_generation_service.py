@@ -23,6 +23,7 @@ class SlideGenerationService:
 
     async def _generate_slides_streaming_impl(self, project_id: str):
             """Internal implementation of slide generation streaming"""
+            scheduler = None
             try:
                 import json
                 import time
@@ -386,7 +387,7 @@ class SlideGenerationService:
                 # 检查是否启用并行生成 - 从用户配置读取
                 user_gen_config = await self._get_user_generation_config()
                 parallel_enabled = user_gen_config["enable_parallel_generation"]
-                parallel_count = user_gen_config["parallel_slides_count"] if parallel_enabled else 1
+                parallel_count = max(1, int(user_gen_config["parallel_slides_count"])) if parallel_enabled else 1
                 from .parallel_page_service import ParallelPageService
                 parallel_groups = await ParallelPageService.prepare(self, project_id, outline, slides)
                 design_context_prepared = False
@@ -423,9 +424,7 @@ class SlideGenerationService:
                     except Exception:
                         pass
                     # 确定本批次要生成的幻灯片
-                    batch_end = min(i + parallel_count, len(slides))
-                    batch_end = ParallelPageService.batch_end(i, batch_end, parallel_groups)
-                    batch_slides = slides[i:batch_end]
+                    batch_end = len(slides) if parallel_enabled else min(i + 1, len(slides))
 
                     # 收集本批次需要生成的幻灯片
                     slides_to_generate = []
@@ -499,7 +498,7 @@ class SlideGenerationService:
                                 all_slides=slides,
                                 total_pages=outline_total_pages,
                                 prewarm_slide_guides=0,
-                                async_prewarm_remaining_slide_guides=not bool(parallel_groups),
+                                async_prewarm_remaining_slide_guides=False,
                             )
                             design_context_prepared = True
 
@@ -513,7 +512,7 @@ class SlideGenerationService:
                                     'type': 'progress',
                                     'current': idx + 1,
                                     'total': outline_total_pages,
-                                    'message': f'正在生成第{idx+1}页：{slide.get("title", "")}...'
+                                    'message': f'第{idx+1}页已加入生成队列：{slide.get("title", "")}...'
                                 }
                                 yield f"data: {json.dumps(progress_data)}\n\n"
 
@@ -528,16 +527,17 @@ class SlideGenerationService:
                                 except Exception as e:
                                     return idx, slide, None, e
 
-                            # 创建所有并行任务
-                            tasks = [asyncio.create_task(generate_with_metadata(idx, slide)) for idx, slide in slides_to_generate]
+                            # 持续补位，同时保留并列页面的基准页依赖。
+                            from .slide_task_scheduler import stream_slide_tasks
+                            scheduler = stream_slide_tasks(
+                                slides_to_generate, generate_with_metadata, parallel_count,
+                                parallel_groups,
+                                lambda: self._is_slides_generation_cancelled(project_id, cache=cache),
+                            )
 
                             # 流式处理完成的任务 - 一旦某页生成完成，立即展示和添加
-                            for coro in asyncio.as_completed(tasks):
-                                if await self._is_slides_generation_cancelled(project_id, cache=cache):
-                                    for task in tasks:
-                                        if not task.done():
-                                            task.cancel()
-                                    await asyncio.gather(*tasks, return_exceptions=True)
+                            async for result in scheduler:
+                                if result is None or await self._is_slides_generation_cancelled(project_id, cache=cache):
                                     cancel_message = "已收到停止请求，已停止生成。"
                                     if db_manager_status is None:
                                         from ..db_project_manager import DatabaseProjectManager
@@ -548,7 +548,7 @@ class SlideGenerationService:
                                     )
                                     yield f"data: {json.dumps({'type': 'error', 'message': cancel_message})}\n\n"
                                     return
-                                idx, slide, html_content, error = await coro
+                                idx, slide, html_content, error = result
                                 try:
                                     if error:
                                         raise error
@@ -810,3 +810,7 @@ class SlideGenerationService:
                 error_message = f'生成过程中出现错误：{str(e)}'
                 error_response = {'type': 'error', 'message': error_message}
                 yield f"data: {json.dumps(error_response)}\n\n"
+
+            finally:
+                if scheduler is not None:
+                    await scheduler.aclose()

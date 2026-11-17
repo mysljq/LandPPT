@@ -30,6 +30,7 @@ class CreativeDesignService:
         "_page_creative_brief_ready_events",
         "_slide_creative_guide_ready_events",
         "_slide_guide_prewarm_tasks",
+        "_batched_slide_guide_tasks",
     }
 
     def __init__(self, service: "EnhancedPPTService"):
@@ -775,8 +776,19 @@ class CreativeDesignService:
         all_slides: Optional[List[Dict[str, Any]]] = None,
         template_html: str = "",
         suite_design_context: str = "",
+        project_id: str = None,
     ) -> str:
         """调用 LLM 生成当前页的详细创意指导。"""
+        if project_id and all_slides and len(all_slides) > 1:
+            try:
+                guide = await self._generate_batched_slide_guide(
+                    project_id, page_number, total_pages, all_slides,
+                    confirmed_requirements, template_html, suite_design_context,
+                )
+                if guide:
+                    return guide
+            except Exception as exc:
+                logger.warning("批量创意指导不可用，第%s页改为独立规划: %s", page_number, exc)
         slides_summary = self._build_creative_slides_summary(all_slides)
         prompt = prompts_manager.get_slide_design_guide_prompt(
             slide_data=slide_data or {},
@@ -789,6 +801,56 @@ class CreativeDesignService:
         )
         response = await self._text_completion_for_role("creative", prompt=prompt, temperature=0.85)
         return self._strip_think_tags(response.content.strip())
+
+    async def _generate_batched_slide_guide(
+        self, project_id, page_number, total_pages, all_slides,
+        confirmed_requirements, template_html, suite_design_context,
+    ):
+        # Small batches bound output size and let HTML rendering start early.
+        start = ((page_number - 1) // 4) * 4
+        pages = [{"page": i + 1, "data": all_slides[i]}
+                 for i in range(start, min(start + 4, len(all_slides)))]
+        prompt = prompts_manager.get_slide_design_guide_prompt(
+            slide_data=pages[0]["data"],
+            confirmed_requirements=confirmed_requirements or {},
+            slides_summary=self._build_creative_slides_summary(all_slides),
+            page_number=start + 1, total_pages=total_pages,
+            template_html=template_html, suite_design_context=suite_design_context,
+        )
+        prompt += (
+            '\n本次将上述单页设计任务扩展为以下多页。必须按各页实际内容分别完成 A-F 六项，'
+            '每页独立设计视觉焦点、空间关系、内容呈现与前后页差异，禁止按类型共用一份指导。'
+            '每页约300-500字，不生成HTML。仅返回JSON：'
+            '{"guides":[{"page":1,"guide":"A. ... B. ... C. ... D. ... E. ... F. ..."}]}。'
+            '\n待设计页面：' + json.dumps(pages, ensure_ascii=False, default=str)
+        )
+        fingerprint = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        key = f"{project_id}:{start}:{fingerprint}"
+        if not hasattr(self, "_batched_slide_guide_tasks"):
+            self._batched_slide_guide_tasks = {}
+        tasks = self._batched_slide_guide_tasks
+
+        async def generate():
+            response = await self._text_completion_for_role(
+                "creative", prompt=prompt, temperature=0.85, max_tokens=6000,
+            )
+            raw = self._strip_think_tags(response.content.strip())
+            payload = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            expected = {p["page"] for p in pages}
+            guides = {}
+            for entry in payload.get("guides", []):
+                if not isinstance(entry, dict):
+                    continue
+                page, guide = entry.get("page"), entry.get("guide")
+                if type(page) is int and page in expected and isinstance(guide, str) and guide.strip():
+                    guides[page] = guide.strip()
+            return guides
+
+        if key in tasks and tasks[key].cancelled():
+            del tasks[key]
+        if key not in tasks:
+            tasks[key] = asyncio.create_task(generate(), name=f"slide-guides:{project_id}:{start}")
+        return (await tasks[key]).get(page_number, "")
 
     async def _get_or_generate_slide_creative_guide(
         self,
@@ -822,6 +884,7 @@ class CreativeDesignService:
                     all_slides=all_slides,
                     template_html=template_html,
                     suite_design_context=suite_design_context,
+                    project_id=project_id,
                 )
                 return result or fallback
             except Exception as exc:
@@ -863,6 +926,7 @@ class CreativeDesignService:
                     all_slides=all_slides,
                     template_html=template_html,
                     suite_design_context=suite_design_context,
+                    project_id=project_id,
                 )
                 if not guide:
                     guide = fallback
@@ -888,6 +952,9 @@ class CreativeDesignService:
                     except Exception as exc:
                         logger.warning("保存单页创意指导缓存失败: %s", exc)
                 return guide
+            except asyncio.CancelledError:
+                events.pop(cache_key, None)
+                raise
             except Exception as exc:
                 logger.warning("生成第%s页单页创意指导失败: %s", page_number, exc)
                 if not hasattr(self, cache_attr):
@@ -994,9 +1061,8 @@ class CreativeDesignService:
         )
 
         parallel_context = str(slide_data.get('_parallel_reference_context') or '')
-        # Scope only page guidance to the reference; global style remains shared.
-        if parallel_context:
-            suite_design_context += '\n' + parallel_context
+        # Batch plans share suite context. Apply the saved reference to the
+        # current page below, after obtaining its independent design plan.
 
         generation_config = await self._get_user_generation_config()
         enable_per_slide_guidance = bool(
@@ -1424,6 +1490,7 @@ class CreativeDesignService:
             "_page_creative_brief_ready_events",
             "_slide_creative_guide_ready_events",
             "_slide_guide_prewarm_tasks",
+            "_batched_slide_guide_tasks",
         )
 
         def _get_project_scoped_keys(mapping: Any) -> List[Any]:
@@ -1487,6 +1554,9 @@ class CreativeDesignService:
         for attr in event_attrs:
             events = getattr(self, attr, None)
             if isinstance(events, dict):
+                for task in events.values():
+                    if isinstance(task, asyncio.Task) and not task.done():
+                        task.cancel()
                 events.clear()
 
         if hasattr(self, "cache_dirs") and self.cache_dirs:

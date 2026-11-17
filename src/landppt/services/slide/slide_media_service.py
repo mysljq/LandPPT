@@ -1071,12 +1071,12 @@ class SlideMediaService:
             "配色/字体：正文排版必须从套件整体色板中选色（见下方「套件整体设计语言」），不得另造新色；"
             "让整页与套件风格完全一致。",
             "**标准正文舞台 `.suite-stage`**：套件骨架里已含 `<div class=\"suite-stage\">...{{ page_content }}...</div>`，"
-            "其位置固定、`overflow:hidden` 兜住溢出，内宽 1160px。"
+            "其位置固定、`overflow:hidden` 兜住溢出，实际内宽与高度以骨架 CSS 为准。"
             "**所有正文内容必须写在 `.suite-stage` 容器内**——它已避开页头分割线、不压页脚；超出会被容器 overflow:hidden 兜住，"
-            "所以请通过优化布局密度让内容落进 1160×~530px 区域，而不是溢出到页头页脚。",
+            "排版前将所有正文模块、换行高度、内外边距与间隔计入该容器的实际高度预算，避免溢出到页头页脚。",
             "**`.suite-stage` 的 top 必须保持套件骨架给定的值（不得改小/上移）**——这是按套件实测的页头底边精确算出的"
             "安全间距，改小会让正文与页头分割线交叉。",
-            "**布局列宽基准为 `.suite-stage` 内宽 1160px**：flex/grid 多列时 `gap + 各列宽 ≤ 1160px`；"
+            "**布局列宽基准为 `.suite-stage` 的实际内宽**：flex/grid 多列时 `gap + 各列宽 ≤ 容器实际内宽`；"
             "用 `flex:1` 自适应或 `calc(100% - Npx)` 计算列宽，禁用 `45%+55%+gap` 这种必然超出容器右沿的组合；"
             "百分比列宽以容器内宽为基准，而非 1280px。",
         ]
@@ -1096,7 +1096,7 @@ class SlideMediaService:
             "```",
         ]
         if tokens:
-            lines.append(f"\n**设计令牌（内容页全局对齐）**\n{tokens}")
+            lines.append(f"\n**设计令牌（通用视觉规范；结构与尺寸以骨架 HTML/CSS 为准）**\n{tokens}")
         return "\n".join(lines)
 
     @staticmethod

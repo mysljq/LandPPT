@@ -60,11 +60,16 @@ def test_neutral_grays_do_not_count_as_accents():
     assert hard == [], hard
 
 
-def test_three_column_grid_is_warning_not_hard():
+def test_three_column_peer_grid_is_not_an_aesthetic_warning():
     html = "<style>.grid{grid-template-columns: repeat(3,1fr)}</style><div class='grid'><div class='card'></div><div class='card'></div><div class='card'></div></div>"
     hard, warns = _check(html)
     assert hard == []
-    assert any("三列" in w or "三" in w for w in warns), warns
+    assert warns == [], warns
+
+
+def test_tailwind_three_column_grid_does_not_trigger_asymmetric_advice():
+    html = '<div class="grid grid-cols-3"><p>A</p><p>B</p><p>C</p></div>'
+    assert _check(html) == ([], [])
 
 
 def test_empty_html_returns_empty():

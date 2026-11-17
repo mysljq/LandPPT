@@ -400,7 +400,7 @@ class TemplatePrompts:
         - 封面模板（{{cover_title}}/{{cover_subtitle}}/{{cover_extra}} 槽位）
         - 过渡页模板（{{transition_title}}/{{transition_subtitle}}/{{transition_extra}} 槽位）
         - 内容页规范页头页脚（{{page_title}}/{{current_page_number}}/{{total_page_count}} 槽位）
-        - design_tokens 一行设计令牌
+        - design_tokens 通用视觉令牌（不含结构坐标及项目内容）
         输出固定 JSON 结构，供机械解析。
 
         creativity：0-10 刻度，0=严格遵循母版设计语言，10=最具创意。
@@ -560,7 +560,7 @@ class TemplatePrompts:
    - 主题/标题标识 → `{{{{ brand_topic }}}}`
    - 标语/保密标识/补充英文 → `{{{{ brand_tagline }}}}`
    适用位置：封面页眉页脚、过渡页 footer、目录页眉、结尾页，以及 header_footer 的页头右侧/页脚左侧。**不要写死 `2024`/`DEPARTMENT`/`CHINA MERCHANTS BANK`/`ANNUAL REVIEW`/`CONFIDENTIAL` 这类示例品牌值**；保持通用设计框架即可。**不要生成整份文档的整体编号或编号类槽位（如 `No.01`、`{{{{brand_code}}}}`）；章节号请用 `{{{{chapter_number}}}}` 槽位表示，且只在过渡页和内容页 header_footer 出现，封面/目录/结尾页不要章节号槽位。**
-7. `design_tokens`：一行简短设计令牌文本（字体栈 / 主强调色 / 页头背景 / 页脚样式），供内容页生成器快速对齐。
+7. `design_tokens`：简短、可跨主题复用的视觉令牌文本，仅描述字体栈、功能色、字号/字重层级、行高、间距、边线、表面及通用构图语言。页头页尾、Logo、页码、背景装饰、画布和正文容器的坐标/尺寸属于 HTML 骨架，不在此字段重复定义。不要写入本项目标题、章节、具体内容示例、专有术语、套件 ID 或指定某页如何排版；与主题无关的其他内容也应能直接使用这些令牌。
 8. 各块 HTML 都必须遵守固定 1280×720、`overflow:hidden`、禁止滚动条、禁止 @media、禁止 transform scale。封面/过渡/目录/结尾页必须用 `<!DOCTYPE html>` 开头完整 HTML；`header_footer` 是片段。
 9. 不要使用纯黑 `#000000` / 纯白 `#ffffff`，避免 AI 套路紫蓝霓虹渐变，禁止 em-dash/en-dash。
 
@@ -574,7 +574,7 @@ class TemplatePrompts:
   "catalog": "<完整目录页HTML>",
   "ending": "<完整结尾页HTML>",
   "header_footer": "<规范页头页脚HTML片段>",
-  "design_tokens": "字体栈：...；强调色：...；页头背景：...；页码样式：..."
+  "design_tokens": "字体栈：...；功能色：...；字号/字重：...；行高：...；间距：...；边线/表面：...；通用构图：..."
 }}
 ```
 """.strip()

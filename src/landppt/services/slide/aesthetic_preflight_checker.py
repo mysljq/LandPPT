@@ -7,7 +7,7 @@
 设计原则：
 - 健壮：HTML 为空、无 style、解析异常 → 返回空列表，绝不抛错阻塞主流程。
 - 软硬分级：em-dash / 纯黑纯白 / 多 accent 视为 hard fail（触发重试）；
-  圆角不一致、三等分卡片视为 warning（记日志、不强制重试，避免误杀）。
+  圆角不一致视为 warning；列数不作为审美失败信号，并列项可以同权排列。
 - 尽力而为：单页 HTML 无法做严格宪法比对，仅统计页内"独特色是否唯一"。
 """
 
@@ -31,8 +31,6 @@ class AestheticPreFlightChecker:
     _HEX_RE = re.compile(r"#([0-9A-Fa-f]{6})\b")
     # border-radius 数值
     _RADIUS_RE = re.compile(r"border-radius\s*:\s*([0-9]+(?:\.\d+)?)(px|rem|%)", re.IGNORECASE)
-    # 三列网格 + card/item 等份排布
-    _GRID3_RE = re.compile(r"(grid-cols-3|grid-template-columns\s*:\s*repeat\(\s*3)", re.IGNORECASE)
     # 中性灰族阈值：饱和度低于该值视为灰族，不参与 accent 比对
     _NEUTRAL_SAT_THRESHOLD = 0.08
 
@@ -453,11 +451,9 @@ class AestheticPreFlightChecker:
                     f"圆角刻度繁杂（{sorted(distinct_radius)}），建议统一为 sharp/soft/pill 之一"
                 )
 
-            # 5. 三等分卡片（启发式，warning）
-            if cls._GRID3_RE.search(html):
-                warnings.append(
-                    "检测到三列等份网格，请确认不是'三张等宽卡片横排'的套路；对等内容可改 2+1 或非对称网格"
-                )
+            # Grid column count alone cannot establish semantic hierarchy.
+            # Equal columns are valid for peer items; do not suggest 2+1 or
+            # asymmetric emphasis without knowing the content relationship.
         except Exception:
             pass
 

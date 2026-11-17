@@ -324,7 +324,11 @@ class MasterLayoutExtractor:
     def _extract_design_tokens(
         header_html: str, footer_html: str, header_css: str, footer_css: str
     ) -> str:
-        """Build a one-line design-token summary (font stack / accent / header bg / footer style)."""
+        """Infer shared font/accent tokens without copying region-specific rules.
+
+        Header/footer geometry, backgrounds and page-number styling remain in
+        the extracted HTML/CSS, not in the reusable visual token summary.
+        """
         region = header_html + footer_html + header_css + footer_css
         tokens: List[str] = []
 
@@ -332,7 +336,7 @@ class MasterLayoutExtractor:
         if fonts:
             tokens.append(f"字体栈：{fonts[0].strip()}")
 
-        hexes = [h.lower() for h in _HEX_RE.findall(region)]
+        hexes = ['#' + h.lower().lstrip('#') for h in _HEX_RE.findall(region)]
         counter: Counter = Counter()
         for h in hexes:
             try:
@@ -345,16 +349,5 @@ class MasterLayoutExtractor:
         if counter:
             accent, _count = counter.most_common(1)[0]
             tokens.append(f"强调色：{accent}")
-
-        bg = _BACKGROUND_RE.findall(region)
-        if bg:
-            tokens.append(f"页头页脚背景：{bg[0].strip()}")
-
-        footer_fs = _FONT_SIZE_RE.findall(footer_html)
-        if footer_fs:
-            tokens.append(f"页码字号：{footer_fs[0].strip()}")
-        footer_color = _COLOR_RE.findall(footer_html)
-        if footer_color:
-            tokens.append(f"页码颜色：{footer_color[0]}")
 
         return "；".join(tokens) if tokens else ""

@@ -27,7 +27,7 @@ def test_self_check_context_has_ai_tells_blacklist():
     assert "AI 套路禁令" in text
     assert "em-dash" in text or "—" in text
     assert "000000" in text and "ffffff" in text
-    assert "三张" in text or "三等" in text or "三列" in text
+    assert "撤销无依据高亮" in text and "非并列是否被过度同质化" in text
     assert "accent" in text
     # 原有的模板换字自检仍保留
     assert "模板换字" in text or "模板中段骨架" in text

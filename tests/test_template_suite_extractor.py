@@ -2160,7 +2160,7 @@ def test_suite_prompt_header_footer_requires_body_reset():
 
 def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
     """A+B：正文/目录区盖页脚（zone_overlap）或局部容器溢出（overflows）必须触发
-    重生成，并把"盖住页脚/超出 px"写进重试 feedback。模拟项目 a4f19559 的
+    局部修复，并把"盖住页脚/超出 px"写进重试 feedback。模拟项目 a4f19559 的
     page 2（目录 items 盖页脚 66px）与 page 13（page-body 局部溢出 42px）。"""
     import asyncio
     from landppt.services.slide.slide_html_recovery_service import SlideHtmlRecoveryService
@@ -2173,7 +2173,8 @@ def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
         {"overflow_px": 0, "overflow_ratio": 0, "overflow_x_px": 0, "overflows": [],
          "zone_overlap": None},
     ]
-    ok_html = "<!DOCTYPE html><html><head></head><body><div>ok</div></body></html>"
+    initial_html = "<!DOCTYPE html><html><head></head><body><div class='items'>超高内容超高内容超高内容超高内容</div></body></html>"
+    ok_html = initial_html.replace("class='items'", "class='items repaired'")
 
     def make_host(counter):
         class Host:
@@ -2187,8 +2188,14 @@ def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
                 counter["n"] += 1
                 counter["contexts"].append(prompt)
                 if counter["n"] == 1:
-                    return type("R", (), {"content": "<!DOCTYPE html><html><head></head><body><div class='items'>超高内容超高内容超高内容超高内容</div></body></html>"})()
-                return type("R", (), {"content": ok_html})()
+                    return type("R", (), {"content": initial_html})()
+                import json
+                return type("R", (), {"content": json.dumps({"edits": [
+                    {"old": "class='items'", "new": "class='items repaired'"}
+                ]})})()
+
+            def _strip_think_tags(self, content):
+                return content
 
             def _clean_html_response(self, content):
                 return content
@@ -2226,7 +2233,7 @@ def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
         return await svc._generate_html_with_retry("基础上下文", "sys", {"title": "t"}, 2, 10, max_retries=3)
 
     result = asyncio.run(run())
-    assert calls["n"] == 2, f"盖页脚应触发一次重生成，实际调用 {calls['n']} 次"
+    assert calls["n"] == 2, f"盖页脚应触发一次局部修复，实际调用 {calls['n']} 次"
     assert result == ok_html
     assert "盖住页脚" in calls["contexts"][1], "重试 feedback 应告知盖住页脚"
     assert "66px" in calls["contexts"][1], "重试 feedback 应写明超出像素数"
@@ -2246,7 +2253,7 @@ def test_generate_html_with_retry_triggers_on_zone_overlap_and_local_overflow():
         return await svc2._generate_html_with_retry("基础上下文", "sys", {"title": "t"}, 13, 18, max_retries=3)
 
     result2 = asyncio.run(run2())
-    assert calls2["n"] == 2, f"局部溢出应触发一次重生成，实际 {calls2['n']} 次"
+    assert calls2["n"] == 2, f"局部溢出应触发一次局部修复，实际 {calls2['n']} 次"
     assert result2 == ok_html
     assert "42px" in calls2["contexts"][1], "局部溢出 feedback 应写明超出像素数"
 
@@ -2415,17 +2422,19 @@ def test_suite_prompt_requires_standard_stage():
 
 
 def test_content_suite_constraint_mentions_standard_stage_and_column_basis():
-    """A2 B4 + A3：内容页约束 prompt 应说明 .suite-stage 容器与列宽基准 1160px。"""
+    """Column budgets follow actual template dimensions, not a default width."""
     from landppt.services.slide.slide_media_service import SlideMediaService
 
     suite = {
         "header_footer": '<div class="suite-stage">{{ page_content }}</div>'
-                         "<style>.suite-stage{position:absolute;top:155px;left:60px;right:60px;bottom:60px;overflow:hidden}</style>",
+                         "<style>.suite-stage{position:absolute;top:194px;left:80px;right:80px;bottom:80px;overflow:hidden}</style>",
         "design_tokens": "t",
     }
     c = SlideMediaService._build_content_suite_constraint(suite)
     assert "suite-stage" in c
-    assert "1160px" in c, "应说明列宽基准为内宽 1160px"
+    assert "实际内宽" in c
+    assert "1160" not in c and "530" not in c
+    assert suite['header_footer'] in c
     assert "45%+55%+gap" in c, "应明示 prohibited 列宽组合"
 
 

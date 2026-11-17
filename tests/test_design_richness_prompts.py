@@ -116,13 +116,13 @@ def test_content_quality_context_includes_qualitative_rules():
     context = DesignPrompts._build_content_quality_context()
 
     assert "信息密度与主题复杂度相称" in context
-    assert "先补足事实、层次和结论" in context
+    assert "先补足事实和层次" in context
     assert "留白服务于分组" in context
-    assert "避免把信息平均切成四宫格这类均质化结构" in context
-    assert "即使内容天然四等分，也应通过主次、轻重、大小、节奏或焦点转移建立层次差异" in context
+    assert "真正并列的同组条目同级同权" in context
+    assert "不以大字和装饰制造主次" in context
 
 
-def test_slide_design_guide_prompt_avoids_homogeneous_four_grid_layout(monkeypatch):
+def test_slide_design_guide_prompt_preserves_equal_peer_weight(monkeypatch):
     monkeypatch.setattr(prompts_module, "_is_image_service_enabled", lambda: False)
 
     prompt = DesignPrompts.get_slide_design_guide_prompt(
@@ -134,6 +134,6 @@ def test_slide_design_guide_prompt_avoids_homogeneous_four_grid_layout(monkeypat
         template_html="<div class='page'><main></main></div>",
     )
 
-    assert "避免推荐四宫格等均质化布局" in prompt
-    assert "即使当前页内容天然四等分且主次关系一致，也必须主动建立视觉层次" in prompt
-    assert "不能做成均质排布" in prompt
+    assert "真正并列的同组条目同级同权" in prompt
+    assert "说明语义关系及强调依据" in prompt
+    assert "既不臆造主次，也不削弱真实层级" in prompt
