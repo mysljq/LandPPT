@@ -873,6 +873,66 @@ class TemplateSuiteService:
             "content": content,
         }
 
+    def build_pptx_layout_html(self, suite: Dict[str, Any]) -> Dict[str, str]:
+        """Preserve literal suite text and annotate only original text slots.
+
+        Do not derive slots from sample preview text: that loses the distinction
+        between fixed labels and editable content, including mixed text nodes.
+        """
+        import re
+        from bs4 import BeautifulSoup, NavigableString, Comment
+
+        pattern = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+        prompts = {"chapter_number": "1", "page_content": "正文", "catalog_items": "目录内容",
+                   "ending_items": "内容", "current_page_number": "1", "total_page_count": "1"}
+        output = {}
+        for page_type, key in (("cover", "cover"), ("catalog", "catalog"),
+                               ("transition", "transition"), ("content", "header_footer"), ("ending", "ending")):
+            html = str(suite.get(key) or "")
+            soup = BeautifulSoup(html, "html.parser")
+            for text in list(soup.find_all(string=True)):
+                if isinstance(text, Comment) or text.find_parent("head") or text.parent.name in ("style", "script") or not pattern.search(str(text)):
+                    continue
+                pieces = pattern.split(str(text))
+                def prompt(name):
+                    if name in prompts:
+                        return prompts[name]
+                    brand_sample = self._brand_preview_sample(name)
+                    if brand_sample is not None:
+                        return brand_sample
+                    if "subtitle" in name:
+                        return "副标题"
+                    if "title" in name:
+                        return "标题"
+                    return {"chapter_indicator": "章节", "cover_extra": "补充信息", "ending_extra": "补充信息"}.get(name, "文本")
+                match = pattern.fullmatch(str(text).strip())
+                if match and len(text.parent.contents) == 1:
+                    text.parent["data-pptx-slot"] = match.group(1)
+                    text.replace_with(NavigableString(prompt(match.group(1))))
+                    continue
+                replacements = []
+                svg = text.find_parent("svg") is not None
+                for index, piece in enumerate(pieces):
+                    if not piece:
+                        continue
+                    if index % 2 == 0 and not piece.strip():
+                        replacements.append(NavigableString(piece))
+                        continue
+                    span = soup.new_tag("tspan" if svg else "span")
+                    if index % 2:
+                        span["data-pptx-slot"] = piece
+                        span.string = prompt(piece)
+                    else:
+                        span.string = piece
+                    replacements.append(span)
+                text.replace_with(*replacements)
+            # Fragment suites still require the same standalone content wrapper.
+            marked = str(soup)
+            if page_type == "content" and "<html" not in marked.lower():
+                marked = self._wrap_content_preview(marked)
+            output[page_type] = marked
+        return output
+
     def _wrap_content_preview(self, header_footer_fragment: str) -> str:
         """Wrap the header/footer fragment into a standalone 1280x720 document.
 

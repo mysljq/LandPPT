@@ -1,3 +1,13 @@
+        function resolvePptxPageType(slide, originalIndex) {
+            const outline = typeof projectOutline !== 'undefined' && projectOutline && projectOutline.slides
+                ? projectOutline.slides[originalIndex] || {} : {};
+            if (originalIndex === 0) return 'cover';
+            if (originalIndex === slidesData.length - 1) return 'ending';
+            const type = String(outline.slide_type || outline.type || slide.slide_type || slide.content_type || slide.type || 'content').toLowerCase();
+            if (['agenda', 'outline', 'directory', 'catalog'].includes(type) || /目录|大纲/.test(slide.title || '')) return 'catalog';
+            return ({ title: 'cover', thankyou: 'ending', conclusion: 'ending' })[type] || type;
+        }
+
         async function exportSlidesToPptxClient(options = {}) {
             if (isClientExporting) return;
             if (!slidesData || slidesData.length === 0) {
@@ -145,6 +155,32 @@
 
                 updateExportUI(null, null, null, '准备渲染导出内容（低内存DOM模式）...', 8, '准备中...');
 
+                // Master layouts come only from the selected suite, never from
+                // generated presentation pages or per-page layout variants.
+                const suiteResponse = await fetch(`/api/projects/${window.landpptEditorConfig.projectId}/template-suite/preview?for_pptx=true`, { signal: exportSignal });
+                let suitePreview = null;
+                if (suiteResponse.ok) {
+                    const suitePayload = await suiteResponse.json();
+                    if (suitePayload.export_slots !== true)
+                        throw new Error('套件导出接口尚未更新，请重启后端服务后重试');
+                    suitePreview = suitePayload.preview;
+                }
+                else if (suiteResponse.status !== 404) throw new Error('读取套件母版失败，请重试导出');
+                const suiteTemplates = suitePreview ? (async function* () {
+                    for (const type of ['cover', 'catalog', 'transition', 'content', 'ending']) {
+                        if (!suitePreview[type]) throw new Error('套件缺少 ' + type + ' 页面');
+                        throwIfClientExportCancelled(exportSignal);
+                        const ready = await ensureIframeHasLatestContent(renderIframe, suitePreview[type], { forceRefresh: true });
+                        if (!ready) throw new Error('套件母版加载失败：' + type);
+                        const doc = renderIframe.contentDocument;
+                        if (!doc || !doc.body) throw new Error('套件母版渲染失败：' + type);
+                        await waitForDocumentFontsReady(doc, 1800);
+                        await waitForDocumentImagesReady(doc, 3200);
+                        settleCssAnimationsToFinalState(doc);
+                        yield { type, root: doc.body };
+                    }
+                })() : null;
+
                 const slideElementStream = (async function* () {
                     for (let i = 0; i < totalSlides; i++) {
                         throwIfClientExportCancelled(exportSignal);
@@ -199,6 +235,7 @@
                                 await waitForAnimationFrames(sourceDoc.defaultView || window, 1);
                                 throwIfClientExportCancelled(exportSignal);
                                 tagFormulaNodesForExport(sourceDoc.body || sourceDoc);
+                                sourceDoc.body.setAttribute('data-pptx-page-type', resolvePptxPageType(slide, item.originalIndex));
                                 yield sourceDoc.body;
                                 continue;
                             }
@@ -219,6 +256,7 @@
 
                             // Convert oklch/oklab/lch/lab/color() to hex for dom-to-pptx compatibility
                             convertModernColors(container);
+                            container.setAttribute('data-pptx-page-type', resolvePptxPageType(slide, item.originalIndex));
                             yield container;
                         } finally {
                             if (tempIframe && tempIframe.parentNode) {
@@ -249,6 +287,8 @@
                 throwIfClientExportCancelled(exportSignal);
                 await exporter.exportToPptx(slideElementStream, {
                     fileName: fileName,
+                    useSlideLayouts: !!suiteTemplates,
+                    suiteTemplates,
                     autoEmbedFonts: true,
                     svgAsVector: false,
                     slideNotes: slideNotes,

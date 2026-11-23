@@ -1,0 +1,4 @@
+interface:
+  display_name: "clawpartner 套件制作"
+  short_description: "从 HTML 或 PPT 提取视觉风格、补齐五类模板页，图片作为本地文件随套件打包"
+  default_prompt: "使用 $clawpartner-suite-maker 将输入的 HTML 或 PPT 制作为 clawpartner 五页型套件，补齐缺失页型，图片保存为本地文件并使用相对路径。"

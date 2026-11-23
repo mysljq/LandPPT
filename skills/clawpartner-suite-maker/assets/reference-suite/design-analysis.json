@@ -1,0 +1,50 @@
+{
+  "palette": [
+    "#FFFFFF",
+    "#222222"
+  ],
+  "typography": {
+    "family": "Arial, Microsoft YaHei, sans-serif",
+    "body_px": 22
+  },
+  "layout": {
+    "canvas": [
+      1280,
+      720
+    ],
+    "stage": [
+      64,
+      180,
+      1152,
+      460
+    ]
+  },
+  "purpose": "neutral contract example; do not reuse its style for actual input",
+  "pages": {
+    "cover": {
+      "source_pages": [],
+      "method": "synthesized",
+      "reason": "Independent neutral contract example, with no source brand or business data"
+    },
+    "catalog": {
+      "source_pages": [],
+      "method": "synthesized",
+      "reason": "Independent neutral contract example, with no source brand or business data"
+    },
+    "transition": {
+      "source_pages": [],
+      "method": "synthesized",
+      "reason": "Independent neutral contract example, with no source brand or business data"
+    },
+    "content": {
+      "source_pages": [],
+      "method": "synthesized",
+      "reason": "Independent neutral contract example, with no source brand or business data"
+    },
+    "ending": {
+      "source_pages": [],
+      "method": "synthesized",
+      "reason": "Independent neutral contract example, with no source brand or business data"
+    }
+  }
+}

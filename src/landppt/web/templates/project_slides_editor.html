@@ -5410,7 +5410,7 @@
         type="application/json">{{ {'status': project.status, 'outline': project.outline}|tojson|safe }}</script>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/dom-to-pptx.bundle.js?v=20261110-scene-layer-svg-v225"></script>
+    <script src="/static/js/dom-to-pptx.bundle.js?v=20261117-suite-slot-wrapping-v232"></script>
     <script>
         let currentSlideIndex = 0;
         let currentMode = 'preview';
@@ -18041,7 +18041,7 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20261110-scene-layer-svg-v225';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20261117-suite-slot-wrapping-v232';
         const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
         let domToPptxReloadPromise = null;
 
@@ -18096,6 +18096,16 @@
                 return window.domToPptx;
             }
             return loadDomToPptxBundle(true);
+        }
+
+        function resolvePptxPageType(slide, originalIndex) {
+            const outline = typeof projectOutline !== 'undefined' && projectOutline && projectOutline.slides
+                ? projectOutline.slides[originalIndex] || {} : {};
+            if (originalIndex === 0) return 'cover';
+            if (originalIndex === slidesData.length - 1) return 'ending';
+            const type = String(outline.slide_type || outline.type || slide.slide_type || slide.content_type || slide.type || 'content').toLowerCase();
+            if (['agenda', 'outline', 'directory', 'catalog'].includes(type) || /目录|大纲/.test(slide.title || '')) return 'catalog';
+            return ({ title: 'cover', thankyou: 'ending', conclusion: 'ending' })[type] || type;
         }
 
         async function exportSlidesToPptxClient() {
@@ -18221,6 +18231,31 @@
                     useDirectDomSource ? '准备中...' : '重复导出时使用稳定模式'
                 );
 
+                // Master layouts come only from the selected suite, never from
+                // generated presentation pages or per-page layout variants.
+                const suiteResponse = await fetch(`/api/projects/${encodeURIComponent({{ project.project_id | tojson }})}/template-suite/preview?for_pptx=true`);
+                let suitePreview = null;
+                if (suiteResponse.ok) {
+                    const suitePayload = await suiteResponse.json();
+                    if (suitePayload.export_slots !== true)
+                        throw new Error('套件导出接口尚未更新，请重启后端服务后重试');
+                    suitePreview = suitePayload.preview;
+                }
+                else if (suiteResponse.status !== 404) throw new Error('读取套件母版失败，请重试导出');
+                const suiteTemplates = suitePreview ? (async function* () {
+                    for (const type of ['cover', 'catalog', 'transition', 'content', 'ending']) {
+                        if (!suitePreview[type]) throw new Error('套件缺少 ' + type + ' 页面');
+                        const ready = await ensureIframeHasLatestContent(renderIframe, suitePreview[type], { forceRefresh: true });
+                        if (!ready) throw new Error('套件母版加载失败：' + type);
+                        const doc = renderIframe.contentDocument;
+                        if (!doc || !doc.body) throw new Error('套件母版渲染失败：' + type);
+                        await waitForDocumentFontsReady(doc, 1800);
+                        await waitForDocumentImagesReady(doc, 3200);
+                        settleCssAnimationsToFinalState(doc);
+                        yield { type, root: doc.body };
+                    }
+                })() : null;
+
                 const slideElementStream = (async function* () {
                     for (let i = 0; i < totalSlides; i++) {
                         const item = sortedSlides[i];
@@ -18263,6 +18298,7 @@
                                 await waitForCanvasPaintReady(sourceDoc, 2600);
                                 settleCssAnimationsToFinalState(sourceDoc);
                                 await waitForAnimationFrames(sourceDoc.defaultView || window, 1);
+                                sourceDoc.body.setAttribute('data-pptx-page-type', resolvePptxPageType(slide, slidesData.indexOf(slide)));
                                 yield sourceDoc.body;
                                 continue;
                             }
@@ -18282,6 +18318,7 @@
 
                             // Convert oklch/oklab/lch/lab/color() to hex for dom-to-pptx compatibility
                             convertModernColors(container);
+                            container.setAttribute('data-pptx-page-type', resolvePptxPageType(slide, slidesData.indexOf(slide)));
                             yield container;
                         } finally {
                             if (tempIframe && tempIframe.parentNode) {
@@ -18300,6 +18337,8 @@
                 const fileName = (projectTitle || 'presentation') + '.pptx';
 
                 await exporter.exportToPptx(slideElementStream, {
+                    useSlideLayouts: !!suiteTemplates,
+                    suiteTemplates,
                     fileName: fileName,
                     svgAsVector: false,
                     slideNotes: slideNotes,

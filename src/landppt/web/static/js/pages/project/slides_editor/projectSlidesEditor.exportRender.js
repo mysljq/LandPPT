@@ -418,7 +418,7 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20261110-scene-layer-svg-v225';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20261117-suite-slot-wrapping-v232';
         const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
         let domToPptxReloadPromise = null;
 

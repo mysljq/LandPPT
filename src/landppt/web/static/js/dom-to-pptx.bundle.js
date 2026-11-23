@@ -12418,7 +12418,8 @@
           // A: Start SHAPE =======================================================
           strSlideXml += '<p:sp>';
           // B: The addition of the "txBox" attribute is the sole determiner of if an object is a shape or textbox
-          strSlideXml += "<p:nvSpPr><p:cNvPr id=\"".concat(idx + 2, "\" name=\"").concat(slideItemObj.options.objectName, "\">");
+          strSlideXml += "<p:nvSpPr><p:cNvPr id=\"".concat(idx + 2, "\" name=\"").concat(slideItemObj.options.objectName,
+            slideItemObj.options.__hideSuitePrompt ? "\" hidden=\"1\">" : "\">");
           // <Hyperlink>
           if ((_c = slideItemObj.options.hyperlink) === null || _c === void 0 ? void 0 : _c.url) {
             strSlideXml += "<a:hlinkClick r:id=\"rId".concat(slideItemObj.options.hyperlink._rId, "\" tooltip=\"").concat(slideItemObj.options.hyperlink.tooltip ? encodeXmlEntities(slideItemObj.options.hyperlink.tooltip) : '', "\"/>");
@@ -13075,7 +13076,7 @@
    */
   function genXmlBodyProperties(slideObject) {
     var bodyProperties = '<a:bodyPr';
-    if (slideObject && slideObject._type === SLIDE_OBJECT_TYPES.text && slideObject.options._bodyProp) {
+    if (slideObject && (slideObject._type === SLIDE_OBJECT_TYPES.text || slideObject._type === SLIDE_OBJECT_TYPES.placeholder) && slideObject.options._bodyProp) {
       // PPT-2019 EX: <a:bodyPr wrap="square" lIns="1270" tIns="1270" rIns="1270" bIns="1270" rtlCol="0" anchor="ctr"/>
       // A: Enable or disable textwrapping none or square
       // Always retain DrawingML's normal wrapping mode for editable text.
@@ -13497,6 +13498,7 @@
     return ("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>".concat(CRLF) +
       '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
       'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' +
+      (slide.__hideSuiteGraphics ? ' showMasterSp="0"' : '') +
       "".concat((slide === null || slide === void 0 ? void 0 : slide.hidden) ? ' show="0"' : '', ">") +
       "".concat(slideObjectToXml(slide)) +
       '<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>');
@@ -65212,6 +65214,10 @@
    * Updated to correctly reject Icon elements so they are rendered as images.
    */
   function isTextContainer(node) {
+    // Slot boundaries are semantic only in suite export documents. Do not
+    // collapse fixed prefixes/suffixes together with editable slot text.
+    if (node.closest?.('[data-pptx-suite-template]') && node.querySelector?.('[data-pptx-slot]')) return false;
+
     if (isFormulaElement(node)) return false;
     if (String(node.namespaceURI || '').includes('svg')) return false;
     const hasText = node.textContent.trim().length > 0;
@@ -68027,6 +68033,7 @@
           : null;
         items.push({
           type: 'text',
+          suiteSlot: parent.closest?.('[data-pptx-slot]')?.getAttribute('data-pptx-slot'),
           zIndex: nextRenderableZIndex(zIndex, 2),
           domOrder: domOrder + (++lineOrder) / 10000,
           textParts: [{ text: line.text, options: { ...textStyle } }],
@@ -69975,6 +69982,66 @@
         console.warn('Failed to add speaker notes:', e);
       }
     };
+    if (options.useSlideLayouts === true && options.suiteTemplates) {
+      pptx.__suiteLayouts = new Map();
+      pptx.slideLayouts.splice(0); // no unused default layout in suite exports
+      for await (const template of options.suiteTemplates) {
+        throwIfExportAborted(options);
+        if (!['cover', 'catalog', 'transition', 'content', 'ending'].includes(template.type) ||
+            pptx.__suiteLayouts.has(template.type)) continue;
+        const temporary = pptx.addSlide();
+        let paintKeys = [];
+        const priorMarker = template.root.getAttribute('data-pptx-suite-template');
+        template.root.setAttribute('data-pptx-suite-template', '');
+        try {
+          await processSlide(template.root, temporary, pptx, { ...options, useSlideLayouts: false, suiteSlotSizing: true,
+            onRenderQueue: queue => { paintKeys = queue.filter(item => ['shape', 'image'].includes(item.type) || (item.type === 'text' && !item.options.__suiteSlot)).map(suitePaintKey); } });
+          const label = { cover: '封面', catalog: '目录页', transition: '章节过渡页', content: '内容页', ending: '结束页' }[template.type];
+          pptx.defineSlideMaster({ title: `LandPPT 套件·${label}`, objects: [], background: temporary.background });
+          const layout = pptx.slideLayouts[pptx.slideLayouts.length - 1];
+          layout._slideObjects = temporary._slideObjects;
+          layout._rels = temporary._rels;
+          layout._relsMedia = temporary._relsMedia;
+          layout._relsChart = temporary._relsChart;
+          layout._relsMedia.forEach(rel => {
+            rel.Target = rel.Target.replace(/([^/]+)$/, `suite-${template.type}-$1`);
+          });
+          const slots = [];
+          layout._slideObjects.filter(object => object._type === 'text' && object.options.__suiteSlot).forEach((object, index) => {
+            const name = `suite-${template.type}-slot-${index}`;
+            const sourceRun = object.text.find(part => String(part.text || '').trim()) || object.text[0];
+            // Run-level styling alone styles only the sample prompt. Promote it
+            // to defRPr so text typed into a new slide inherits the same style.
+            for (const key of ['fontFace', 'fontSize', 'color', 'bold', 'italic', 'underline',
+              'strike', 'charSpacing', 'transparency', 'lang', 'outline', 'textGradient',
+              'lineSpacingMultiple', 'lineSpacing', 'paraSpaceBefore', 'paraSpaceAfter']) {
+              if (sourceRun?.options?.[key] !== undefined)
+                object.options[key] = JSON.parse(JSON.stringify(sourceRun.options[key]));
+            }
+            if (object.options.__suiteSlotTextArea) Object.assign(object.options, object.options.__suiteSlotTextArea);
+            if (object.options.margin === undefined) object.options.margin = 0;
+            object.options.autoFit = false;
+            object.options.shrinkText = false;
+            if (object.options._bodyProp) object.options._bodyProp.autoFit = false;
+            object._type = 'placeholder';
+            object.options.placeholder = name;
+            object.options._placeholderType = /(?:^|_)title$/.test(object.options.__suiteSlot) ? 'title' : 'body';
+            object.options._placeholderIdx = 100 + index;
+            slots.push({ name, x: object.options.x, y: object.options.y, w: object.options.w, h: object.options.h });
+          });
+          pptx.__suiteLayouts.set(template.type, { layout, slots, paintKeys });
+        } finally {
+          if (priorMarker === null) template.root.removeAttribute('data-pptx-suite-template');
+          else template.root.setAttribute('data-pptx-suite-template', priorMarker);
+          pptx.slides.pop();
+        }
+      }
+    }
+
+    if (pptx.__suiteLayouts && pptx.__suiteLayouts.size !== 5) {
+      throw new Error('套件母版必须包含封面、目录、过渡、内容、结束五种页面');
+    }
+
     const processOne = async (el) => {
       throwIfExportAborted(options);
       const root = typeof el === 'string' ? document.querySelector(el) : el;
@@ -70280,8 +70347,85 @@
       consumed: new Set([...prior,...backdropDecorations]), pseudoOwner: owner, rect: owner.getBoundingClientRect() } : null;
   }
 
+  function getSuiteSlotTextArea(owner, item, config) {
+    const style = getNodeWindow(owner).getComputedStyle(owner);
+    const slot = owner.getAttribute('data-pptx-slot') || '';
+    const contentSlot = /(?:title|subtitle|extra|items|page_content)$/.test(slot);
+    const noWrap = !contentSlot || /nowrap|^pre$/.test(style.whiteSpace);
+    const result = { noWrap, fit: 'shrink' };
+    if (!contentSlot) return result;
+    if (Math.abs(getCumulativeTextRotation(owner, config.root)) > 0.01 ||
+        !String(style.writingMode || 'horizontal-tb').startsWith('horizontal'))
+      return { noWrap: item.options.noWrap ?? noWrap, fit: 'shrink' };
+    const rect = owner.getBoundingClientRect();
+    const factor = PX_TO_INCH * config.scale;
+    let left = rect.left, right = rect.right;
+    let authoredWidth = 'auto';
+    try { authoredWidth = owner.computedStyleMap().get('width').toString(); } catch (_) {}
+    const expandable = /^(auto|fit-content|max-content|min-content)$/.test(authoredWidth) &&
+      parseColor(style.backgroundColor).opacity === 0 &&
+      !['Top','Right','Bottom','Left'].some(edge => parseFloat(style[`border${edge}Width`]) > 0);
+    if (expandable && owner.parentElement) {
+      const parent = owner.parentElement;
+      const ps = getNodeWindow(parent).getComputedStyle(parent);
+      const pr = parent.getBoundingClientRect();
+      const psx = pr.width / (parent.offsetWidth || pr.width || 1);
+      left = pr.left + ((parseFloat(ps.paddingLeft)||0)+(parseFloat(ps.borderLeftWidth)||0))*psx;
+      right = pr.right - ((parseFloat(ps.paddingRight)||0)+(parseFloat(ps.borderRightWidth)||0))*psx;
+      // Inline prefixes/suffixes and flex neighbours reserve their own space.
+      for (const sibling of parent.children) {
+        if (sibling === owner) continue;
+        const ss = getNodeWindow(sibling).getComputedStyle(sibling);
+        if (['absolute','fixed'].includes(ss.position) || ss.display === 'none') continue;
+        if (!String(sibling.textContent || '').trim() && !sibling.children.length &&
+            parseColor(ss.backgroundColor).opacity === 0 && ss.backgroundImage === 'none' &&
+            !['Top','Right','Bottom','Left'].some(edge => parseFloat(ss[`border${edge}Width`]) > 0)) continue;
+        const sr = sibling.getBoundingClientRect();
+        if (sr.bottom <= rect.top + 1 || sr.top >= rect.bottom - 1) continue;
+        if (sr.right <= rect.left + 1) left = Math.max(left, sr.right + (parseFloat(ss.marginRight)||0)*psx);
+        if (sr.left >= rect.right - 1) right = Math.min(right, sr.left - (parseFloat(ss.marginLeft)||0)*psx);
+      }
+      // Honour outer content padding even for an absolutely centred wrapper.
+      for (let ancestor = parent.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const ar = ancestor.getBoundingClientRect(), as = getNodeWindow(ancestor).getComputedStyle(ancestor);
+        const ax = ar.width / (ancestor.offsetWidth || ar.width || 1);
+        left = Math.max(left, ar.left + ((parseFloat(as.paddingLeft)||0)+(parseFloat(as.borderLeftWidth)||0))*ax);
+        right = Math.min(right, ar.right - ((parseFloat(as.paddingRight)||0)+(parseFloat(as.borderRightWidth)||0))*ax);
+        if (ancestor === config.root) break;
+      }
+    }
+    const align = item.options.align || style.textAlign;
+    if (align === 'center') {
+      const center = (rect.left + rect.right) / 2;
+      const half = Math.min(center-left, right-center);
+      left = center-half; right = center+half;
+    } else if (align === 'right' || align === 'end') right = Math.min(right, rect.right);
+    else left = Math.max(left, rect.left);
+    const width = (right-left)*factor;
+    if (width > item.options.w + 0.001) {
+      result.x = config.offX + (left-config.rootX)*factor;
+      result.w = width;
+    }
+    return result;
+  }
+
+  function suitePaintKey(item) {
+    const options = JSON.parse(JSON.stringify(item.options));
+    delete options.objectName;
+    delete options.placeholder;
+    return JSON.stringify([item.type, item.shapeType, options, item.type === 'text' ? item.textParts : null]);
+  }
+
   async function processSlide(root, slide, pptx, globalOptions = {}) {
     throwIfExportAborted(globalOptions);
+    // A reusable iframe may keep its Document while replacing styles/font
+    // faces. Per-document caches from a suite preview must not leak into pages.
+    const fontDocument = root.ownerDocument;
+    [EXPORT_FONT_AVAILABILITY_CACHE, EXPORT_LATIN_FONT_AVAILABILITY_CACHE,
+      EXPORT_FONT_MEASURE_CACHE, EXPORT_FONT_FACE_FAMILY_CACHE,
+      CJK_BROWSER_FONT_CACHE, WEIGHTED_EXPORT_FONT_CACHE,
+      PPT_SINGLE_LINE_METRICS_CACHE, DISPLAY_INK_METRICS_CACHE]
+      .forEach(cache => cache.delete(fontDocument));
     const restoreAnimations = settleFiniteAnimationsForExport(root);
     try {
     const rootRect = root.getBoundingClientRect();
@@ -70316,6 +70460,7 @@
     let backdropItem;
     if (backdropStack) {
       backdropItem = { type: 'image', zIndex: 0, domOrder: 0.5,
+        layoutBackdrop: true,
         options: { data: backdropStack.data,
           x: layoutConfig.offX+(backdropStack.rect.left-rootRect.left)*PX_TO_INCH*scale,
           y: layoutConfig.offY+(backdropStack.rect.top-rootRect.top)*PX_TO_INCH*scale,
@@ -70403,7 +70548,22 @@
           currentGroups = [...currentGroups, generatedGroup];
         }
         if (result.items) {
-          result.items.forEach((item) => { item.semanticGroups = currentGroups; });
+          result.items.forEach((item) => {
+            item.semanticGroups = currentGroups;
+            const slotOwner = (node.nodeType === 1 ? node : node.parentElement)?.closest?.('[data-pptx-slot]');
+            if (item.type === 'text' && (item.suiteSlot || slotOwner)) {
+              item.options.__suiteSlot = item.suiteSlot || slotOwner.getAttribute('data-pptx-slot');
+              if (slotOwner && globalOptions.suiteSlotSizing)
+                item.options.__suiteSlotTextArea = getSuiteSlotTextArea(slotOwner, item, { ...layoutConfig, root });
+            }
+            // Only text-free paint may become inherited decoration. Explicit
+            // opt-out also covers user artwork that must remain page editable.
+            item.layoutBackdrop = node.nodeType === 1 &&
+              (!String(node.textContent || '').trim() || (node === root && item.type === 'shape')) &&
+              !node.closest('[data-pptx-page-content]') &&
+              !node.querySelector('img,video,canvas,input,textarea') &&
+              (node === root || !/^(IMG|VIDEO|CANVAS|INPUT|TEXTAREA)$/.test(node.tagName));
+          });
           // Push items immediately to queue (data might be missing but filled later)
           renderQueue.push(...result.items);
         }
@@ -70443,15 +70603,11 @@
 
     finalQueue = dedupeOverlappingTextItems(finalQueue);
 
-    // 4. Add to Slide
-    let objectIndex = 0;
+    // Build a complete typed layout: native artwork plus editable text slots.
+    // Overlapping foreground artwork stays on the page to retain paint order.
+    // Keep using the normal renderer: custom geometry, alpha and media relations
+    // therefore retain exactly the same serialization as page-level elements.
     for (const item of finalQueue) {
-      throwIfExportAborted(globalOptions);
-      if (item.semanticGroups && item.semanticGroups.length) {
-        const name = `${item.options.objectName || item.type} [lp:${objectIndex++}]`;
-        item.options.objectName = name;
-        item.semanticGroups.forEach((group) => group.names.push(name));
-      }
       if (item.type === 'text') {
         // Final safeguard for large outlined numerals whose browser glyph
         // overflows a shorter line-height box. This is applied immediately
@@ -70466,6 +70622,53 @@
         if (hasLargeOutlinedNumeral && item.options.nativeTextWarp !== 'textPlain' && Number.isFinite(Number(item.options.y))) {
           item.options.y += 0.33;
         }
+      }
+    }
+    if (typeof globalOptions.onRenderQueue === 'function') globalOptions.onRenderQueue(finalQueue);
+    if (globalOptions.useSlideLayouts === true && pptx.__suiteLayouts) {
+      const type = root.getAttribute('data-pptx-page-type') || 'content';
+      const entry = pptx.__suiteLayouts.get(type) || pptx.__suiteLayouts.get('content');
+      if (entry) {
+        slide._slideLayout = entry.layout;
+        const candidates = new Map();
+        finalQueue.forEach(item => {
+          if (!['shape', 'image', 'text'].includes(item.type)) return;
+          const key = suitePaintKey(item);
+          if (!candidates.has(key)) candidates.set(key, []);
+          candidates.get(key).push(item);
+        });
+        const inherited = new Set();
+        let compatible = true;
+        for (const key of entry.paintKeys) {
+          const item = candidates.get(key)?.pop();
+          if (!item) { compatible = false; break; }
+          inherited.add(item);
+        }
+        // Exact suite artwork can be inherited and removed from the page.
+        // Freely edited/generated pages keep their own scene rather than
+        // showing duplicate or unmatched template artwork behind it.
+        slide.__hideSuiteGraphics = !compatible;
+        if (compatible) {
+          finalQueue = finalQueue.filter(item => !inherited.has(item));
+          slide._background = undefined;
+        }
+        for (const slot of entry.slots) {
+          slide.addText('', { x: slot.x, y: slot.y, w: slot.w, h: slot.h,
+            fill: { type: 'none' }, line: { type: 'none' }, margin: 0,
+            __hideSuitePrompt: true, objectName: 'Hidden suite prompt override' });
+          slide._slideObjects[slide._slideObjects.length - 1].options.placeholder = slot.name;
+        }
+      }
+    }
+
+    // 4. Add to Slide
+    let objectIndex = 0;
+    for (const item of finalQueue) {
+      throwIfExportAborted(globalOptions);
+      if (item.semanticGroups && item.semanticGroups.length) {
+        const name = `${item.options.objectName || item.type} [lp:${objectIndex++}]`;
+        item.options.objectName = name;
+        item.semanticGroups.forEach((group) => group.names.push(name));
       }
       if (item.type === 'shape') slide.addShape(item.shapeType, item.options);
       if (item.type === 'image') slide.addImage(item.options);

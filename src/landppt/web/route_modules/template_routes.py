@@ -418,6 +418,7 @@ async def get_project_template_suite(
 async def get_project_template_suite_preview(
     project_id: str,
     user: User = Depends(get_current_user_required),
+    for_pptx: bool = False,
 ):
     """Return rendered preview HTML for the project's template suite.
 
@@ -436,14 +437,14 @@ async def get_project_template_suite_preview(
             raise HTTPException(status_code=404, detail="模板套件尚未生成，请先点击「生成一致性套件」")
 
         outline = project.outline if isinstance(project.outline, dict) else {}
-        preview = user_ppt_service.template_suite.build_preview_html(
-            suite,
-            all_slides=outline.get("slides") or [],
-        )
+        preview = (user_ppt_service.template_suite.build_pptx_layout_html(suite)
+                   if for_pptx else user_ppt_service.template_suite.build_preview_html(
+                       suite, all_slides=outline.get("slides") or []))
         return {
             "success": True,
             "template_name": suite.get("template_name"),
             "preview": preview,
+            "export_slots": for_pptx,
         }
     except HTTPException:
         raise
