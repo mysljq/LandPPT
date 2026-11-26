@@ -34,11 +34,15 @@ class ParallelPageService:
         return groups
 
     @classmethod
-    async def prepare(cls, service, project_id, outline, slides):
+    async def prepare(cls, service, project_id, outline, slides, *, persist=True):
+        """Attach a plan; outline workflows persist it with the completed outline."""
         fingerprint = cls.fingerprint(slides)
         cached = outline.get("parallel_page_plan", {})
         if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint and cached.get("version") == cls.VERSION:
             return cls.validate_groups(cached.get("groups", []), slides)
+        outline.pop("parallel_page_plan", None)
+        if not slides:
+            return []
         summary = [{"page": i + 1, **{k: s.get(k) for k in ("title", "slide_type", "content_points", "content", "chapter")}} for i, s in enumerate(slides)]
         prompt = ('识别以下PPT大纲中应使用相似内容组织和版式的并列页面组。只有介绍同级对象、方案、案例或同类条目续页才分组；'
                   '不要仅因同章、标题相似或相邻就分组。允许非相邻页。封面、目录、过渡、结尾不要分组。每页最多一组。'
@@ -53,6 +57,8 @@ class ParallelPageService:
             logger.warning("并列页面规划失败，本次按独立页面生成", exc_info=True)
             return []
         outline["parallel_page_plan"] = {"version": cls.VERSION, "fingerprint": fingerprint, "groups": groups}
+        if not persist:
+            return groups
         from ..db_project_manager import DatabaseProjectManager
         try:
             saved = await DatabaseProjectManager().update_project_data(project_id, {"outline": outline})

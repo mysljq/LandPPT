@@ -140,6 +140,10 @@ class ProjectOutlinePageCountService:
                 try:
                     from ..db_project_manager import DatabaseProjectManager
                     db_manager = DatabaseProjectManager()
+                    from ..slide.parallel_page_service import ParallelPageService
+                    await ParallelPageService.prepare(
+                        self, project_id, outline_data, outline_data.get('slides', []), persist=False
+                    )
                     save_success = await db_manager.save_project_outline(project_id, outline_data)
                     if save_success:
                         logger.info(f'✅ Successfully saved outline to database for project {project_id}')
@@ -181,6 +185,10 @@ class ProjectOutlinePageCountService:
                     try:
                         from ..db_project_manager import DatabaseProjectManager
                         db_manager = DatabaseProjectManager()
+                        from ..slide.parallel_page_service import ParallelPageService
+                        await ParallelPageService.prepare(
+                            self, project_id, fallback_outline, fallback_outline.get('slides', []), persist=False
+                        )
                         save_success = await db_manager.save_project_outline(project_id, fallback_outline)
                         if save_success:
                             logger.info(f'Successfully saved fallback outline to database for project {project_id}')

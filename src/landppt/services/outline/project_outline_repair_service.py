@@ -204,6 +204,10 @@ class ProjectOutlineRepairService:
                 logger.info(f'Project outline is None, setting outline from outline_data')
                 project.outline = outline_data
                 project.updated_at = time.time()
+            from ..slide.parallel_page_service import ParallelPageService
+            await ParallelPageService.prepare(
+                self, project_id, outline_data, outline_data.get('slides', []), persist=False
+            )
             save_success = await db_manager.save_project_outline(project_id, outline_data)
             if save_success:
                 logger.info(f'✅ Successfully saved outline to database for project {project_id}')

@@ -202,6 +202,11 @@ async def web_create_project(
                 project.project_id, confirmed, user_id=user.id
             ):
                 raise RuntimeError("文档已解析，但保存任务失败，请重试。")
+            from landppt.services.slide.parallel_page_service import ParallelPageService
+            await ParallelPageService.prepare(
+                service, project.project_id, document_outline,
+                document_outline.get("slides", []), persist=False,
+            )
             if not await manager.save_project_outline(project.project_id, document_outline):
                 raise RuntimeError("保存文档大纲失败，请重试。")
             if not await manager.update_stage_status(

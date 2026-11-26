@@ -54,3 +54,64 @@ async def test_malformed_planning_response_degrades_without_persisting():
     outline = {"slides": [{}, {}]}
     assert await Planner.prepare(service, "p", outline, outline["slides"]) == []
     assert "parallel_page_plan" not in outline
+
+
+@pytest.mark.asyncio
+async def test_outline_completion_can_attach_plan_without_separate_database_write(monkeypatch):
+    service = SimpleNamespace(
+        _text_completion_for_role=AsyncMock(return_value=SimpleNamespace(
+            content='{"groups":[{"pages":[1,2],"reason":"同级方案"}]}'
+        )), _strip_think_tags=lambda s: s,
+    )
+    write = AsyncMock()
+    monkeypatch.setitem(sys.modules, "landppt.services.db_project_manager",
+                        SimpleNamespace(DatabaseProjectManager=lambda: SimpleNamespace(update_project_data=write)))
+    outline = {"slides": [{"title": "A"}, {"title": "B"}]}
+    groups = await Planner.prepare(service, "p", outline, outline["slides"], persist=False)
+    assert groups[0]["pages"] == [1, 2]
+    assert outline["parallel_page_plan"]["fingerprint"] == Planner.fingerprint(outline["slides"])
+    write.assert_not_awaited()
+    # Opening the outline or starting PPT generation reuses the attached plan.
+    assert await Planner.prepare(service, "p", outline, outline["slides"]) == groups
+    assert service._text_completion_for_role.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_regroup_drops_stale_plan():
+    service = SimpleNamespace(_text_completion_for_role=AsyncMock(side_effect=RuntimeError("offline")))
+    outline = {"slides": [{"title": "changed"}], "parallel_page_plan": {
+        "version": 1, "fingerprint": "old", "groups": []}}
+    assert await Planner.prepare(service, "p", outline, outline["slides"], persist=False) == []
+    assert "parallel_page_plan" not in outline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_fails", [False, True])
+async def test_outline_completion_saves_grouping_before_marking_completed(monkeypatch, model_fails):
+    from landppt.services.outline.project_outline_repair_service import ProjectOutlineRepairService
+    outline = {"title": "报告", "slides": [{"title": "A"}, {"title": "B"}]}
+    project = SimpleNamespace(outline=None, todo_board=SimpleNamespace(
+        stages=[SimpleNamespace(id="outline_generation", status="running")]))
+    events = []
+
+    async def save(project_id, data):
+        events.append("save")
+        assert ("parallel_page_plan" in data) is (not model_fails)
+        return True
+
+    async def completed(*args, **kwargs):
+        events.append("completed")
+
+    manager = SimpleNamespace(get_project=AsyncMock(return_value=project),
+                              save_project_outline=save, update_project_status=AsyncMock(),
+                              update_stage_status=completed)
+    monkeypatch.setitem(sys.modules, "landppt.services.db_project_manager",
+                        SimpleNamespace(DatabaseProjectManager=lambda: manager))
+    completion = AsyncMock(return_value=SimpleNamespace(content='{"groups":[{"pages":[1,2]}]}'))
+    if model_fails:
+        completion.side_effect = RuntimeError("offline")
+    owner = SimpleNamespace(project_manager=manager, _text_completion_for_role=completion,
+                            _strip_think_tags=lambda s: s)
+    await ProjectOutlineRepairService(owner)._update_outline_generation_stage("p", outline)
+    assert events == ["save", "completed"]
+    assert project.todo_board.stages[0].status == "completed"
