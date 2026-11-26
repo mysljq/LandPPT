@@ -12513,19 +12513,22 @@
             // FUTURE: `endArrowSize` < a: headEnd type = "arrow" w = "lg" len = "lg" /> 'sm' | 'med' | 'lg'(values are 1 - 9, making a 3x3 grid of w / len possibilities)
             strSlideXml += '</a:ln>';
           }
-          // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
-          if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
-            slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
-            slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
-            slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
-            slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle ?? 270) * 60000);
-            slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity ?? 0.75) * 100000);
-            slideItemObj.options.shadow.color = slideItemObj.options.shadow.color ?? DEF_TEXT_SHADOW.color;
+          if ((slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') || slideItemObj.options.nativeReflection) {
             strSlideXml += '<a:effectLst>';
-            strSlideXml += " <a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
-            strSlideXml += " <a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
-            strSlideXml += " <a:alpha val=\"".concat(slideItemObj.options.shadow.opacity, "\"/></a:srgbClr>");
-             strSlideXml += " </a:".concat(slideItemObj.options.shadow.type, "Shdw>" );
+            // EFFECTS > SHADOW: REF: @see http://officeopenxml.com/drwSp-effects.php
+            if (slideItemObj.options.shadow && slideItemObj.options.shadow.type !== 'none') {
+              slideItemObj.options.shadow.type = slideItemObj.options.shadow.type || 'outer';
+              slideItemObj.options.shadow.blur = valToPts(slideItemObj.options.shadow.blur ?? 8);
+              slideItemObj.options.shadow.offset = valToPts(slideItemObj.options.shadow.offset ?? 4);
+              slideItemObj.options.shadow.angle = Math.round((slideItemObj.options.shadow.angle ?? 270) * 60000);
+              slideItemObj.options.shadow.opacity = Math.round((slideItemObj.options.shadow.opacity ?? 0.75) * 100000);
+              slideItemObj.options.shadow.color = slideItemObj.options.shadow.color ?? DEF_TEXT_SHADOW.color;
+              strSlideXml += " <a:".concat(slideItemObj.options.shadow.type, "Shdw ").concat(slideItemObj.options.shadow.type === 'outer' ? 'sx="100000" sy="100000" kx="0" ky="0" algn="bl" rotWithShape="0"' : '', " blurRad=\"").concat(slideItemObj.options.shadow.blur, "\" dist=\"").concat(slideItemObj.options.shadow.offset, "\" dir=\"").concat(slideItemObj.options.shadow.angle, "\">");
+              strSlideXml += " <a:srgbClr val=\"".concat(slideItemObj.options.shadow.color, "\">");
+              strSlideXml += " <a:alpha val=\"".concat(slideItemObj.options.shadow.opacity, "\"/></a:srgbClr>");
+               strSlideXml += " </a:".concat(slideItemObj.options.shadow.type, "Shdw>" );
+            }
+            if (slideItemObj.options.nativeReflection) strSlideXml += nativeReflectionXml(slideItemObj.options.nativeReflection);
             strSlideXml += '</a:effectLst>';
           }
           /* TODO: FUTURE: Text wrapping (copied from MS-PPTX export)
@@ -67391,6 +67394,74 @@
     return encodeSvgDataUri(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${rects}</svg>`);
   }
 
+  function parseNativeCssReflection(style, owner, item, config) {
+    const raw = String(style.webkitBoxReflect || style.getPropertyValue?.('-webkit-box-reflect') || '').trim();
+    if (!raw || raw === 'none') return null;
+    const parts = splitTopLevelWhitespace(raw);
+    const direction = parts.shift();
+    const dirs = { below: 90, above: 270, left: 180, right: 0 };
+    const warn = reason => { console.warn('[dom-to-pptx] Native reflection skipped: ' + reason, raw); return null; };
+    if (!Object.prototype.hasOwnProperty.call(dirs, direction)) return warn('unsupported direction');
+    let gap = 0;
+    if (parts.length && /^[-+\d.]/.test(parts[0])) {
+      const value = parts.shift();
+      const match = value.match(/^(-?\d*\.?\d+)(px|%)?$/);
+      if (!match) return warn('unsupported offset');
+      gap = Number(match[1]);
+      if (match[2] === '%') gap *= (['below','above'].includes(direction) ? owner.getBoundingClientRect().height : owner.getBoundingClientRect().width) / 100;
+      if (gap < 0) return warn('negative offsets cannot be expressed as a native distance');
+    }
+    const mask = parts.shift() || '';
+    // Chromium serializes the mask as a mask-box-image including default
+    // slice/width/outset/repeat values, even when only a gradient was authored.
+    const maskBox = parts.join(' ');
+    if (maskBox && maskBox !== '0 fill / auto / 0 stretch')
+      return warn('non-default mask-box slice/repeat is unsupported');
+    let startAlpha = 100000, endAlpha = 100000, start = 0, end = 100000;
+    if (mask && mask !== 'none') {
+      const match = mask.match(/^linear-gradient\((.*)\)$/i);
+      const stops = match && splitTopLevelCommaParts(match[1]);
+      const count = stops && stops.length - (/^(?:to\s|[-\d.]+(?:deg|rad|turn|grad)\b)/i.test(stops[0]) ? 1 : 0);
+      const gradient = count === 2 && parseNativeLinearGradient(mask);
+      if (!gradient) return warn('only two-stop linear alpha masks are supported');
+      const delta = ((gradient.angle - dirs[direction]) % 360 + 360) % 360;
+      if (Math.min(delta, 360-delta) > 0.01 && Math.abs(delta-180)>0.01)
+        return warn('mask direction must be parallel to the reflection axis');
+      const a = gradient.stops[0], b = gradient.stops[gradient.stops.length-1];
+      const nearLast = delta < 0.01 || delta > 359.99;
+      startAlpha = Math.round((100-(nearLast ? b : a).transparency)*1000);
+      endAlpha = Math.round((100-(nearLast ? a : b).transparency)*1000);
+      start = nearLast ? 100000-b.pos : a.pos;
+      end = nearLast ? 100000-a.pos : b.pos;
+      if (end <= start) return warn('hard-edge masks cannot be represented by native reflection');
+    }
+    const rect = owner.getBoundingClientRect(), factor = PX_TO_INCH * config.scale;
+    const box = { left: config.offX+(rect.left-config.rootX)*factor,
+      top: config.offY+(rect.top-config.rootY)*factor,
+      right: config.offX+(rect.right-config.rootX)*factor,
+      bottom: config.offY+(rect.bottom-config.rootY)*factor };
+    const o = item.options;
+    const rotated = Math.abs(Number(o.rotate) || 0) > 0.01;
+    // The single-line exporter reserves extra right-hand editing space. A
+    // horizontal mirror must use the CSS edge rather than that spare space.
+    if (direction === 'right' && o.noWrap && !rotated && box.right > o.x)
+      o.w = box.right-o.x;
+    const edgeDelta = rotated ? 0 : direction === 'below' ? box.bottom-(o.y+o.h)
+      : direction === 'above' ? o.y-box.top : direction === 'right' ? box.right-(o.x+o.w) : o.x-box.left;
+    return { dir: dirs[direction]*60000, fadeDir: dirs[direction]*60000,
+      dist: Math.round(Math.max(0, gap*factor+2*edgeDelta)*914400),
+      stA: startAlpha, endA: endAlpha, stPos: start, endPos: end,
+      sx: ['left','right'].includes(direction) ? -100000 : 100000,
+      sy: ['above','below'].includes(direction) ? -100000 : 100000,
+      algn: direction === 'below' ? 'bl' : direction === 'right' ? 'tr' : 'tl' };
+  }
+
+  function nativeReflectionXml(reflection) {
+    return '<a:reflection blurRad="0" rotWithShape="1" ' +
+      ['stA','endA','stPos','endPos','dist','dir','fadeDir','sx','sy'].map(key =>
+        key+'="'+Math.round(reflection[key])+'"').join(' ') + ' algn="'+reflection.algn+'"/>';
+  }
+
   function parseNativeLinearGradient(bgString) {
     const match = String(bgString || '').trim().match(/^linear-gradient\((.*)\)$/i);
     if (!match) return null;
@@ -70550,6 +70621,9 @@
         if (result.items) {
           result.items.forEach((item) => {
             item.semanticGroups = currentGroups;
+            if (item.type === 'text' && node.nodeType === 1 && nodeStyle &&
+                String(nodeStyle.webkitBoxReflect || 'none') !== 'none')
+              item.cssReflectionSource = { owner: node, style: nodeStyle };
             const slotOwner = (node.nodeType === 1 ? node : node.parentElement)?.closest?.('[data-pptx-slot]');
             if (item.type === 'text' && (item.suiteSlot || slotOwner)) {
               item.options.__suiteSlot = item.suiteSlot || slotOwner.getAttribute('data-pptx-slot');
@@ -70622,6 +70696,12 @@
         if (hasLargeOutlinedNumeral && item.options.nativeTextWarp !== 'textPlain' && Number.isFinite(Number(item.options.y))) {
           item.options.y += 0.33;
         }
+      }
+    }
+    for (const item of finalQueue) {
+      if (item.cssReflectionSource) {
+        const { owner, style } = item.cssReflectionSource;
+        item.options.nativeReflection = parseNativeCssReflection(style, owner, item, layoutConfig) || undefined;
       }
     }
     if (typeof globalOptions.onRenderQueue === 'function') globalOptions.onRenderQueue(finalQueue);

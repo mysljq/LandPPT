@@ -418,7 +418,7 @@
             }
         }
 
-        const DOM_TO_PPTX_BUNDLE_VERSION = '20261117-suite-slot-wrapping-v232';
+        const DOM_TO_PPTX_BUNDLE_VERSION = '20261125-native-reflection-v233';
         const DOM_TO_PPTX_EXPECTED_PATCH_VERSION = '2026-09-21-pages75-76-stripes-v180';
         let domToPptxReloadPromise = null;
 
