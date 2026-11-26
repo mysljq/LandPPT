@@ -10,6 +10,12 @@ clawpartner-suite-maker/
   assets/reference-suite/     # 中性五页型示例，非默认设计风格
   scripts/
     prepare_source.py         # HTML/OOXML 素材与结构提取
+    pptx_fidelity.py          # 继承字体、图层、坐标、裁剪、线型
+    font_units.py             # 实际PPT物理尺寸换算、导出逆公式诊断
+    build_pptx_suite.py       # 已有页型直接绑定槽位
+    pptx_lock.py              # 防止后续改写源元素几何和样式
+    verify_pptx_fidelity.py   # 源几何、平台字体、原生像素对照
+    render_ppt_reference.ps1  # 可选 Windows PowerPoint 只读参考导出
     assets.py                 # 本地资源提取与路径处理
     package_suite.py          # 契约检查、JSON/ZIP
     render_preview.py         # 可选预览与结构检查
@@ -42,6 +48,8 @@ python "<skill>/scripts/package_suite.py" --suite-dir "output/my-style" --name "
 ```
 
 准备完素材不等于已经生成模板；风格理解、页型补齐和 HTML 设计由调用 Skill 的模型执行。参考套件不是风格转换器。
+
+PPTX 已有页面使用 [原稿保真路径](pptx-precision.md) 的直接槽位绑定，不重新设计。核心解析/绑定/锁定检查不依赖 Windows；原生 PowerPoint 参考导出是可选验证。源字体是宿主依赖，缺失时报告字体回退，不宣称像素级一致。
 
 ## 可选视觉预览
 

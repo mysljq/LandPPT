@@ -23,6 +23,7 @@ def load(name):
 
 @pytest.fixture
 def modules(monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
     # Scope script import wiring to this test; do not alter global search paths.
     monkeypatch.setitem(sys.modules, 'assets', load('assets'))
     return load('assets'), load('prepare_source'), load('package_suite')

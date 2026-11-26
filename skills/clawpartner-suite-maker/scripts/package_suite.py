@@ -73,6 +73,16 @@ def package(args):
         raise ValueError('design_token.txt is empty')
     analysis = json.loads((root / 'design-analysis.json').read_text(encoding='utf-8-sig'))
     validate(pages, analysis)
+    from pptx_lock import validate_lock
+    source_kind=analysis.get('source_kind') or (analysis.get('source',{}).get('kind') if isinstance(analysis.get('source'),dict) else None)
+    if source_kind=='pptx':
+        if not (root/'geometry-lock.json').exists():
+            raise ValueError('PPTX suites require geometry-lock.json from build_pptx_suite.py')
+        lock=json.loads((root/'geometry-lock.json').read_text(encoding='utf-8'))
+        adapted={p for p,info in analysis['pages'].items() if info['method']=='adapted'}
+        if not adapted.issubset(lock['pages']):
+            raise ValueError('Every adapted PPTX page must retain its source geometry lock')
+    validate_lock(root,pages)
     records = {}
 
     def resolve(ref):
@@ -102,6 +112,8 @@ def package(args):
     with zipfile.ZipFile(root / 'suite.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in [*(f'{p}.html' for p in PARTS), 'design_token.txt', 'design-analysis.json', 'assets-manifest.json', 'suite.json']:
             archive.write(root / name, name)
+        for name in ('geometry-lock.json','source-samples.json','source-provenance.json'):
+            if (root/name).is_file():archive.write(root/name,name)
         for path in sorted((root / 'assets').rglob('*')) if (root / 'assets').exists() else []:
             if path.is_file() and path.resolve().is_relative_to(root):
                 archive.write(path, path.relative_to(root).as_posix())

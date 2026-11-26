@@ -50,61 +50,29 @@ def extract_html(path, out, store):
             'warnings': ['Source HTML is structural evidence; inspect the rendered source before designing.']}
 
 
-def extract_pptx(path, out, store):
+def extract_pptx(path, out, store, native=None):
     from pptx import Presentation
     presentation = Presentation(str(path))
-    sx, sy = 1280 / presentation.slide_width, 720 / presentation.slide_height
     with zipfile.ZipFile(path) as archive:
         for name in archive.namelist():
             if name.startswith('ppt/media/') and not name.endswith('/'):
                 store.save(archive.read(name), Path(name).suffix, name)
-        # Keep complete XML evidence: themes, masters, layouts, shapes, relationships.
-        for name in archive.namelist():
             if name.startswith('ppt/') and name.endswith(('.xml', '.rels')):
-                dest = out / 'ooxml' / name
+                dest = (out / 'ooxml' / name).resolve()
+                if not dest.is_relative_to((out / 'ooxml').resolve()):
+                    raise ValueError('OOXML path escapes extraction directory')
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(archive.read(name))
-    slides = []
-    (out / 'slides').mkdir()
-    for index, slide in enumerate(presentation.slides, 1):
-        shapes, elements = [], []
-        def visit(items, parent=None):
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
-            for shape in items:
-                rect = {'left': round(shape.left * sx, 2), 'top': round(shape.top * sy, 2),
-                        'width': round(shape.width * sx, 2), 'height': round(shape.height * sy, 2)}
-                item = {'name': shape.name, 'type': str(shape.shape_type), **rect}
-                if parent:
-                    item['group'] = parent
-                style = ';'.join(f'{k}:{v}px' for k, v in rect.items())
-                if shape.has_text_frame:
-                    item['text'] = shape.text
-                    item['runs'] = []
-                    for paragraph in shape.text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            item['runs'].append({'text': run.text, 'font': run.font.name,
-                                                 'size_pt': run.font.size.pt if run.font.size else None,
-                                                 'bold': run.font.bold})
-                    elements.append(f'<div style="position:absolute;{style};white-space:pre-wrap">{html.escape(shape.text)}</div>')
-                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    image = shape.image
-                    item['asset'] = store.save(image.blob, '.' + image.ext, f'slide{index}/{shape.shape_id}')
-                    elements.append(f'<img src="../{item["asset"]}" style="position:absolute;{style};object-fit:contain">')
-                shapes.append(item)
-                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                    visit(shape.shapes, shape.name)
-        visit(slide.shapes)
-        slides.append({'number': index, 'shapes': shapes})
-        (out / 'slides' / f'{index:03}.html').write_text(
-            '<!doctype html><meta charset="utf-8"><body style="margin:0"><main style="position:relative;width:1280px;height:720px;overflow:hidden">' + ''.join(elements) + '</main>', encoding='utf-8')
-    return {'kind': 'pptx', 'original_size_emu': [presentation.slide_width, presentation.slide_height],
-            'slides': slides, 'warnings': ['Structural preview omits master/layout visuals, inherited fonts, charts, transforms and fills. Read ooxml and inspect original slides for fidelity.']}
+    from pptx_fidelity import extract
+    return extract(presentation, out, store, native)
+
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--native-reference', type=Path, help='Optional PowerPoint native-metrics.json')
     args = parser.parse_args()
     path, out = args.input.resolve(), args.output.resolve()
     if out.exists() and any(out.iterdir()):
@@ -114,7 +82,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     store = AssetStore(out)
     if zipfile.is_zipfile(path):
-        result = extract_pptx(path, out, store)
+        native = json.loads(args.native_reference.read_text(encoding='utf-8-sig')) if args.native_reference else None
+        result = extract_pptx(path, out, store, native)
     elif path.suffix.lower() in ('.html', '.htm'):
         result = extract_html(path, out, store)
     else:

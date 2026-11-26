@@ -21,7 +21,7 @@
 
 随包 `assets/reference-suite/` 提供全部五类槽位、正文安全区和来源分析的中性结构示例，不包含项目图片、远程图床或业务数据。它用于理解文件结构及独立冒烟验证；制作实际套件时必须换成输入来源的设计语言。
 
-每个模板为独立 UTF-8 HTML，固定画布 1280×720，`box-sizing:border-box`，画布隐藏越界；不含 JS、事件处理器或外链 CSS，CSS 随文件内联。尺寸来源不同需重新排版，不变形缩放品牌 Logo。用真实 DOM 文本、形状和图片，不得整页截图代替可编辑模板。
+每个模板为独立 UTF-8 HTML，固定画布 1280×720，`box-sizing:border-box`，画布隐藏越界；不含 JS、事件处理器或外链 CSS，CSS 随文件内联。PPTX 不同画幅统一等比缩放、居中补边；已有页型不重新排版。HTML 长页面按设计语言重排。不变形缩放品牌 Logo。用真实 DOM 文本、形状和图片，不得整页截图代替可编辑模板。
 
 ## 槽位
 
@@ -36,6 +36,10 @@
 `{{ total_page_count }}` 可选。品牌文案可用 `{{ brand_org }}`、`{{ brand_tagline }}`、`{{ brand_attribution }}`、`{{ brand_year }}`；章节编号可用 `{{ chapter_number }}`。按实际来源使用，不凭空发明动态槽位。
 
 目录必须有带编号的示例条目和布局，不能留下 `catalog_items` 槽位。内容页只有固定视觉骨架，正文仅一个 `page_content` 插槽，置于唯一 `.suite-stage`；它必须明确 `position:absolute;left:...px;top:...px;width:...px;height:...px;overflow:hidden`，不得侵入页眉页脚。正文 CSS 作用域限制在 `.suite-stage`，不让全局规则破坏后续动态内容。`page_content` 不能转义为普通文本或塞入属性。
+
+## PPTX 几何锁定
+
+PPTX 需声明 source_kind 为 pptx，adapted 页面通过 build_pptx_suite.py 从源证据直接绑定，保留 geometry-lock.json、source-samples.json、source-provenance.json；三者均随 ZIP 交付。源标题/图片/线条的 DOM、CSS 和层序由打包器检查。源文件没有 extra/subtitle 区域时允许 hidden 槽位，不添加可见框。源图片中只有内嵌文字而无文本框时，新增可编辑文案属于 synthesized；不能把图片文字伪报为原稿可编辑文本。详见 [pptx-precision.md](pptx-precision.md)。
 
 ## 来源分析
 

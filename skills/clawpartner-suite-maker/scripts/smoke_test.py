@@ -34,7 +34,7 @@ def run(work):
     assert h['assets'] == 1 and h['kind'] == 'html', h
     assert p['kind'] == 'pptx', p
     extracted = json.loads((work / 'ppt-source/source.json').read_text(encoding='utf-8'))
-    assert extracted['slides'][0]['shapes'][0]['text'] == 'Portable PPTX input'
+    assert extracted['slides'][0]['shapes'][-1]['text']['text'] == 'Portable PPTX input'
     suite = work / 'suite'
     shutil.copytree(SKILL / 'assets/reference-suite', suite)
     shutil.copytree(work / 'html-source/assets', suite / 'assets')
